@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 #[server]
-pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
+pub async fn get_current_user() -> Result<Option<(String, String)>, ServerFnError> {
     use crate::state::AppState;
     use crate::auth;
     use crate::db;
@@ -33,10 +33,10 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     };
 
     // Validate session exists and not expired
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().await;
     if db::find_valid_session(&conn, &claims.session_id).is_none() {
         return Ok(None);
     }
 
-    Ok(Some(claims.sub))
+    Ok(Some((claims.sub, claims.role)))
 }

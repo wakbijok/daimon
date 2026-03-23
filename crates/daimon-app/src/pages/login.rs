@@ -9,9 +9,9 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let state = expect_context::<AppState>();
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock().await;
 
-    let (user_id, _username, hash) = db::find_user(&conn, &username)
+    let (user_id, _username, hash, role) = db::find_user(&conn, &username)
         .ok_or_else(|| ServerFnError::new("Invalid credentials"))?;
 
     if !auth::verify_password(&password, &hash) {
@@ -24,7 +24,7 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
 
     db::insert_session(&conn, &session_id, user_id, &expires_at).unwrap();
 
-    let token = auth::create_jwt(&state.jwt_secret, &username, user_id, &session_id);
+    let token = auth::create_jwt(&state.jwt_secret, &username, user_id, &role, &session_id);
 
     let cookie = format!(
         "daimon_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",
