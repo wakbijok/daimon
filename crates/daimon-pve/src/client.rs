@@ -69,6 +69,32 @@ impl Client {
         Ok(body.data)
     }
 
+    /// Raw GET — returns JSON string for debugging/discovery
+    pub async fn raw_get(&self, path: &str) -> Result<String, Error> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        Ok(resp.text().await?)
+    }
+
+    /// GET /api2/json/cluster/resources — all resources in one call
+    pub async fn cluster_resources(&self, resource_type: Option<&str>) -> Result<Vec<PveResource>, Error> {
+        let url = match resource_type {
+            Some(t) => format!("{}/api2/json/cluster/resources?type={}", self.base_url, t),
+            None => format!("{}/api2/json/cluster/resources", self.base_url),
+        };
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<PveResource>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/status — detailed node info
+    pub async fn node_status(&self, node: &str) -> Result<PveNodeStatus, Error> {
+        let url = format!("{}/api2/json/nodes/{}/status", self.base_url, node);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<PveNodeStatus> = resp.json().await?;
+        Ok(body.data)
+    }
+
     /// GET /api2/json/nodes
     pub async fn nodes(&self) -> Result<Vec<PveNode>, Error> {
         let url = format!("{}/api2/json/nodes", self.base_url);
