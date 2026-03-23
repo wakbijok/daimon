@@ -1,2 +1,19 @@
 @import "tailwindcss";
 @source "../src/**/*.rs";
+
+@theme {
+    --color-surface-primary: #080C14;
+    --color-surface-secondary: #0D1117;
+    --color-surface-tertiary: #161B22;
+
+    --color-text-primary: #E6EDF3;
+    --color-text-secondary: #9CA3AF;
+    --color-text-muted: #6B7280;
+
+    --color-border-primary: #21262D;
+
+    --color-accent-amber: #F59E0B;
+    --color-accent-green: #4CAF50;
+    --color-accent-danger: #F44336;
+    --color-accent-purple: #A78BFA;
+}
