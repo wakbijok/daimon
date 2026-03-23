@@ -1,5 +1,7 @@
 /target
+target/site/
 *.swp
 *.swo
 .DS_Store
 .env
+daimon.db

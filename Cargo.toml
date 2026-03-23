@@ -7,3 +7,28 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wakbijok/daimon"
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[[workspace.metadata.leptos]]
+name = "daimon-app"
+bin-package = "daimon-app"
+lib-package = "daimon-app"
+output-name = "daimon"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+tailwind-input-file = "crates/daimon-app/style/tailwind.css"
+assets-dir = "crates/daimon-app/public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+lib-profile-release = "wasm-release"
+env = "DEV"

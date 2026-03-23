@@ -1,0 +1,45 @@
+[package]
+name = "daimon-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "daimon web application — Leptos full-stack"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.8" }
+leptos_router = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+serde = { version = "1", features = ["derive"] }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+
+# Server-only dependencies
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+leptos_axum = { version = "0.8", optional = true }
+rusqlite = { version = "0.34", features = ["bundled"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
+bcrypt = { version = "0.17", optional = true }
+rand = { version = "0.9", optional = true }
+
+[features]
+hydrate = [
+    "leptos/hydrate",
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+]
+ssr = [
+    "dep:axum",
+    "dep:tokio",
+    "dep:leptos_axum",
+    "leptos/ssr",
+    "leptos_router/ssr",
+    "dep:rusqlite",
+    "dep:jsonwebtoken",
+    "dep:bcrypt",
+    "dep:rand",
+]
