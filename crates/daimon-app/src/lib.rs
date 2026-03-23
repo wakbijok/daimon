@@ -3,6 +3,7 @@ pub mod components;
 pub mod pages;
 pub mod db;
 pub mod auth;
+pub mod auth_guard;
 pub mod state;
 
 #[cfg(feature = "hydrate")]
