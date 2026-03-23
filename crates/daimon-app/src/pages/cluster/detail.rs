@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::components::Outlet;
 use leptos_router::hooks::use_params_map;
 use crate::components::tabs::{Tab, TabBar};
-use crate::components::table::MetricRow;
+use crate::components::table::{NodeRow, GuestRow, StorageRow};
 
 #[server]
 pub async fn get_cluster_info(cluster_id: String) -> Result<(String, String), ServerFnError> {
@@ -17,7 +17,7 @@ pub async fn get_cluster_info(cluster_id: String) -> Result<(String, String), Se
 }
 
 #[server]
-pub async fn get_cluster_nodes(cluster_id: String) -> Result<Vec<MetricRow>, ServerFnError> {
+pub async fn get_cluster_nodes(cluster_id: String) -> Result<Vec<NodeRow>, ServerFnError> {
     use crate::state::AppState;
 
     let state = expect_context::<AppState>();
@@ -25,25 +25,24 @@ pub async fn get_cluster_nodes(cluster_id: String) -> Result<Vec<MetricRow>, Ser
     let client = clients.get(&cluster_id)
         .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
 
-    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(format!("PVE nodes() failed: {}", e)))?;
-    leptos::logging::log!("[daimon] get_cluster_nodes: got {} nodes", nodes.len());
-    for n in &nodes {
-        leptos::logging::log!("[daimon]   node={} status={} cpu={} mem={}/{}", n.node, n.status, n.cpu, n.mem, n.maxmem);
-    }
-    Ok(nodes.iter().map(|n| {
-        let ram_pct = if n.maxmem > 0 { (n.mem as f64 / n.maxmem as f64) * 100.0 } else { 0.0 };
-        MetricRow {
-            name: n.node.clone(),
-            sub: format!("{} CPU(s)", n.maxcpu),
-            cpu_pct: n.cpu * 100.0,
-            ram_pct,
-            status: n.status.clone(),
-        }
+    let resources = client.cluster_resources(Some("node")).await
+        .map_err(|e| ServerFnError::new(format!("PVE API error: {}", e)))?;
+
+    Ok(resources.iter().map(|r| NodeRow {
+        name: r.node.clone(),
+        status: r.status.clone(),
+        cpu_pct: r.cpu * 100.0,
+        cpu_count: r.maxcpu,
+        mem_used: r.mem,
+        mem_total: r.maxmem,
+        disk_used: r.disk,
+        disk_total: r.maxdisk,
+        uptime: r.uptime,
     }).collect())
 }
 
 #[server]
-pub async fn get_cluster_vms(cluster_id: String) -> Result<Vec<MetricRow>, ServerFnError> {
+pub async fn get_cluster_vms(cluster_id: String) -> Result<Vec<GuestRow>, ServerFnError> {
     use crate::state::AppState;
 
     let state = expect_context::<AppState>();
@@ -51,22 +50,61 @@ pub async fn get_cluster_vms(cluster_id: String) -> Result<Vec<MetricRow>, Serve
     let client = clients.get(&cluster_id)
         .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
 
-    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(format!("PVE nodes() for VMs failed: {}", e)))?;
-    leptos::logging::log!("[daimon] get_cluster_vms: {} nodes, checking for online", nodes.len());
+    let resources = client.cluster_resources(Some("vm")).await
+        .map_err(|e| ServerFnError::new(format!("PVE API error: {}", e)))?;
+
+    Ok(resources.iter().filter_map(|r| {
+        r.vmid.map(|vmid| GuestRow {
+            vmid,
+            name: r.name.clone(),
+            node: r.node.clone(),
+            status: r.status.clone(),
+            cpu_pct: r.cpu * 100.0,
+            cpu_count: r.maxcpu,
+            mem_used: r.mem,
+            mem_total: r.maxmem,
+            disk_used: r.disk,
+            disk_total: r.maxdisk,
+            netin: r.netin,
+            netout: r.netout,
+            uptime: r.uptime,
+        })
+    }).collect())
+}
+
+#[server]
+pub async fn get_cluster_lxcs(cluster_id: String) -> Result<Vec<GuestRow>, ServerFnError> {
+    use crate::state::AppState;
+
+    let state = expect_context::<AppState>();
+    let clients = state.pve_clients.read().await;
+    let client = clients.get(&cluster_id)
+        .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
+
+    let resources = client.cluster_resources(Some("node")).await
+        .map_err(|e| ServerFnError::new(format!("PVE API error: {}", e)))?;
+
+    // Get LXCs per online node
     let mut rows = Vec::new();
-    for node in &nodes {
-        leptos::logging::log!("[daimon]   node={} status={}", node.node, node.status);
-        if node.status != "online" { continue; }
-        let vms = client.node_qemu(&node.node).await.map_err(|e| ServerFnError::new(format!("PVE qemu({}) failed: {}", node.node, e)))?;
-        leptos::logging::log!("[daimon]   node={} has {} VMs", node.node, vms.len());
-        for vm in &vms {
-            let ram_pct = if vm.maxmem > 0 { (vm.mem as f64 / vm.maxmem as f64) * 100.0 } else { 0.0 };
-            rows.push(MetricRow {
-                name: vm.name.clone(),
-                sub: format!("VMID {} on {}", vm.vmid, node.node),
-                cpu_pct: vm.cpu * 100.0,
-                ram_pct,
-                status: vm.status.clone(),
+    for node_r in &resources {
+        if node_r.status != "online" { continue; }
+        let lxcs = client.node_lxc(&node_r.node).await
+            .map_err(|e| ServerFnError::new(format!("PVE LXC error: {}", e)))?;
+        for l in &lxcs {
+            rows.push(GuestRow {
+                vmid: l.vmid,
+                name: l.name.clone(),
+                node: node_r.node.clone(),
+                status: l.status.clone(),
+                cpu_pct: l.cpu * 100.0,
+                cpu_count: l.cpus as f64,
+                mem_used: l.mem,
+                mem_total: l.maxmem,
+                disk_used: 0,
+                disk_total: 0,
+                netin: 0,
+                netout: 0,
+                uptime: l.uptime,
             });
         }
     }
@@ -74,7 +112,7 @@ pub async fn get_cluster_vms(cluster_id: String) -> Result<Vec<MetricRow>, Serve
 }
 
 #[server]
-pub async fn get_cluster_lxcs(cluster_id: String) -> Result<Vec<MetricRow>, ServerFnError> {
+pub async fn get_cluster_storage(cluster_id: String) -> Result<Vec<StorageRow>, ServerFnError> {
     use crate::state::AppState;
 
     let state = expect_context::<AppState>();
@@ -82,44 +120,18 @@ pub async fn get_cluster_lxcs(cluster_id: String) -> Result<Vec<MetricRow>, Serv
     let client = clients.get(&cluster_id)
         .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
 
-    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(e.to_string()))?;
-    let mut rows = Vec::new();
-    for node in &nodes {
-        if node.status != "online" { continue; }
-        let lxcs = client.node_lxc(&node.node).await.map_err(|e| ServerFnError::new(e.to_string()))?;
-        for ct in &lxcs {
-            let ram_pct = if ct.maxmem > 0 { (ct.mem as f64 / ct.maxmem as f64) * 100.0 } else { 0.0 };
-            rows.push(MetricRow {
-                name: ct.name.clone(),
-                sub: format!("CTID {} on {}", ct.vmid, node.node),
-                cpu_pct: ct.cpu * 100.0,
-                ram_pct,
-                status: ct.status.clone(),
-            });
-        }
-    }
-    Ok(rows)
-}
+    let resources = client.cluster_resources(Some("storage")).await
+        .map_err(|e| ServerFnError::new(format!("PVE API error: {}", e)))?;
 
-#[server]
-pub async fn get_cluster_storage(cluster_id: String) -> Result<Vec<MetricRow>, ServerFnError> {
-    use crate::state::AppState;
-
-    let state = expect_context::<AppState>();
-    let clients = state.pve_clients.read().await;
-    let client = clients.get(&cluster_id)
-        .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
-
-    let stores = client.storage().await.map_err(|e| ServerFnError::new(e.to_string()))?;
-    Ok(stores.iter().map(|s| {
-        let used_pct = if s.total > 0 { (s.used as f64 / s.total as f64) * 100.0 } else { 0.0 };
-        MetricRow {
-            name: s.storage.clone(),
-            sub: s.storage_type.clone(),
-            cpu_pct: used_pct,
-            ram_pct: 0.0,
-            status: if s.active == Some(1) { "online".to_string() } else { "inactive".to_string() },
-        }
+    Ok(resources.iter().map(|r| StorageRow {
+        name: r.storage.clone().unwrap_or_else(|| r.name.clone()),
+        storage_type: r.plugintype.clone().unwrap_or_default(),
+        content: r.content.clone().unwrap_or_default(),
+        used: r.disk,
+        total: r.maxdisk,
+        avail: if r.maxdisk > r.disk { r.maxdisk - r.disk } else { 0 },
+        shared: r.shared == Some(1),
+        active: r.status == "available",
     }).collect())
 }
 
@@ -129,15 +141,12 @@ pub async fn delete_cluster(cluster_id: String) -> Result<(), ServerFnError> {
     use crate::db;
 
     let state = expect_context::<AppState>();
-
     {
         let conn = state.db.lock().await;
         db::delete_cluster(&conn, &cluster_id)
             .map_err(|e| ServerFnError::new(e.to_string()))?;
     }
-
     state.pve_clients.write().await.remove(&cluster_id);
-
     Ok(())
 }
 
@@ -147,10 +156,7 @@ pub fn ClusterDetail() -> impl IntoView {
     let cluster_id = move || params.get().get("cluster_id").unwrap_or_default();
     let (confirming_delete, set_confirming_delete) = signal(false);
 
-    let info = Resource::new(
-        move || cluster_id(),
-        |cid| get_cluster_info(cid),
-    );
+    let info = Resource::new(move || cluster_id(), |cid| get_cluster_info(cid));
 
     let on_delete = move |_| {
         let cid = cluster_id();
@@ -190,7 +196,7 @@ pub fn ClusterDetail() -> impl IntoView {
                                         <span class="text-accent-danger text-xs">"Confirm?"</span>
                                         <button
                                             on:click=on_delete
-                                            class="px-3 py-1.5 text-xs bg-accent-danger text-white rounded-md hover:bg-accent-danger/80 transition-colors"
+                                            class="px-3 py-1.5 text-xs bg-accent-danger text-white rounded-md"
                                         >
                                             "Yes, delete"
                                         </button>
@@ -218,7 +224,9 @@ pub fn ClusterDetail() -> impl IntoView {
                 Tab { path: format!("/clusters/{}/storage", cluster_id()), label: "Storage" },
             ] />
 
-            <Outlet />
+            <div class="mt-4">
+                <Outlet />
+            </div>
         </div>
     }
 }
