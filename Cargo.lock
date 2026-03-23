@@ -411,6 +411,7 @@ dependencies = [
  "serde",
  "tokio",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
