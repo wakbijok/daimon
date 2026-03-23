@@ -2,7 +2,7 @@
 
 ## Overview
 
-Full Rust stack skeleton using Leptos (SSR + WASM hydration) and Axum. Ports DataGate's enterprise layout as the UI foundation, adapted for Proxmox-native navigation. Server binary + site/ assets directory (embeddable via rust-embed in future release builds).
+Full Rust stack skeleton for daimon — an AI-driven system engineer for Proxmox. Uses Leptos (SSR + WASM hydration) and Axum. Ports DataGate's enterprise layout as the UI foundation, adapted for Proxmox-native navigation. Monitoring is built into every page (not a separate section) because daimon's monitoring serves the AI layer. Server binary + site/ assets directory (embeddable via rust-embed in future release builds).
 
 ## Architecture
 
@@ -29,14 +29,14 @@ daimon/
 │   │   │   ├── main.rs           (server entrypoint: Axum — only compiled with "ssr" feature)
 │   │   │   ├── auth.rs           (JWT + bcrypt — server-only)
 │   │   │   ├── db.rs             (SQLite via rusqlite — server-only)
+│   │   │   ├── state.rs          (shared AppState — accessible by server functions)
 │   │   │   ├── pages/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── login.rs
 │   │   │   │   ├── dashboard.rs
 │   │   │   │   ├── cluster/      (mod.rs, nodes.rs, vms.rs, containers.rs, storage.rs)
 │   │   │   │   ├── incidents.rs
-│   │   │   │   ├── monitoring.rs (placeholder)
-│   │   │   │   ├── ai_console.rs (placeholder)
+│   │   │   │   ├── incident_detail.rs
 │   │   │   │   └── settings.rs
 │   │   │   └── components/
 │   │   │       ├── mod.rs
@@ -99,10 +99,9 @@ Tailwind scans `.rs` files for class names (configured via `@source` directive p
   - Overview (dashboard)
   - Incidents
   - Cluster > Nodes / VMs / Containers / Storage
-  - Monitoring (greyed out placeholder)
-  - AI Console (greyed out placeholder)
   - Settings
   - Connection status indicator + user/logout
+  - Note: No separate "Monitoring" or "AI Console" menu items. Monitoring is built into each page. AI is a floating chatbot (future phase).
 - **Empty pages**: each route renders page title + placeholder content
 - **Theme**: DataGate dark + amber (#080C14 background, CSS variables via Tailwind)
 - **SQLite**: auto-creates DB on first run, seeds admin user
@@ -122,7 +121,7 @@ Tailwind scans `.rs` files for class names (configured via `@source` directive p
 
 | Layer | Choice |
 |---|---|
-| Frontend | Leptos 0.7 (SSR + hydration) |
+| Frontend | Leptos 0.8 (SSR + hydration) |
 | Server | Axum (via leptos_axum) |
 | Build | cargo-leptos |
 | CSS | Tailwind 4 (standalone CLI) |
@@ -148,13 +147,13 @@ Cluster
   ├── VMs
   ├── Containers
   └── Storage
-Monitoring        [placeholder]
-AI Console        [placeholder]
 Settings
 ─────────
 Connection status
 User / Logout
 ```
+
+No "Monitoring" menu — monitoring is built into each page (Nodes shows node metrics, VMs shows VM metrics, etc.). No "AI Console" menu — AI is a floating chatbot available everywhere (future phase).
 
 Ported from DataGate's collapsible sidebar with:
 - Chevron expand/collapse for sections
@@ -209,8 +208,6 @@ Admin user auto-seeded on first run. Password from `DAIMON_ADMIN_PASSWORD` env v
 /cluster/vms                    Virtual Machines
 /cluster/containers             Containers
 /cluster/storage                Storage
-/monitoring                     Monitoring (placeholder)
-/ai-console                     AI Console (placeholder)
 /settings                       Settings
 ```
 
@@ -226,4 +223,6 @@ All routes except /login are protected (redirect to /login if no valid session).
 - **No REST API layer for skeleton**: Leptos server functions call SQLite directly. REST API added later when agent needs it
 - **Server binary + site/ dir**: cargo-leptos default output. Single-binary embedding (rust-embed) deferred to release packaging phase
 - **Session DB check on every request**: JWT is verified by signature AND checked against sessions table. Slightly slower but enables logout/revocation without token blacklists
-- **Rust edition 2024**: matches existing workspace config. Requires rustc 1.85+. Leptos 0.7 is compatible.
+- **Rust edition 2024**: matches existing workspace config. Requires rustc 1.85+. Leptos 0.8 is compatible.
+- **No separate Monitoring page**: daimon is an AI-driven system engineer, not a monitoring platform. Monitoring is a capability built into each page — Nodes shows node health, VMs shows VM metrics, etc. The AI layer consumes monitoring data to investigate and act.
+- **No separate AI Console page**: AI is a floating chatbot bubble (like DataGate's ChatBubble) available from any page. Added in a future phase.
