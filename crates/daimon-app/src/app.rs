@@ -1,8 +1,18 @@
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
-    components::{Route, Router, Routes},
-    StaticSegment,
+    components::{ParentRoute, Route, Router, Routes},
+    ParamSegment, StaticSegment,
+};
+
+use crate::components::layout::Layout;
+use crate::pages::{
+    login::Login,
+    dashboard::Dashboard,
+    incidents::Incidents,
+    incident_detail::IncidentDetail,
+    cluster::{nodes::Nodes, vms::Vms, containers::Containers, storage::Storage},
+    settings::Settings,
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -16,7 +26,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <HydrationScripts options/>
                 <MetaTags/>
             </head>
-            <body class="bg-[#080C14] text-gray-200">
+            <body>
                 <App/>
             </body>
         </html>
@@ -31,19 +41,22 @@ pub fn App() -> impl IntoView {
         <Stylesheet id="leptos" href="/pkg/daimon.css"/>
         <Title text="daimon"/>
         <Router>
-            <main class="p-8">
-                <Routes fallback=|| "Page not found.".into_view()>
-                    <Route path=StaticSegment("") view=HomePage/>
-                </Routes>
-            </main>
-        </Router>
-    }
-}
+            <Routes fallback=|| "Page not found.".into_view()>
+                // Login (no layout wrapper)
+                <Route path=StaticSegment("login") view=Login />
 
-#[component]
-fn HomePage() -> impl IntoView {
-    view! {
-        <h1 class="text-2xl font-bold">"daimon"</h1>
-        <p class="text-gray-400 mt-2">"AI-driven system engineer for Proxmox"</p>
+                // All other routes wrapped in Layout (sidebar + main)
+                <ParentRoute path=StaticSegment("") view=Layout>
+                    <Route path=StaticSegment("") view=Dashboard />
+                    <Route path=StaticSegment("incidents") view=Incidents />
+                    <Route path=(StaticSegment("incidents"), ParamSegment("id")) view=IncidentDetail />
+                    <Route path=(StaticSegment("cluster"), StaticSegment("nodes")) view=Nodes />
+                    <Route path=(StaticSegment("cluster"), StaticSegment("vms")) view=Vms />
+                    <Route path=(StaticSegment("cluster"), StaticSegment("containers")) view=Containers />
+                    <Route path=(StaticSegment("cluster"), StaticSegment("storage")) view=Storage />
+                    <Route path=StaticSegment("settings") view=Settings />
+                </ParentRoute>
+            </Routes>
+        </Router>
     }
 }
