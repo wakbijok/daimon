@@ -11,7 +11,14 @@ use crate::pages::{
     dashboard::Dashboard,
     incidents::Incidents,
     incident_detail::IncidentDetail,
-    cluster::{nodes::Nodes, vms::Vms, containers::Containers, storage::Storage},
+    cluster::{
+        detail::ClusterDetail,
+        add::AddCluster,
+        nodes::Nodes,
+        vms::Vms,
+        containers::Containers,
+        storage::Storage,
+    },
     settings::Settings,
 };
 
@@ -45,15 +52,19 @@ pub fn App() -> impl IntoView {
                 // Login (no layout wrapper)
                 <Route path=StaticSegment("login") view=Login />
 
-                // All other routes wrapped in Layout (sidebar + main)
+                // All other routes wrapped in Layout (sidebar + top bar + main)
                 <ParentRoute path=StaticSegment("") view=Layout>
                     <Route path=StaticSegment("") view=Dashboard />
                     <Route path=StaticSegment("incidents") view=Incidents />
                     <Route path=(StaticSegment("incidents"), ParamSegment("id")) view=IncidentDetail />
-                    <Route path=(StaticSegment("cluster"), StaticSegment("nodes")) view=Nodes />
-                    <Route path=(StaticSegment("cluster"), StaticSegment("vms")) view=Vms />
-                    <Route path=(StaticSegment("cluster"), StaticSegment("containers")) view=Containers />
-                    <Route path=(StaticSegment("cluster"), StaticSegment("storage")) view=Storage />
+                    <Route path=(StaticSegment("clusters"), StaticSegment("add")) view=AddCluster />
+                    <ParentRoute path=(StaticSegment("clusters"), ParamSegment("cluster_id")) view=ClusterDetail>
+                        <Route path=StaticSegment("nodes") view=Nodes />
+                        <Route path=StaticSegment("vms") view=Vms />
+                        <Route path=StaticSegment("containers") view=Containers />
+                        <Route path=StaticSegment("storage") view=Storage />
+                        <Route path=StaticSegment("") view=Nodes />
+                    </ParentRoute>
                     <Route path=StaticSegment("settings") view=Settings />
                 </ParentRoute>
             </Routes>

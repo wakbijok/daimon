@@ -9,7 +9,8 @@ async fn main() {
     use daimon_app::db;
     use daimon_app::auth;
     use daimon_app::state::AppState;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::collections::HashMap;
 
     // Init database
     let conn = db::init_db("daimon.db");
@@ -38,14 +39,26 @@ async fn main() {
         log!("Admin user created");
     }
 
+    // Load clusters and build PVE clients
+    let clusters = db::list_clusters(&conn);
+    let mut pve_map = HashMap::new();
+    for (cid, _name) in &clusters {
+        if let Some((_id, _n, api_url, token, _notes, _created)) = db::get_cluster(&conn, cid) {
+            let client = daimon_pve::Client::from_token_string(&api_url, &token);
+            pve_map.insert(cid.clone(), client);
+        }
+    }
+    log!("Loaded {} PVE cluster(s)", pve_map.len());
+
     let conf = get_configuration(None).unwrap();
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
 
     let app_state = AppState {
-        db: Arc::new(Mutex::new(conn)),
+        db: Arc::new(tokio::sync::Mutex::new(conn)),
         jwt_secret,
+        pve_clients: Arc::new(tokio::sync::RwLock::new(pve_map)),
     };
 
     let app = Router::new()

@@ -2,7 +2,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
 
 use crate::error::Error;
-use crate::types::PveVersion;
+use crate::types::*;
 
 /// Authentication method for the PVE API.
 pub enum Auth {
@@ -50,11 +50,54 @@ impl Client {
         }
     }
 
+    /// Build a Client from the stored token string format `user@realm!tokenname=value`.
+    pub fn from_token_string(base_url: &str, token: &str) -> Self {
+        let (user_part, token_value) = token.split_once('=').unwrap_or((token, ""));
+        let (user, token_name) = user_part.split_once('!').unwrap_or((user_part, ""));
+        Self::new(base_url, Auth::Token {
+            user: user.to_string(),
+            token_name: token_name.to_string(),
+            token_value: token_value.to_string(),
+        })
+    }
+
     /// GET /api2/json/version — basic connectivity check
     pub async fn version(&self) -> Result<PveVersion, Error> {
         let url = format!("{}/api2/json/version", self.base_url);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
         let body: ApiResponse<PveVersion> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes
+    pub async fn nodes(&self) -> Result<Vec<PveNode>, Error> {
+        let url = format!("{}/api2/json/nodes", self.base_url);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<PveNode>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/qemu
+    pub async fn node_qemu(&self, node: &str) -> Result<Vec<PveVm>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/qemu", self.base_url, node);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<PveVm>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/lxc
+    pub async fn node_lxc(&self, node: &str) -> Result<Vec<PveLxc>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/lxc", self.base_url, node);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<PveLxc>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/storage
+    pub async fn storage(&self) -> Result<Vec<PveStorage>, Error> {
+        let url = format!("{}/api2/json/storage", self.base_url);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<PveStorage>> = resp.json().await?;
         Ok(body.data)
     }
 }
@@ -71,5 +114,23 @@ mod tests {
             token_value: "00000000-0000-0000-0000-000000000000".into(),
         });
         assert!(client.base_url == "https://localhost:8006");
+    }
+
+    #[test]
+    fn from_token_string_splits_on_bang() {
+        let client = Client::from_token_string(
+            "https://pve:8006",
+            "root@pam!mytoken=aaaa-bbbb",
+        );
+        assert_eq!(client.base_url, "https://pve:8006");
+    }
+
+    #[test]
+    fn from_token_string_no_bang_fallback() {
+        let client = Client::from_token_string(
+            "https://pve:8006",
+            "root@pam",
+        );
+        assert_eq!(client.base_url, "https://pve:8006");
     }
 }

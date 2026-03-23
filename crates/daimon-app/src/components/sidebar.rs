@@ -9,11 +9,6 @@ struct NavItem {
     icon: &'static str,
 }
 
-struct ClusterItem {
-    path: &'static str,
-    label: &'static str,
-}
-
 const TOP_NAV: &[NavItem] = &[
     NavItem {
         path: "/",
@@ -27,12 +22,15 @@ const TOP_NAV: &[NavItem] = &[
     },
 ];
 
-const CLUSTER_ITEMS: &[ClusterItem] = &[
-    ClusterItem { path: "/cluster/nodes", label: "Nodes" },
-    ClusterItem { path: "/cluster/vms", label: "VMs" },
-    ClusterItem { path: "/cluster/containers", label: "Containers" },
-    ClusterItem { path: "/cluster/storage", label: "Storage" },
-];
+#[server]
+async fn get_sidebar_clusters() -> Result<Vec<(String, String)>, ServerFnError> {
+    use crate::state::AppState;
+    use crate::db;
+
+    let state = expect_context::<AppState>();
+    let conn = state.db.lock().await;
+    Ok(db::list_clusters(&conn))
+}
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -40,6 +38,8 @@ pub fn Sidebar() -> impl IntoView {
     let pathname = move || location.pathname.get();
     let (collapsed, set_collapsed) = signal(false);
     let (cluster_expanded, set_cluster_expanded) = signal(true);
+
+    let clusters = Resource::new(|| (), |_| get_sidebar_clusters());
 
     view! {
         <aside class=move || format!(
@@ -93,7 +93,7 @@ pub fn Sidebar() -> impl IntoView {
                     // Divider
                     <div class="mx-4 border-t border-border-primary/50" />
 
-                    // Cluster section
+                    // PVE Clusters section
                     <div class="px-1">
                         <button
                             on:click=move |_| set_cluster_expanded.update(|e| *e = !*e)
@@ -109,35 +109,50 @@ pub fn Sidebar() -> impl IntoView {
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
                             </svg>
                             <Show when=move || !collapsed.get()>
-                                <span>"Cluster"</span>
+                                <span>"PVE Clusters"</span>
                             </Show>
                         </button>
 
                         <Show when=move || cluster_expanded.get() && !collapsed.get()>
                             <div class="space-y-0.5 ml-2">
-                                {CLUSTER_ITEMS.iter().map(|item| {
-                                    let path = item.path;
-                                    let label = item.label;
-                                    view! {
-                                        <A
-                                            href=path
-                                            attr:class=move || format!(
-                                                "flex items-center gap-2.5 pl-6 pr-3 py-1 rounded-md text-[12px] transition-colors {}",
-                                                if pathname().starts_with(path) {
-                                                    "text-text-primary bg-accent-amber/10 border-l-2 border-accent-amber"
-                                                } else {
-                                                    "text-text-muted hover:text-text-secondary hover:bg-surface-tertiary"
-                                                }
-                                            )
-                                        >
-                                            <span class=move || format!(
-                                                "w-1 h-1 rounded-full {}",
-                                                if pathname().starts_with(path) { "bg-accent-amber" } else { "bg-text-muted/30" }
-                                            ) />
-                                            {label}
-                                        </A>
-                                    }
-                                }).collect_view()}
+                                <Suspense fallback=|| view! { <div class="px-6 py-1 text-xs text-text-muted">"Loading..."</div> }>
+                                    {move || clusters.get().map(|result| match result {
+                                        Ok(list) => list.into_iter().map(|(id, name)| {
+                                            let href = format!("/clusters/{}/nodes", id);
+                                            let prefix = format!("/clusters/{}", id);
+                                            let prefix2 = prefix.clone();
+                                            view! {
+                                                <A
+                                                    href=href
+                                                    attr:class=move || format!(
+                                                        "flex items-center gap-2.5 pl-6 pr-3 py-1 rounded-md text-[12px] transition-colors {}",
+                                                        if pathname().starts_with(&prefix) {
+                                                            "text-text-primary bg-accent-amber/10 border-l-2 border-accent-amber"
+                                                        } else {
+                                                            "text-text-muted hover:text-text-secondary hover:bg-surface-tertiary"
+                                                        }
+                                                    )
+                                                >
+                                                    <span class=move || format!(
+                                                        "w-1 h-1 rounded-full {}",
+                                                        if pathname().starts_with(&prefix2) { "bg-accent-amber" } else { "bg-text-muted/30" }
+                                                    ) />
+                                                    {name}
+                                                </A>
+                                            }
+                                        }).collect_view().into_any(),
+                                        Err(_) => view! {}.into_any(),
+                                    })}
+                                </Suspense>
+
+                                // Add cluster link
+                                <A
+                                    href="/clusters/add"
+                                    attr:class="flex items-center gap-2.5 pl-6 pr-3 py-1 rounded-md text-[12px] text-text-muted hover:text-accent-amber hover:bg-surface-tertiary transition-colors"
+                                >
+                                    <span class="text-accent-amber">"+"</span>
+                                    " Add Cluster"
+                                </A>
                             </div>
                         </Show>
                     </div>

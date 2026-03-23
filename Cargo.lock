@@ -401,6 +401,7 @@ dependencies = [
  "axum",
  "bcrypt",
  "console_error_panic_hook",
+ "daimon-pve",
  "jsonwebtoken",
  "leptos",
  "leptos_axum",
@@ -410,6 +411,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "tokio",
+ "uuid",
  "wasm-bindgen",
  "web-sys",
 ]
