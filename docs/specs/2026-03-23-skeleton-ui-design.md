@@ -2,7 +2,7 @@
 
 ## Overview
 
-Full Rust stack skeleton using Leptos (SSR + WASM hydration) and Axum. Ports DataGate's enterprise layout as the UI foundation, adapted for Proxmox-native navigation. Single binary with embedded assets.
+Full Rust stack skeleton using Leptos (SSR + WASM hydration) and Axum. Ports DataGate's enterprise layout as the UI foundation, adapted for Proxmox-native navigation. Server binary + site/ assets directory (embeddable via rust-embed in future release builds).
 
 ## Architecture
 
@@ -22,29 +22,72 @@ daimon/
 ├── crates/
 │   ├── daimon-app/               (Leptos full-stack: Axum server + WASM client)
 │   │   ├── Cargo.toml
+│   │   ├── Leptos.toml           (cargo-leptos config: output name, site root, style, etc.)
 │   │   ├── src/
-│   │   │   ├── lib.rs            (shared: components, pages, routes)
-│   │   │   ├── main.rs           (server entrypoint: Axum)
-│   │   │   ├── auth.rs           (JWT + bcrypt)
-│   │   │   ├── db.rs             (SQLite via rusqlite)
+│   │   │   ├── app.rs            (root App component: Router + Routes)
+│   │   │   ├── lib.rs            (re-exports: app, components, pages)
+│   │   │   ├── main.rs           (server entrypoint: Axum — only compiled with "ssr" feature)
+│   │   │   ├── auth.rs           (JWT + bcrypt — server-only)
+│   │   │   ├── db.rs             (SQLite via rusqlite — server-only)
 │   │   │   ├── pages/
+│   │   │   │   ├── mod.rs
 │   │   │   │   ├── login.rs
 │   │   │   │   ├── dashboard.rs
-│   │   │   │   ├── cluster/      (nodes, vms, containers, storage)
+│   │   │   │   ├── cluster/      (mod.rs, nodes.rs, vms.rs, containers.rs, storage.rs)
 │   │   │   │   ├── incidents.rs
 │   │   │   │   ├── monitoring.rs (placeholder)
 │   │   │   │   ├── ai_console.rs (placeholder)
 │   │   │   │   └── settings.rs
 │   │   │   └── components/
+│   │   │       ├── mod.rs
 │   │   │       ├── layout.rs     (sidebar + main content area)
 │   │   │       ├── sidebar.rs    (collapsible, mobile responsive)
 │   │   │       └── icons.rs      (SVG icon helper)
 │   │   └── style/
 │   │       └── main.css          (Tailwind entry point)
-│   ├── daimon-pve/               (Proxmox API client lib — existing)
+│   ├── daimon-pve/               (Proxmox API client lib — existing, not depended on this phase)
 │   ├── daimon-agent/             (future: guest metrics agent)
 │   └── daimon-mobile/            (future: mobile companion)
 ```
+
+**daimon-bin disposition**: Replaced by daimon-app. Remove crates/daimon-bin/ during Phase 4 implementation. The binary output name remains `daimon`.
+
+## Leptos Feature Flags
+
+daimon-app uses Leptos' standard dual-compilation model:
+
+```toml
+[features]
+ssr = ["leptos/ssr", "leptos_axum", "leptos_router/ssr", "rusqlite", "jsonwebtoken", "bcrypt"]
+hydrate = ["leptos/hydrate", "leptos_router/hydrate"]
+```
+
+- **ssr**: Server-side rendering. Compiles main.rs, auth.rs, db.rs. Includes all server-only deps.
+- **hydrate**: Client-side hydration. Compiles to WASM. No server deps.
+- cargo-leptos automatically builds with `--features ssr` for the server binary and `--features hydrate` for WASM.
+- Server-only code (auth, db, API calls) guarded with `#[cfg(feature = "ssr")]`.
+
+## Leptos.toml
+
+```toml
+[leptos]
+output-name = "daimon"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+bin-features = ["ssr"]
+lib-features = ["hydrate"]
+```
+
+## Tailwind 4 Integration
+
+Tailwind 4 standalone CLI generates CSS from `style/main.css`. cargo-leptos watches the style file and triggers rebuild. The CSS entry point uses:
+
+```css
+@import "tailwindcss";
+```
+
+Tailwind scans `.rs` files for class names (configured via `@source` directive pointing at `src/`).
 
 ## Skeleton Scope
 
@@ -67,7 +110,7 @@ daimon/
 
 ### Excluded (future phases)
 
-- PVE API integration
+- PVE API integration (daimon-pve not depended on this phase)
 - Real data on any page
 - Monitoring / embedded TSDB
 - daimon agent
@@ -82,10 +125,10 @@ daimon/
 | Frontend | Leptos 0.7 (SSR + hydration) |
 | Server | Axum (via leptos_axum) |
 | Build | cargo-leptos |
-| CSS | Tailwind 4 |
+| CSS | Tailwind 4 (standalone CLI) |
 | App DB | SQLite (rusqlite) |
-| Auth | JWT (jsonwebtoken) + bcrypt (bcrypt crate) |
-| Binary | Single binary, embedded assets |
+| Auth | JWT (jsonwebtoken) + bcrypt |
+| Binary | Server binary + site/ directory |
 
 ## Theme (ported from DataGate)
 
@@ -127,34 +170,60 @@ CREATE TABLE users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'admin',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
-    username TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (username) REFERENCES users(username)
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 ```
 
-Admin user auto-seeded on first run with configurable password (env var or generated).
+All timestamps stored as UTC in the database. Display-layer converts to MYT (UTC+8).
+
+Admin user auto-seeded on first run. Password from `DAIMON_ADMIN_PASSWORD` env var, or auto-generated and printed to stdout on first boot.
 
 ## Auth Flow
 
 1. User submits login form (Leptos server function)
 2. Server verifies bcrypt hash against SQLite
-3. Server creates JWT, sets HttpOnly cookie
-4. Client-side routing checks auth state via server function
-5. Protected routes redirect to /login if no valid session
-6. Logout clears cookie + removes session from DB
+3. Server creates JWT (HS256), inserts session row, sets cookie
+4. Cookie attributes: `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` in production
+5. Protected routes: server function checks JWT signature + validates session exists in DB (supports revocation)
+6. JWT TTL: 24 hours. Session row tracks expiry for server-side validation.
+7. Logout: clears cookie + deletes session row from DB
+8. JWT signing secret: generated on first boot, persisted to SQLite config table. Survives restarts, sessions stay valid.
+
+## Route Table
+
+```
+/login                          Login (public)
+/                               Dashboard (Overview)
+/incidents                      Incidents list
+/incidents/:id                  Incident detail
+/cluster/nodes                  Nodes
+/cluster/vms                    Virtual Machines
+/cluster/containers             Containers
+/cluster/storage                Storage
+/monitoring                     Monitoring (placeholder)
+/ai-console                     AI Console (placeholder)
+/settings                       Settings
+```
+
+All routes except /login are protected (redirect to /login if no valid session).
 
 ## Design Decisions
 
-- **Leptos SSR over CSR**: faster first paint, SEO irrelevant but SSR enables server functions (direct DB access without REST API layer)
+- **Leptos SSR over CSR**: faster first paint, SSR enables server functions (direct DB access without REST API layer)
 - **SQLite over PostgreSQL**: zero-config deployment, single file, battery-included philosophy
 - **cargo-leptos**: standard build tool, contributors will expect it
 - **DataGate theme as-is**: proven design, rebrand later when product has shape
 - **Proxmox-native nav**: Nodes/VMs/Containers/Storage mirrors PVE's own UI mental model
-- **No REST API layer for skeleton**: Leptos server functions call SQLite directly. REST API added later when agent needs it.
+- **No REST API layer for skeleton**: Leptos server functions call SQLite directly. REST API added later when agent needs it
+- **Server binary + site/ dir**: cargo-leptos default output. Single-binary embedding (rust-embed) deferred to release packaging phase
+- **Session DB check on every request**: JWT is verified by signature AND checked against sessions table. Slightly slower but enables logout/revocation without token blacklists
+- **Rust edition 2024**: matches existing workspace config. Requires rustc 1.85+. Leptos 0.7 is compatible.
