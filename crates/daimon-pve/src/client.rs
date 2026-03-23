@@ -73,7 +73,9 @@ impl Client {
     pub async fn nodes(&self) -> Result<Vec<PveNode>, Error> {
         let url = format!("{}/api2/json/nodes", self.base_url);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
-        let body: ApiResponse<Vec<PveNode>> = resp.json().await?;
+        let text = resp.text().await?;
+        eprintln!("[daimon-pve] raw /nodes response: {}", &text[..text.len().min(500)]);
+        let body: ApiResponse<Vec<PveNode>> = serde_json::from_str(&text)?;
         Ok(body.data)
     }
 
@@ -81,7 +83,9 @@ impl Client {
     pub async fn node_qemu(&self, node: &str) -> Result<Vec<PveVm>, Error> {
         let url = format!("{}/api2/json/nodes/{}/qemu", self.base_url, node);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
-        let body: ApiResponse<Vec<PveVm>> = resp.json().await?;
+        let text = resp.text().await?;
+        eprintln!("[daimon-pve] raw /qemu response: {}", &text[..text.len().min(800)]);
+        let body: ApiResponse<Vec<PveVm>> = serde_json::from_str(&text)?;
         Ok(body.data)
     }
 

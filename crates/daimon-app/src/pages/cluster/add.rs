@@ -108,7 +108,7 @@ pub fn AddCluster() -> impl IntoView {
                 <div>
                     <label class="block text-sm text-text-secondary mb-1">"API Token"</label>
                     <input
-                        type="password"
+                        type="text"
                         class="w-full px-3 py-2 bg-surface-tertiary border border-border-primary rounded-md text-text-primary text-sm focus:outline-none focus:border-accent-amber"
                         placeholder="user@realm!tokenname=token-value"
                         prop:value=move || token.get()

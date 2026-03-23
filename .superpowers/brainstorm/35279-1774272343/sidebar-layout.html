@@ -1,0 +1,92 @@
+<h2>Sidebar Layout: Dynamic PVE Clusters</h2>
+<p class="subtitle">How should the sidebar organize multiple PVE clusters?</p>
+
+<div class="cards">
+  <!-- Option A -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0D1117;color:#E6EDF3;padding:16px;font-family:monospace;font-size:11px;border-radius:6px;min-height:320px;">
+        <div style="border-bottom:1px solid #21262D;padding-bottom:8px;margin-bottom:8px;">
+          <span style="color:#E6EDF3;font-weight:bold;">dai</span><span style="color:#F59E0B;font-weight:bold;">mon</span>
+        </div>
+        <div style="padding:4px 0;color:#F59E0B;background:rgba(245,158,11,0.1);border-radius:4px;padding-left:8px;">Overview</div>
+        <div style="padding:4px 8px;color:#9CA3AF;">Incidents</div>
+        <div style="border-top:1px solid #21262D;margin:8px 0;"></div>
+        <div style="padding:4px 8px;color:#6B7280;font-size:9px;text-transform:uppercase;letter-spacing:1px;">PVE Clusters</div>
+        <div style="padding:4px 8px;color:#F59E0B;background:rgba(245,158,11,0.1);border-radius:4px;margin-left:8px;">nargothrond</div>
+        <div style="padding:4px 8px;color:#9CA3AF;margin-left:8px;">formenos</div>
+        <div style="padding:4px 8px;color:#4CAF50;cursor:pointer;margin-left:8px;">+ Add Cluster</div>
+        <div style="border-top:1px solid #21262D;margin:8px 0;"></div>
+        <div style="padding:4px 8px;color:#9CA3AF;">Settings</div>
+        <div style="margin-top:auto;border-top:1px solid #21262D;padding-top:8px;margin-top:20px;">
+          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#4CAF50;margin-right:4px;"></span>
+          <span style="color:#6B7280;font-size:10px;">Connected</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: Clusters in Sidebar</h3>
+      <p>Cluster names listed directly in sidebar. Click cluster → main pane shows horizontal tabs (Nodes/VMs/Containers/Storage). Clean, PegaProx-style.</p>
+    </div>
+  </div>
+
+  <!-- Option B -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0D1117;color:#E6EDF3;padding:16px;font-family:monospace;font-size:11px;border-radius:6px;min-height:320px;">
+        <div style="border-bottom:1px solid #21262D;padding-bottom:8px;margin-bottom:8px;">
+          <span style="color:#E6EDF3;font-weight:bold;">dai</span><span style="color:#F59E0B;font-weight:bold;">mon</span>
+        </div>
+        <div style="padding:4px 0;color:#F59E0B;background:rgba(245,158,11,0.1);border-radius:4px;padding-left:8px;">Overview</div>
+        <div style="padding:4px 8px;color:#9CA3AF;">Incidents</div>
+        <div style="border-top:1px solid #21262D;margin:8px 0;"></div>
+        <div style="padding:4px 8px;color:#6B7280;font-size:9px;text-transform:uppercase;letter-spacing:1px;">
+          ▾ nargothrond
+        </div>
+        <div style="padding:3px 8px;color:#F59E0B;background:rgba(245,158,11,0.1);border-radius:4px;margin-left:16px;font-size:10px;">
+          <span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:#F59E0B;margin-right:4px;"></span>Nodes
+        </div>
+        <div style="padding:3px 8px;color:#6B7280;margin-left:16px;font-size:10px;">
+          <span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:#6B7280;margin-right:4px;"></span>VMs
+        </div>
+        <div style="padding:3px 8px;color:#6B7280;margin-left:16px;font-size:10px;">
+          <span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:#6B7280;margin-right:4px;"></span>Containers
+        </div>
+        <div style="padding:3px 8px;color:#6B7280;margin-left:16px;font-size:10px;">
+          <span style="display:inline-block;width:4px;height:4px;border-radius:50%;background:#6B7280;margin-right:4px;"></span>Storage
+        </div>
+        <div style="padding:4px 8px;color:#6B7280;font-size:9px;text-transform:uppercase;letter-spacing:1px;">
+          ▸ formenos
+        </div>
+        <div style="padding:4px 8px;color:#4CAF50;cursor:pointer;">+ Add Cluster</div>
+        <div style="border-top:1px solid #21262D;margin:8px 0;"></div>
+        <div style="padding:4px 8px;color:#9CA3AF;">Settings</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: Clusters with Sub-items</h3>
+      <p>Each cluster expands in sidebar to show Nodes/VMs/Containers/Storage as sub-items. Like current Phase 4 "Cluster" section but per-cluster. Deeper sidebar, less horizontal tabs.</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons" style="margin-top:24px;">
+  <div class="pros">
+    <h4>Option A (Recommended)</h4>
+    <ul>
+      <li>Sidebar stays clean — just cluster names</li>
+      <li>Horizontal tabs match PegaProx / PVE pattern</li>
+      <li>Scales well with many clusters</li>
+      <li>Main pane has more room for data</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>Option B</h4>
+    <ul>
+      <li>See all sections at a glance — no need to click first</li>
+      <li>Familiar from Phase 4 skeleton</li>
+      <li>Gets long with 3+ clusters (sidebar overflow)</li>
+      <li>Duplicates current DataGate pattern</li>
+    </ul>
+  </div>
+</div>

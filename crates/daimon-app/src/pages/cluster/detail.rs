@@ -25,7 +25,11 @@ pub async fn get_cluster_nodes(cluster_id: String) -> Result<Vec<MetricRow>, Ser
     let client = clients.get(&cluster_id)
         .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
 
-    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(format!("PVE nodes() failed: {}", e)))?;
+    leptos::logging::log!("[daimon] get_cluster_nodes: got {} nodes", nodes.len());
+    for n in &nodes {
+        leptos::logging::log!("[daimon]   node={} status={} cpu={} mem={}/{}", n.node, n.status, n.cpu, n.mem, n.maxmem);
+    }
     Ok(nodes.iter().map(|n| {
         let ram_pct = if n.maxmem > 0 { (n.mem as f64 / n.maxmem as f64) * 100.0 } else { 0.0 };
         MetricRow {
@@ -47,11 +51,14 @@ pub async fn get_cluster_vms(cluster_id: String) -> Result<Vec<MetricRow>, Serve
     let client = clients.get(&cluster_id)
         .ok_or_else(|| ServerFnError::new("Cluster client not found"))?;
 
-    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    let nodes = client.nodes().await.map_err(|e| ServerFnError::new(format!("PVE nodes() for VMs failed: {}", e)))?;
+    leptos::logging::log!("[daimon] get_cluster_vms: {} nodes, checking for online", nodes.len());
     let mut rows = Vec::new();
     for node in &nodes {
+        leptos::logging::log!("[daimon]   node={} status={}", node.node, node.status);
         if node.status != "online" { continue; }
-        let vms = client.node_qemu(&node.node).await.map_err(|e| ServerFnError::new(e.to_string()))?;
+        let vms = client.node_qemu(&node.node).await.map_err(|e| ServerFnError::new(format!("PVE qemu({}) failed: {}", node.node, e)))?;
+        leptos::logging::log!("[daimon]   node={} has {} VMs", node.node, vms.len());
         for vm in &vms {
             let ram_pct = if vm.maxmem > 0 { (vm.mem as f64 / vm.maxmem as f64) * 100.0 } else { 0.0 };
             rows.push(MetricRow {
@@ -116,24 +123,86 @@ pub async fn get_cluster_storage(cluster_id: String) -> Result<Vec<MetricRow>, S
     }).collect())
 }
 
+#[server]
+pub async fn delete_cluster(cluster_id: String) -> Result<(), ServerFnError> {
+    use crate::state::AppState;
+    use crate::db;
+
+    let state = expect_context::<AppState>();
+
+    {
+        let conn = state.db.lock().await;
+        db::delete_cluster(&conn, &cluster_id)
+            .map_err(|e| ServerFnError::new(e.to_string()))?;
+    }
+
+    state.pve_clients.write().await.remove(&cluster_id);
+
+    Ok(())
+}
+
 #[component]
 pub fn ClusterDetail() -> impl IntoView {
     let params = use_params_map();
     let cluster_id = move || params.get().get("cluster_id").unwrap_or_default();
+    let (confirming_delete, set_confirming_delete) = signal(false);
 
     let info = Resource::new(
         move || cluster_id(),
         |cid| get_cluster_info(cid),
     );
 
+    let on_delete = move |_| {
+        let cid = cluster_id();
+        leptos::task::spawn_local(async move {
+            if let Ok(()) = delete_cluster(cid).await {
+                #[cfg(feature = "hydrate")]
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().set_href("/");
+                }
+            }
+        });
+    };
+
     view! {
         <div>
             <Suspense fallback=|| view! { <div class="text-text-muted text-sm">"Loading cluster..."</div> }>
                 {move || info.get().map(|result| match result {
                     Ok((name, api_url)) => view! {
-                        <div class="mb-4">
-                            <h1 class="text-xl font-semibold text-text-primary">{name}</h1>
-                            <p class="text-text-muted text-xs">{api_url}</p>
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h1 class="text-xl font-semibold text-text-primary">{name}</h1>
+                                <p class="text-text-muted text-xs">{api_url}</p>
+                            </div>
+                            <div>
+                                <Show
+                                    when=move || confirming_delete.get()
+                                    fallback=move || view! {
+                                        <button
+                                            on:click=move |_| set_confirming_delete.set(true)
+                                            class="px-3 py-1.5 text-xs text-text-muted hover:text-accent-danger border border-border-primary rounded-md hover:border-accent-danger/50 transition-colors"
+                                        >
+                                            "Delete"
+                                        </button>
+                                    }
+                                >
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-accent-danger text-xs">"Confirm?"</span>
+                                        <button
+                                            on:click=on_delete
+                                            class="px-3 py-1.5 text-xs bg-accent-danger text-white rounded-md hover:bg-accent-danger/80 transition-colors"
+                                        >
+                                            "Yes, delete"
+                                        </button>
+                                        <button
+                                            on:click=move |_| set_confirming_delete.set(false)
+                                            class="px-3 py-1.5 text-xs text-text-muted border border-border-primary rounded-md"
+                                        >
+                                            "Cancel"
+                                        </button>
+                                    </div>
+                                </Show>
+                            </div>
                         </div>
                     }.into_any(),
                     Err(e) => view! {
