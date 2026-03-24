@@ -5,6 +5,7 @@ use crate::components::detail_layout::{DetailLayout, DetailTab};
 use crate::components::summary_bar::{SummaryBar, SummaryItem};
 use crate::components::sparkline::Sparkline;
 use crate::components::table::format_bytes;
+use super::detail::RrdPoint;
 
 #[component]
 pub fn StorageDetail() -> impl IntoView {
@@ -140,7 +141,7 @@ pub fn StorageOverview() -> impl IntoView {
 
         // Storage usage chart
         <Suspense fallback=|| view! { <div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div> }>
-            {move || rrd.get().map(|result| match result {
+            {move || rrd.get().map(|result: Result<Vec<RrdPoint>, ServerFnError>| match result {
                 Ok(points) => {
                     let used: Vec<f64> = points.iter().filter_map(|p| p.disk).collect();
                     let total: Vec<f64> = points.iter().filter_map(|p| p.maxdisk).collect();

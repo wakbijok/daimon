@@ -5,6 +5,7 @@ use crate::components::detail_layout::{DetailLayout, DetailTab};
 use crate::components::summary_bar::{SummaryBar, SummaryItem};
 use crate::components::sparkline::Sparkline;
 use crate::components::table::{format_bytes, format_uptime};
+use super::detail::{RrdPoint, AppGuestConfig};
 
 #[component]
 pub fn VmDetail() -> impl IntoView {
@@ -219,10 +220,10 @@ pub fn GuestOverviewInner(
 
         // Configuration section
         <Suspense fallback=|| view! { <div class="h-24 bg-surface-tertiary rounded-lg animate-pulse mb-4"></div> }>
-            {move || config.get().map(|result| match result {
+            {move || config.get().map(|result: Result<AppGuestConfig, ServerFnError>| match result {
                 Ok(cfg) => {
-                    let cores = cfg.cores.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
-                    let sockets = cfg.sockets.map(|s| s.to_string()).unwrap_or_else(|| "1".to_string());
+                    let cores = cfg.cores.map(|c: u32| c.to_string()).unwrap_or_else(|| "-".to_string());
+                    let sockets = cfg.sockets.map(|s: u32| s.to_string()).unwrap_or_else(|| "1".to_string());
                     let memory_mb = cfg.memory.unwrap_or(0);
                     let memory_str = if memory_mb > 0 { format!("{} MiB", memory_mb) } else { "-".to_string() };
                     let ostype = cfg.ostype.clone().unwrap_or_else(|| "-".to_string());
@@ -287,7 +288,7 @@ pub fn GuestOverviewInner(
 
         // RRD chart panels (2x2 grid)
         <Suspense fallback=|| view! { <div class="grid grid-cols-2 gap-4"><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div></div> }>
-            {move || rrd.get().map(|result| match result {
+            {move || rrd.get().map(|result: Result<Vec<RrdPoint>, ServerFnError>| match result {
                 Ok(points) => {
                     let cpu: Vec<f64> = points.iter().filter_map(|p| p.cpu).map(|v| v * 100.0).collect();
                     let mem: Vec<f64> = points.iter().filter_map(|p| p.mem).collect();

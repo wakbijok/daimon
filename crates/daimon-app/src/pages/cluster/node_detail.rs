@@ -5,6 +5,7 @@ use crate::components::detail_layout::{DetailLayout, DetailTab};
 use crate::components::summary_bar::{SummaryBar, SummaryItem};
 use crate::components::sparkline::Sparkline;
 use crate::components::table::{format_bytes, format_uptime};
+use super::detail::{RrdPoint, AppNodeStatus};
 
 #[component]
 pub fn NodeDetail() -> impl IntoView {
@@ -61,15 +62,15 @@ pub fn NodeOverview() -> impl IntoView {
         // Summary bar from node status
         <Suspense fallback=|| view! { <div class="h-16 bg-surface-secondary rounded-lg animate-pulse mb-4"></div> }>
             {move || {
-                let rrd_data = rrd.get().and_then(|r| r.ok());
+                let rrd_data: Option<Vec<RrdPoint>> = rrd.get().and_then(|r: Result<Vec<RrdPoint>, ServerFnError>| r.ok());
                 let cpu_spark: Vec<f64> = rrd_data.as_ref()
-                    .map(|pts| pts.iter().filter_map(|p| p.cpu).map(|v| v * 100.0).collect())
+                    .map(|pts: &Vec<RrdPoint>| pts.iter().filter_map(|p| p.cpu).map(|v| v * 100.0).collect())
                     .unwrap_or_default();
                 let mem_spark: Vec<f64> = rrd_data.as_ref()
-                    .map(|pts| pts.iter().filter_map(|p| p.mem).collect())
+                    .map(|pts: &Vec<RrdPoint>| pts.iter().filter_map(|p| p.mem).collect())
                     .unwrap_or_default();
 
-                status.get().map(|result| match result {
+                status.get().map(|result: Result<AppNodeStatus, ServerFnError>| match result {
                     Ok(s) => {
                         let cpu_pct = format!("{:.1}%", s.cpu * 100.0);
                         let mem_pct = s.memory.as_ref().map(|m| {
@@ -141,7 +142,7 @@ pub fn NodeOverview() -> impl IntoView {
 
         // RRD chart panels (2x2 grid)
         <Suspense fallback=|| view! { <div class="grid grid-cols-2 gap-4 mb-4"><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div><div class="h-28 bg-surface-tertiary rounded-lg animate-pulse"></div></div> }>
-            {move || rrd.get().map(|result| match result {
+            {move || rrd.get().map(|result: Result<Vec<RrdPoint>, ServerFnError>| match result {
                 Ok(points) => {
                     let cpu: Vec<f64> = points.iter().filter_map(|p| p.cpu).map(|v| v * 100.0).collect();
                     let mem: Vec<f64> = points.iter().filter_map(|p| p.mem).collect();

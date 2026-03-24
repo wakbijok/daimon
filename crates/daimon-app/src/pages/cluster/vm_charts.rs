@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use crate::components::sparkline::Sparkline;
+use super::detail::RrdPoint;
 
 #[component]
 pub fn VmCharts() -> impl IntoView {
@@ -98,7 +99,7 @@ pub fn GuestChartsInner(
 
         // Chart panels
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading charts..."</p> }>
-            {move || rrd.get().map(|result| match result {
+            {move || rrd.get().map(|result: Result<Vec<RrdPoint>, ServerFnError>| match result {
                 Ok(points) => {
                     let cpu: Vec<f64> = points.iter().filter_map(|p| p.cpu).map(|v| v * 100.0).collect();
                     let mem: Vec<f64> = points.iter().filter_map(|p| p.mem).collect();

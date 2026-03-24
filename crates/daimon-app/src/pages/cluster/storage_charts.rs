@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use crate::components::sparkline::Sparkline;
+use super::detail::RrdPoint;
 
 #[component]
 pub fn StorageCharts() -> impl IntoView {
@@ -47,7 +48,7 @@ pub fn StorageCharts() -> impl IntoView {
 
         // Chart panel — storage RRD has disk/maxdisk
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading charts..."</p> }>
-            {move || rrd.get().map(|result| match result {
+            {move || rrd.get().map(|result: Result<Vec<RrdPoint>, ServerFnError>| match result {
                 Ok(points) => {
                     let used: Vec<f64> = points.iter().filter_map(|p| p.disk).collect();
                     let total: Vec<f64> = points.iter().filter_map(|p| p.maxdisk).collect();

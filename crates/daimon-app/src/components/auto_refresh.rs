@@ -41,7 +41,8 @@ pub fn RefreshSelector() -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
         use gloo_timers::callback::Interval;
-        let handle = StoredValue::new(None::<Interval>);
+        use leptos::prelude::LocalStorage;
+        let handle = StoredValue::<Option<Interval>, LocalStorage>::new_local(None::<Interval>);
 
         Effect::new(move |_| {
             let secs = interval_secs.get();
