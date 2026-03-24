@@ -130,6 +130,100 @@ impl Client {
         let body: ApiResponse<Vec<PveStorage>> = resp.json().await?;
         Ok(body.data)
     }
+
+    /// GET /api2/json/nodes/{node}/rrddata — node historical metrics
+    pub async fn node_rrddata(&self, node: &str, timeframe: crate::RrdTimeframe) -> Result<Vec<crate::RrdDataPoint>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/rrddata?timeframe={}", self.base_url, node, timeframe.as_str());
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<crate::RrdDataPoint>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/qemu/{vmid}/rrddata — VM historical metrics
+    pub async fn qemu_rrddata(&self, node: &str, vmid: u32, timeframe: crate::RrdTimeframe) -> Result<Vec<crate::RrdDataPoint>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/qemu/{}/rrddata?timeframe={}", self.base_url, node, vmid, timeframe.as_str());
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<crate::RrdDataPoint>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/lxc/{vmid}/rrddata — LXC historical metrics
+    pub async fn lxc_rrddata(&self, node: &str, vmid: u32, timeframe: crate::RrdTimeframe) -> Result<Vec<crate::RrdDataPoint>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/lxc/{}/rrddata?timeframe={}", self.base_url, node, vmid, timeframe.as_str());
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<crate::RrdDataPoint>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/storage/{storage}/rrddata — storage historical metrics
+    pub async fn storage_rrddata(&self, node: &str, storage: &str, timeframe: crate::RrdTimeframe) -> Result<Vec<crate::RrdDataPoint>, Error> {
+        let url = format!("{}/api2/json/nodes/{}/storage/{}/rrddata?timeframe={}", self.base_url, node, storage, timeframe.as_str());
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<Vec<crate::RrdDataPoint>> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/qemu/{vmid}/status/current — detailed VM status
+    pub async fn qemu_status(&self, node: &str, vmid: u32) -> Result<crate::QemuStatus, Error> {
+        let url = format!("{}/api2/json/nodes/{}/qemu/{}/status/current", self.base_url, node, vmid);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<crate::QemuStatus> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/lxc/{vmid}/status/current — detailed LXC status
+    pub async fn lxc_status(&self, node: &str, vmid: u32) -> Result<crate::LxcStatus, Error> {
+        let url = format!("{}/api2/json/nodes/{}/lxc/{}/status/current", self.base_url, node, vmid);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let body: ApiResponse<crate::LxcStatus> = resp.json().await?;
+        Ok(body.data)
+    }
+
+    /// GET /api2/json/nodes/{node}/qemu/{vmid}/config — VM configuration
+    pub async fn qemu_config(&self, node: &str, vmid: u32) -> Result<crate::GuestConfig, Error> {
+        let url = format!("{}/api2/json/nodes/{}/qemu/{}/config", self.base_url, node, vmid);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let text = resp.text().await?;
+        let raw: ApiResponse<serde_json::Value> = serde_json::from_str(&text)?;
+        let mut config: crate::GuestConfig = serde_json::from_value(raw.data.clone())?;
+        if let Some(obj) = raw.data.as_object() {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    if k.starts_with("net") && k[3..].parse::<u32>().is_ok() {
+                        config.net_devices.push(s.to_string());
+                    } else if (k.starts_with("scsi") && k[4..].parse::<u32>().is_ok())
+                        || (k.starts_with("ide") && k[3..].parse::<u32>().is_ok())
+                        || (k.starts_with("virtio") && k[6..].parse::<u32>().is_ok())
+                        || (k.starts_with("sata") && k[4..].parse::<u32>().is_ok())
+                    {
+                        config.disk_devices.push(format!("{}: {}", k, s));
+                    }
+                }
+            }
+        }
+        Ok(config)
+    }
+
+    /// GET /api2/json/nodes/{node}/lxc/{vmid}/config — LXC configuration
+    pub async fn lxc_config(&self, node: &str, vmid: u32) -> Result<crate::GuestConfig, Error> {
+        let url = format!("{}/api2/json/nodes/{}/lxc/{}/config", self.base_url, node, vmid);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let text = resp.text().await?;
+        let raw: ApiResponse<serde_json::Value> = serde_json::from_str(&text)?;
+        let mut config: crate::GuestConfig = serde_json::from_value(raw.data.clone())?;
+        if let Some(obj) = raw.data.as_object() {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    if k.starts_with("net") && k[3..].parse::<u32>().is_ok() {
+                        config.net_devices.push(s.to_string());
+                    } else if k.starts_with("rootfs") || (k.starts_with("mp") && k[2..].parse::<u32>().is_ok()) {
+                        config.disk_devices.push(format!("{}: {}", k, s));
+                    }
+                }
+            }
+        }
+        Ok(config)
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +256,14 @@ mod tests {
             "root@pam",
         );
         assert_eq!(client.base_url, "https://pve:8006");
+    }
+
+    #[test]
+    fn rrddata_url_uses_timeframe_string() {
+        assert_eq!(crate::RrdTimeframe::Hour.as_str(), "hour");
+        assert_eq!(crate::RrdTimeframe::Day.as_str(), "day");
+        assert_eq!(crate::RrdTimeframe::Week.as_str(), "week");
+        assert_eq!(crate::RrdTimeframe::Month.as_str(), "month");
+        assert_eq!(crate::RrdTimeframe::Year.as_str(), "year");
     }
 }
