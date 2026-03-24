@@ -1,6 +1,7 @@
 pub mod icons;
 pub mod layout;
 pub mod sidebar;
+pub mod sortable_table;
 pub mod sparkline;
 pub mod tabs;
 pub mod table;
