@@ -6,6 +6,7 @@ use crate::auth_guard::get_current_user;
 
 #[component]
 pub fn Layout() -> impl IntoView {
+    crate::components::theme::provide_theme();
     let user = Resource::new(|| (), |_| get_current_user());
 
     view! {
