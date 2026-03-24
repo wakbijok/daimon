@@ -17,3 +17,14 @@
     --color-accent-danger: #F44336;
     --color-accent-purple: #A78BFA;
 }
+
+/* Light theme overrides — applied when <html class="light"> */
+.light {
+    --color-surface-primary: #FFFFFF;
+    --color-surface-secondary: #F6F8FA;
+    --color-surface-tertiary: #F0F2F5;
+    --color-text-primary: #1F2328;
+    --color-text-secondary: #656D76;
+    --color-text-muted: #8B949E;
+    --color-border-primary: #D0D7DE;
+}

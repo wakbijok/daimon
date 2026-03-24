@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use crate::components::table::NodeTable;
+use crate::components::sortable_table::SortableTable;
+use crate::components::table::NodeRow;
 use super::detail::get_cluster_nodes;
 
 #[component]
@@ -13,7 +14,7 @@ pub fn Nodes() -> impl IntoView {
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading nodes..."</p> }>
             {move || data.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! { <p class="text-text-muted text-sm">"No nodes found"</p> }.into_any(),
-                Ok(rows) => view! { <NodeTable rows=rows /> }.into_any(),
+                Ok(rows) => view! { <SortableTable<NodeRow> rows=rows table_id="nodes" /> }.into_any(),
                 Err(e) => view! { <p class="text-accent-danger text-sm">{e.to_string()}</p> }.into_any(),
             })}
         </Suspense>

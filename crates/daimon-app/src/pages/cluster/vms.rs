@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use crate::components::table::GuestTable;
+use crate::components::sortable_table::SortableTable;
+use crate::components::table::GuestRow;
 use super::detail::get_cluster_vms;
 
 #[component]
@@ -13,7 +14,7 @@ pub fn Vms() -> impl IntoView {
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading VMs..."</p> }>
             {move || data.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! { <p class="text-text-muted text-sm">"No VMs found"</p> }.into_any(),
-                Ok(rows) => view! { <GuestTable rows=rows guest_type="VM" /> }.into_any(),
+                Ok(rows) => view! { <SortableTable<GuestRow> rows=rows table_id="vms" /> }.into_any(),
                 Err(e) => view! { <p class="text-accent-danger text-sm">{e.to_string()}</p> }.into_any(),
             })}
         </Suspense>

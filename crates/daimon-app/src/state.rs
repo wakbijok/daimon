@@ -3,10 +3,31 @@ use std::sync::Arc;
 #[cfg(feature = "ssr")]
 use std::collections::HashMap;
 
+/// Cached PVE data — populated by background poller, read by WS handler
+#[cfg(feature = "ssr")]
+pub struct PveCache {
+    pub resources: HashMap<String, Vec<daimon_pve::PveResource>>,
+    pub node_rrd: HashMap<(String, String), Vec<daimon_pve::RrdDataPoint>>,
+    pub last_poll: HashMap<String, std::time::Instant>,
+}
+
+#[cfg(feature = "ssr")]
+impl PveCache {
+    pub fn new() -> Self {
+        Self {
+            resources: HashMap::new(),
+            node_rrd: HashMap::new(),
+            last_poll: HashMap::new(),
+        }
+    }
+}
+
 #[cfg(feature = "ssr")]
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
     pub jwt_secret: String,
     pub pve_clients: Arc<tokio::sync::RwLock<HashMap<String, daimon_pve::Client>>>,
+    pub pve_cache: Arc<tokio::sync::RwLock<PveCache>>,
+    pub ws_broadcast: tokio::sync::broadcast::Sender<String>,
 }

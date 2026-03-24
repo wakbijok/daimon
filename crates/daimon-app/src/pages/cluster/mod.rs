@@ -1,6 +1,16 @@
+pub mod agent_placeholder;
 pub mod detail;
 pub mod add;
 pub mod nodes;
 pub mod vms;
 pub mod containers;
 pub mod storage;
+pub mod node_detail;
+pub mod node_charts;
+pub mod vm_detail;
+pub mod vm_charts;
+pub mod lxc_detail;
+pub mod lxc_charts;
+pub mod storage_detail;
+pub mod storage_usage;
+pub mod storage_charts;

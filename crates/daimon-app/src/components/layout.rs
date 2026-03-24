@@ -2,10 +2,13 @@ use leptos::prelude::*;
 use leptos_router::components::Outlet;
 use super::sidebar::Sidebar;
 use super::user_menu::UserMenu;
+use super::auto_refresh::{provide_refresh, RefreshSelector};
 use crate::auth_guard::get_current_user;
 
 #[component]
 pub fn Layout() -> impl IntoView {
+    crate::components::theme::provide_theme();
+    provide_refresh();
     let user = Resource::new(|| (), |_| get_current_user());
 
     view! {
@@ -17,7 +20,7 @@ pub fn Layout() -> impl IntoView {
                         <div class="flex-1 min-w-0 flex flex-col">
                             // Global top bar
                             <header class="h-12 flex items-center justify-between px-4 sm:px-6 border-b border-border-primary/50 bg-surface-secondary/50 shrink-0">
-                                <div />
+                                <RefreshSelector />
                                 <UserMenu username=username.clone() role=role.clone() />
                             </header>
                             <main class="flex-1 p-4 sm:p-6">

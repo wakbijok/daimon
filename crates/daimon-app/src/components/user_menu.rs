@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
+use crate::components::theme::{ThemeSignal, toggle_theme};
 
 #[component]
 pub fn UserMenu(username: String, role: String) -> impl IntoView {
@@ -31,6 +32,17 @@ pub fn UserMenu(username: String, role: String) -> impl IntoView {
                                 <div class="text-sm font-medium text-text-primary">{u}</div>
                                 <div class="text-xs text-text-muted">{r}</div>
                             </div>
+                            <button
+                                on:click=move |_| toggle_theme()
+                                class="w-full text-left px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
+                            >
+                                {move || {
+                                    let is_dark = use_context::<ThemeSignal>()
+                                        .map(|ThemeSignal(s)| s.get() == "dark")
+                                        .unwrap_or(true);
+                                    if is_dark { "☀ Light mode" } else { "☾ Dark mode" }
+                                }}
+                            </button>
                             <A
                                 href="/settings"
                                 attr:class="block px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"

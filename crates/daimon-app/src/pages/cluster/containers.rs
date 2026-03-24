@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use crate::components::table::GuestTable;
+use crate::components::sortable_table::SortableTable;
+use crate::components::table::GuestRow;
 use super::detail::get_cluster_lxcs;
 
 #[component]
@@ -13,7 +14,7 @@ pub fn Containers() -> impl IntoView {
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading containers..."</p> }>
             {move || data.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! { <p class="text-text-muted text-sm">"No containers found"</p> }.into_any(),
-                Ok(rows) => view! { <GuestTable rows=rows guest_type="container" /> }.into_any(),
+                Ok(rows) => view! { <SortableTable<GuestRow> rows=rows table_id="containers" /> }.into_any(),
                 Err(e) => view! { <p class="text-accent-danger text-sm">{e.to_string()}</p> }.into_any(),
             })}
         </Suspense>
