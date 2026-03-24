@@ -736,7 +736,7 @@ pub fn SortableTable<T: TableRow + Send + Sync>(
             <div class="flex items-center gap-2">
                 <button
                     on:click=on_prev
-                    disabled=move || current_page.get() == 0
+                    prop:disabled=move || current_page.get() == 0
                     class="px-2 py-1 text-xs text-text-muted border border-border-primary rounded-md hover:text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                     "Prev"
@@ -746,7 +746,7 @@ pub fn SortableTable<T: TableRow + Send + Sync>(
                 </span>
                 <button
                     on:click=on_next
-                    disabled=move || current_page.get() + 1 >= total_page_count()
+                    prop:disabled=move || current_page.get() + 1 >= total_page_count()
                     class="px-2 py-1 text-xs text-text-muted border border-border-primary rounded-md hover:text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                     "Next"
