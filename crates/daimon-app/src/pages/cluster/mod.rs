@@ -1,3 +1,4 @@
+pub mod agent_placeholder;
 pub mod detail;
 pub mod add;
 pub mod nodes;
