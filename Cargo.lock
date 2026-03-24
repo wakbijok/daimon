@@ -402,6 +402,8 @@ dependencies = [
  "bcrypt",
  "console_error_panic_hook",
  "daimon-pve",
+ "gloo-timers",
+ "js-sys",
  "jsonwebtoken",
  "leptos",
  "leptos_axum",
@@ -410,6 +412,7 @@ dependencies = [
  "rand",
  "rusqlite",
  "serde",
+ "serde_json",
  "tokio",
  "uuid",
  "wasm-bindgen",
@@ -740,6 +743,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
