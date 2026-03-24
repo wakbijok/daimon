@@ -125,6 +125,7 @@ pub async fn get_cluster_storage(cluster_id: String) -> Result<Vec<StorageRow>, 
 
     Ok(resources.iter().map(|r| StorageRow {
         name: r.storage.clone().unwrap_or_else(|| r.name.clone()),
+        node: r.node.clone(),
         storage_type: r.plugintype.clone().unwrap_or_default(),
         content: r.content.clone().unwrap_or_default(),
         used: r.disk,

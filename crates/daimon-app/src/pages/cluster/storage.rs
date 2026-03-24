@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use crate::components::table::StorageTable;
+use crate::components::sortable_table::SortableTable;
+use crate::components::table::StorageRow;
 use super::detail::get_cluster_storage;
 
 #[component]
@@ -13,7 +14,7 @@ pub fn Storage() -> impl IntoView {
         <Suspense fallback=|| view! { <p class="text-text-muted text-sm">"Loading storage..."</p> }>
             {move || data.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! { <p class="text-text-muted text-sm">"No storage found"</p> }.into_any(),
-                Ok(rows) => view! { <StorageTable rows=rows /> }.into_any(),
+                Ok(rows) => view! { <SortableTable<StorageRow> rows=rows table_id="storage" /> }.into_any(),
                 Err(e) => view! { <p class="text-accent-danger text-sm">{e.to_string()}</p> }.into_any(),
             })}
         </Suspense>

@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use crate::components::sortable_table::{TableRow, ColumnDef, SortType};
 
 pub fn format_bytes(bytes: u64) -> String {
     if bytes == 0 { return "0 B".to_string(); }
@@ -52,52 +53,87 @@ pub struct NodeRow {
     pub uptime: u64,
 }
 
-#[component]
-pub fn NodeTable(rows: Vec<NodeRow>) -> impl IntoView {
-    view! {
-        <table class="w-full text-sm">
-            <thead>
-                <tr class="border-b border-border-primary text-text-muted text-[11px] uppercase tracking-wider">
-                    <th class="text-left py-3 px-4 font-medium">"Node"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Status"</th>
-                    <th class="text-left py-3 px-4 font-medium">"CPU"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Memory"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Disk"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Uptime"</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows.into_iter().map(|r| {
-                    let online = r.status == "online";
-                    let mem_pct = if r.mem_total > 0 { (r.mem_used as f64 / r.mem_total as f64) * 100.0 } else { 0.0 };
-                    let disk_pct = if r.disk_total > 0 { (r.disk_used as f64 / r.disk_total as f64) * 100.0 } else { 0.0 };
-                    view! {
-                        <tr class="border-b border-border-primary/50 hover:bg-surface-tertiary/50">
-                            <td class="py-3 px-4 text-text-primary font-medium">{r.name.clone()}</td>
-                            <td class="py-3 px-4">
-                                <span class="inline-flex items-center gap-1.5 text-[12px]">
-                                    <span class=format!("w-2 h-2 rounded-full {}", if online { "bg-accent-green" } else { "bg-accent-danger" })></span>
-                                    {if online { "Online" } else { "Offline" }}
-                                </span>
-                            </td>
-                            <td class="py-3 px-4">
-                                {pct_bar(r.cpu_pct, "bg-accent-green")}
-                                <div class="text-text-muted text-[10px] mt-0.5">{format!("{:.0} vCPU", r.cpu_count)}</div>
-                            </td>
-                            <td class="py-3 px-4">
-                                {pct_bar(mem_pct, "bg-accent-amber")}
-                                <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(r.mem_used), format_bytes(r.mem_total))}</div>
-                            </td>
-                            <td class="py-3 px-4">
-                                {pct_bar(disk_pct, "bg-accent-purple")}
-                                <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(r.disk_used), format_bytes(r.disk_total))}</div>
-                            </td>
-                            <td class="py-3 px-4 text-text-secondary text-[13px]">{format_uptime(r.uptime)}</td>
-                        </tr>
-                    }
-                }).collect_view()}
-            </tbody>
-        </table>
+impl TableRow for NodeRow {
+    fn columns() -> Vec<ColumnDef> {
+        vec![
+            ColumnDef { key: "name", label: "Node", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "status", label: "Status", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "cpu", label: "CPU", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "memory", label: "Memory", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "disk", label: "Disk", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "uptime", label: "Uptime", sortable: true, default_hidden: false, sort_type: SortType::Numeric },
+        ]
+    }
+
+    fn cell_value(&self, col: &str) -> String {
+        match col {
+            "name" => self.name.clone(),
+            "status" => self.status.clone(),
+            "cpu" => format!("{:.2}", self.cpu_pct),
+            "memory" => {
+                let pct = if self.mem_total > 0 { (self.mem_used as f64 / self.mem_total as f64) * 100.0 } else { 0.0 };
+                format!("{:.2}", pct)
+            }
+            "disk" => {
+                let pct = if self.disk_total > 0 { (self.disk_used as f64 / self.disk_total as f64) * 100.0 } else { 0.0 };
+                format!("{:.2}", pct)
+            }
+            "uptime" => self.uptime.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn cell_view(&self, col: &str) -> AnyView {
+        match col {
+            "name" => view! {
+                <span class="text-text-primary font-medium">{self.name.clone()}</span>
+            }.into_any(),
+            "status" => {
+                let online = self.status == "online";
+                view! {
+                    <span class="inline-flex items-center gap-1.5 text-[12px]">
+                        <span class=format!("w-2 h-2 rounded-full {}", if online { "bg-accent-green" } else { "bg-accent-danger" })></span>
+                        {if online { "Online" } else { "Offline" }}
+                    </span>
+                }.into_any()
+            }
+            "cpu" => view! {
+                <div>
+                    {pct_bar(self.cpu_pct, "bg-accent-green")}
+                    <div class="text-text-muted text-[10px] mt-0.5">{format!("{:.0} vCPU", self.cpu_count)}</div>
+                </div>
+            }.into_any(),
+            "memory" => {
+                let mem_pct = if self.mem_total > 0 { (self.mem_used as f64 / self.mem_total as f64) * 100.0 } else { 0.0 };
+                let mem_used = self.mem_used;
+                let mem_total = self.mem_total;
+                view! {
+                    <div>
+                        {pct_bar(mem_pct, "bg-accent-amber")}
+                        <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(mem_used), format_bytes(mem_total))}</div>
+                    </div>
+                }.into_any()
+            }
+            "disk" => {
+                let disk_pct = if self.disk_total > 0 { (self.disk_used as f64 / self.disk_total as f64) * 100.0 } else { 0.0 };
+                let disk_used = self.disk_used;
+                let disk_total = self.disk_total;
+                view! {
+                    <div>
+                        {pct_bar(disk_pct, "bg-accent-purple")}
+                        <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(disk_used), format_bytes(disk_total))}</div>
+                    </div>
+                }.into_any()
+            }
+            "uptime" => view! {
+                <span class="text-text-secondary text-[13px]">{format_uptime(self.uptime)}</span>
+            }.into_any(),
+            _ => view! {}.into_any(),
+        }
+    }
+
+    fn row_key(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -120,61 +156,102 @@ pub struct GuestRow {
     pub uptime: u64,
 }
 
-#[component]
-pub fn GuestTable(rows: Vec<GuestRow>, guest_type: &'static str) -> impl IntoView {
-    view! {
-        <table class="w-full text-sm">
-            <thead>
-                <tr class="border-b border-border-primary text-text-muted text-[11px] uppercase tracking-wider">
-                    <th class="text-left py-3 px-4 font-medium">"ID"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Name"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Node"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Status"</th>
-                    <th class="text-left py-3 px-4 font-medium">"CPU"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Memory"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Disk"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Net I/O"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Uptime"</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows.into_iter().map(|r| {
-                    let running = r.status == "running";
-                    let mem_pct = if r.mem_total > 0 { (r.mem_used as f64 / r.mem_total as f64) * 100.0 } else { 0.0 };
-                    view! {
-                        <tr class=format!("border-b border-border-primary/50 hover:bg-surface-tertiary/50 {}", if !running { "opacity-50" } else { "" })>
-                            <td class="py-3 px-4 text-text-muted text-[12px] font-mono">{r.vmid}</td>
-                            <td class="py-3 px-4 text-text-primary font-medium">{r.name.clone()}</td>
-                            <td class="py-3 px-4 text-text-muted text-[12px]">{r.node.clone()}</td>
-                            <td class="py-3 px-4">
-                                <span class="inline-flex items-center gap-1.5 text-[12px]">
-                                    <span class=format!("w-2 h-2 rounded-full {}", if running { "bg-accent-green" } else { "bg-accent-danger" })></span>
-                                    {r.status.clone()}
-                                </span>
-                            </td>
-                            <td class="py-3 px-4">{pct_bar(r.cpu_pct, "bg-accent-green")}</td>
-                            <td class="py-3 px-4">
-                                {pct_bar(mem_pct, "bg-accent-amber")}
-                                <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(r.mem_used), format_bytes(r.mem_total))}</div>
-                            </td>
-                            <td class="py-3 px-4 text-text-secondary text-[12px]">
-                                {format!("{} / {}", format_bytes(r.disk_used), format_bytes(r.disk_total))}
-                            </td>
-                            <td class="py-3 px-4 text-text-muted text-[11px]">
-                                <div>{"↓ "}{format_bytes(r.netin)}</div>
-                                <div>{"↑ "}{format_bytes(r.netout)}</div>
-                            </td>
-                            <td class="py-3 px-4 text-text-secondary text-[13px]">{format_uptime(r.uptime)}</td>
-                        </tr>
-                    }
-                }).collect_view()}
-            </tbody>
-        </table>
+impl TableRow for GuestRow {
+    fn columns() -> Vec<ColumnDef> {
+        vec![
+            ColumnDef { key: "id", label: "ID", sortable: true, default_hidden: false, sort_type: SortType::Numeric },
+            ColumnDef { key: "name", label: "Name", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "node", label: "Node", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "status", label: "Status", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "cpu", label: "CPU", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "memory", label: "Memory", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "disk", label: "Disk", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "net_io", label: "Net I/O", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "uptime", label: "Uptime", sortable: true, default_hidden: false, sort_type: SortType::Numeric },
+        ]
+    }
 
-        <div class="mt-4 p-3 bg-surface-secondary border border-border-primary rounded-md text-text-muted text-xs flex items-center gap-2">
-            <span class="text-accent-amber">"ℹ"</span>
-            {format!("Install daimon-agent on your {}s for process-level metrics, actual memory usage, and service monitoring.", guest_type)}
-        </div>
+    fn cell_value(&self, col: &str) -> String {
+        match col {
+            "id" => self.vmid.to_string(),
+            "name" => self.name.clone(),
+            "node" => self.node.clone(),
+            "status" => self.status.clone(),
+            "cpu" => format!("{:.2}", self.cpu_pct),
+            "memory" => {
+                let pct = if self.mem_total > 0 { (self.mem_used as f64 / self.mem_total as f64) * 100.0 } else { 0.0 };
+                format!("{:.2}", pct)
+            }
+            "disk" => format!("{} / {}", format_bytes(self.disk_used), format_bytes(self.disk_total)),
+            "net_io" => format!("{} / {}", format_bytes(self.netin), format_bytes(self.netout)),
+            "uptime" => self.uptime.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn cell_view(&self, col: &str) -> AnyView {
+        match col {
+            "id" => view! {
+                <span class="text-text-muted text-[12px] font-mono">{self.vmid}</span>
+            }.into_any(),
+            "name" => view! {
+                <span class="text-text-primary font-medium">{self.name.clone()}</span>
+            }.into_any(),
+            "node" => view! {
+                <span class="text-text-muted text-[12px]">{self.node.clone()}</span>
+            }.into_any(),
+            "status" => {
+                let running = self.status == "running";
+                let status = self.status.clone();
+                view! {
+                    <span class="inline-flex items-center gap-1.5 text-[12px]">
+                        <span class=format!("w-2 h-2 rounded-full {}", if running { "bg-accent-green" } else { "bg-accent-danger" })></span>
+                        {status}
+                    </span>
+                }.into_any()
+            }
+            "cpu" => view! {
+                <div>{pct_bar(self.cpu_pct, "bg-accent-green")}</div>
+            }.into_any(),
+            "memory" => {
+                let mem_pct = if self.mem_total > 0 { (self.mem_used as f64 / self.mem_total as f64) * 100.0 } else { 0.0 };
+                let mem_used = self.mem_used;
+                let mem_total = self.mem_total;
+                view! {
+                    <div>
+                        {pct_bar(mem_pct, "bg-accent-amber")}
+                        <div class="text-text-muted text-[10px] mt-0.5">{format!("{} / {}", format_bytes(mem_used), format_bytes(mem_total))}</div>
+                    </div>
+                }.into_any()
+            }
+            "disk" => {
+                let disk_used = self.disk_used;
+                let disk_total = self.disk_total;
+                view! {
+                    <span class="text-text-secondary text-[12px]">
+                        {format!("{} / {}", format_bytes(disk_used), format_bytes(disk_total))}
+                    </span>
+                }.into_any()
+            }
+            "net_io" => {
+                let netin = self.netin;
+                let netout = self.netout;
+                view! {
+                    <div class="text-text-muted text-[11px]">
+                        <div>{format!("\u{2193} {}", format_bytes(netin))}</div>
+                        <div>{format!("\u{2191} {}", format_bytes(netout))}</div>
+                    </div>
+                }.into_any()
+            }
+            "uptime" => view! {
+                <span class="text-text-secondary text-[13px]">{format_uptime(self.uptime)}</span>
+            }.into_any(),
+            _ => view! {}.into_any(),
+        }
+    }
+
+    fn row_key(&self) -> String {
+        self.vmid.to_string()
     }
 }
 
@@ -183,6 +260,7 @@ pub fn GuestTable(rows: Vec<GuestRow>, guest_type: &'static str) -> impl IntoVie
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StorageRow {
     pub name: String,
+    pub node: String,
     pub storage_type: String,
     pub content: String,
     pub used: u64,
@@ -192,42 +270,77 @@ pub struct StorageRow {
     pub active: bool,
 }
 
-#[component]
-pub fn StorageTable(rows: Vec<StorageRow>) -> impl IntoView {
-    view! {
-        <table class="w-full text-sm">
-            <thead>
-                <tr class="border-b border-border-primary text-text-muted text-[11px] uppercase tracking-wider">
-                    <th class="text-left py-3 px-4 font-medium">"Name"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Type"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Content"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Usage"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Total"</th>
-                    <th class="text-left py-3 px-4 font-medium">"Available"</th>
-                    <th class="text-right py-3 px-4 font-medium">"Status"</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows.into_iter().map(|r| {
-                    let used_pct = if r.total > 0 { (r.used as f64 / r.total as f64) * 100.0 } else { 0.0 };
-                    view! {
-                        <tr class="border-b border-border-primary/50 hover:bg-surface-tertiary/50">
-                            <td class="py-3 px-4 text-text-primary font-medium">{r.name.clone()}</td>
-                            <td class="py-3 px-4 text-text-muted text-[12px]">{r.storage_type.clone()}</td>
-                            <td class="py-3 px-4 text-text-muted text-[12px]">{r.content.clone()}</td>
-                            <td class="py-3 px-4">{pct_bar(used_pct, "bg-accent-purple")}</td>
-                            <td class="py-3 px-4 text-text-secondary text-[12px]">{format_bytes(r.total)}</td>
-                            <td class="py-3 px-4 text-text-secondary text-[12px]">{format_bytes(r.avail)}</td>
-                            <td class="py-3 px-4 text-right">
-                                <span class="inline-flex items-center gap-1.5 text-[12px]">
-                                    <span class=format!("w-2 h-2 rounded-full {}", if r.active { "bg-accent-green" } else { "bg-accent-danger" })></span>
-                                    {if r.active { "Active" } else { "Inactive" }}
-                                </span>
-                            </td>
-                        </tr>
-                    }
-                }).collect_view()}
-            </tbody>
-        </table>
+impl TableRow for StorageRow {
+    fn columns() -> Vec<ColumnDef> {
+        vec![
+            ColumnDef { key: "name", label: "Name", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "node", label: "Node", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "type", label: "Type", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "content", label: "Content", sortable: true, default_hidden: false, sort_type: SortType::Text },
+            ColumnDef { key: "usage", label: "Usage", sortable: true, default_hidden: false, sort_type: SortType::Percentage },
+            ColumnDef { key: "total", label: "Total", sortable: true, default_hidden: false, sort_type: SortType::Numeric },
+            ColumnDef { key: "available", label: "Available", sortable: true, default_hidden: false, sort_type: SortType::Numeric },
+            ColumnDef { key: "status", label: "Status", sortable: true, default_hidden: false, sort_type: SortType::Text },
+        ]
+    }
+
+    fn cell_value(&self, col: &str) -> String {
+        match col {
+            "name" => self.name.clone(),
+            "node" => self.node.clone(),
+            "type" => self.storage_type.clone(),
+            "content" => self.content.clone(),
+            "usage" => {
+                let pct = if self.total > 0 { (self.used as f64 / self.total as f64) * 100.0 } else { 0.0 };
+                format!("{:.2}", pct)
+            }
+            "total" => self.total.to_string(),
+            "available" => self.avail.to_string(),
+            "status" => if self.active { "Active".to_string() } else { "Inactive".to_string() },
+            _ => String::new(),
+        }
+    }
+
+    fn cell_view(&self, col: &str) -> AnyView {
+        match col {
+            "name" => view! {
+                <span class="text-text-primary font-medium">{self.name.clone()}</span>
+            }.into_any(),
+            "node" => view! {
+                <span class="text-text-muted text-[12px]">{self.node.clone()}</span>
+            }.into_any(),
+            "type" => view! {
+                <span class="text-text-muted text-[12px]">{self.storage_type.clone()}</span>
+            }.into_any(),
+            "content" => view! {
+                <span class="text-text-muted text-[12px]">{self.content.clone()}</span>
+            }.into_any(),
+            "usage" => {
+                let used_pct = if self.total > 0 { (self.used as f64 / self.total as f64) * 100.0 } else { 0.0 };
+                view! {
+                    <div>{pct_bar(used_pct, "bg-accent-purple")}</div>
+                }.into_any()
+            }
+            "total" => view! {
+                <span class="text-text-secondary text-[12px]">{format_bytes(self.total)}</span>
+            }.into_any(),
+            "available" => view! {
+                <span class="text-text-secondary text-[12px]">{format_bytes(self.avail)}</span>
+            }.into_any(),
+            "status" => {
+                let active = self.active;
+                view! {
+                    <span class="inline-flex items-center gap-1.5 text-[12px]">
+                        <span class=format!("w-2 h-2 rounded-full {}", if active { "bg-accent-green" } else { "bg-accent-danger" })></span>
+                        {if active { "Active" } else { "Inactive" }}
+                    </span>
+                }.into_any()
+            }
+            _ => view! {}.into_any(),
+        }
+    }
+
+    fn row_key(&self) -> String {
+        format!("{}:{}", self.node, self.name)
     }
 }
