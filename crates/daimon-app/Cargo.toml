@@ -31,6 +31,7 @@ bcrypt = { version = "0.17", optional = true }
 rand = { version = "0.9", optional = true }
 daimon-pve = { path = "../daimon-pve", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+futures = { version = "0.3", optional = true }
 
 [features]
 hydrate = [
@@ -53,4 +54,5 @@ ssr = [
     "dep:rand",
     "dep:daimon-pve",
     "dep:uuid",
+    "dep:futures",
 ]

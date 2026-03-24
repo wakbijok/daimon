@@ -1,3 +1,4 @@
+pub mod auto_refresh;
 pub mod detail_layout;
 pub mod icons;
 pub mod layout;
