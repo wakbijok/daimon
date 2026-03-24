@@ -5,3 +5,4 @@ target/site/
 .DS_Store
 .env
 daimon.db
+.superpowers/
