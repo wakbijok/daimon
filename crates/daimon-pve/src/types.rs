@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PveVersion {
     pub version: String,
     pub release: String,
@@ -75,7 +75,7 @@ pub struct PveResource {
 }
 
 /// Node status — detailed info from /nodes/{node}/status
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveNodeStatus {
     #[serde(default)]
     pub uptime: u64,
@@ -97,7 +97,7 @@ pub struct PveNodeStatus {
     pub cpu: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveCpuInfo {
     #[serde(default)]
     pub model: String,
@@ -111,7 +111,7 @@ pub struct PveCpuInfo {
     pub mhz: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveMemInfo {
     #[serde(default)]
     pub total: u64,
@@ -121,7 +121,7 @@ pub struct PveMemInfo {
     pub free: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveDiskInfo {
     #[serde(default)]
     pub total: u64,
@@ -134,7 +134,7 @@ pub struct PveDiskInfo {
 }
 
 // Keep the old simple types for backwards compat with existing tests
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveNode {
     pub node: String,
     pub status: String,
@@ -150,7 +150,7 @@ pub struct PveNode {
     pub uptime: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveVm {
     pub vmid: u32,
     #[serde(default)]
@@ -170,7 +170,7 @@ pub struct PveVm {
     pub node: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveLxc {
     pub vmid: u32,
     #[serde(default)]
@@ -190,7 +190,7 @@ pub struct PveLxc {
     pub node: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PveStorage {
     pub storage: String,
     #[serde(rename = "type")]
