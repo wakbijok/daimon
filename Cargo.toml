@@ -28,6 +28,7 @@ site-addr = "127.0.0.1:3000"
 reload-port = 3001
 bin-features = ["ssr"]
 bin-default-features = false
+bin-target-triple = "x86_64-unknown-linux-musl"
 lib-features = ["hydrate"]
 lib-default-features = false
 lib-profile-release = "wasm-release"

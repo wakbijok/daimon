@@ -1,0 +1,9 @@
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+
+[env]
+# Tell cc-rs / build scripts (e.g. rusqlite bundled, ring) which C compiler to use
+# when cross-compiling to musl. Without this, build.rs picks the host clang and fails.
+CC_x86_64-unknown-linux-musl = "x86_64-linux-musl-gcc"
+CXX_x86_64-unknown-linux-musl = "x86_64-linux-musl-g++"
+AR_x86_64-unknown-linux-musl = "x86_64-linux-musl-ar"

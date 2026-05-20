@@ -1,0 +1,39 @@
+[Unit]
+Description=daimon — AI-driven system engineer for Proxmox
+Documentation=https://github.com/wakbijok/daimon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=daimon
+Group=daimon
+WorkingDirectory=/var/lib/daimon
+
+# Leptos runtime config — overrides the [[workspace.metadata.leptos]] defaults
+Environment=LEPTOS_OUTPUT_NAME=daimon
+Environment=LEPTOS_SITE_ROOT=/opt/daimon/site
+Environment=LEPTOS_SITE_PKG_DIR=pkg
+Environment=LEPTOS_SITE_ADDR=0.0.0.0:3000
+Environment=LEPTOS_ENV=PROD
+Environment=RUST_LOG=info
+
+# First-boot admin password. Remove after first login + DB persistence.
+Environment=DAIMON_ADMIN_PASSWORD=admin
+
+ExecStart=/opt/daimon/daimon-app
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Light hardening — daimon doesn't need to write outside /var/lib/daimon
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/daimon
+
+[Install]
+WantedBy=multi-user.target
