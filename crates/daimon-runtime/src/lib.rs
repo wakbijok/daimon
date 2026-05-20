@@ -1,11 +1,20 @@
 //! Agent lifecycle and message routing for the daimon multi-agent runtime.
 //!
-//! Hosts the `AgentBus` trait and concrete implementations. Phase 1 ships
-//! `InProcBus` backed by tokio broadcast channels for in-process agent
-//! communication. Phase 8 adds `NatsBus` behind the `nats` feature flag for
-//! distribution-ready deployments.
+//! Phase 1 ships:
+//! - `AgentBus` trait + `InProcBus` impl (tokio broadcast)
+//! - `CapabilityRegistry` — agent capability discovery, version-aware lookup (D17)
+//! - `Supervisor` — spawn / restart / healthcheck
 //!
-//! Also home of the `Supervisor` (spawn / restart / healthcheck) and
-//! `CapabilityRegistry` (agent capability discovery).
+//! Phase 8 adds `NatsBus` behind the `nats` feature flag.
 //!
-//! Phase 0 ships an empty skeleton. See `docs/specs/2026-05-20-multi-agent-architecture-design.md`.
+//! See `docs/specs/2026-05-20-multi-agent-architecture-design.md`.
+
+pub mod bus;
+pub mod error;
+pub mod registry;
+pub mod supervisor;
+
+pub use bus::{AgentBus, InProcBus};
+pub use error::RuntimeError;
+pub use registry::{CapabilityRegistry, RegistryEntry};
+pub use supervisor::{Supervisor, SupervisorConfig};
