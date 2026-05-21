@@ -18,7 +18,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use daimon_vault::Credential;
 use russh::client::{self, Handle, Handler};
-use russh::keys::{check_known_hosts_path, decode_secret_key, key};
+use russh::keys::{check_known_hosts_path, decode_secret_key, key, learn_known_hosts_path};
 use russh::{ChannelMsg, Disconnect};
 use tokio::time::timeout;
 use tracing::{debug, instrument, warn};
@@ -46,6 +46,16 @@ pub enum HostKeyPolicy {
     /// **Security downgrade** — only acceptable for first-bootstrap
     /// scenarios. Use [`SshTransport::with_accept_any`] to opt in explicitly.
     AcceptAny,
+    /// **TOFU bootstrap**: accept any server key on the first connect AND
+    /// learn it by appending to a `known_hosts` file. Subsequent connects
+    /// (with the strict `KnownHosts` policy pointed at the same file) will
+    /// verify against the learned entry. The fingerprint is logged at WARN
+    /// each time a key is learned.
+    AcceptAnyAndLearn {
+        learn_to: PathBuf,
+        host: String,
+        port: u16,
+    },
 }
 
 /// SSH transport. Construct via [`SshTransport::new`] (production default,
@@ -57,6 +67,7 @@ pub struct SshTransport {
     config: Arc<client::Config>,
     known_hosts_path: Option<PathBuf>,
     accept_any: bool,
+    learn_to: Option<PathBuf>,
 }
 
 impl Default for SshTransport {
@@ -77,24 +88,47 @@ impl SshTransport {
             config: Arc::new(make_config()),
             known_hosts_path: Some(path),
             accept_any: false,
+            learn_to: None,
         }
     }
 
     /// **SECURITY DOWNGRADE** — accept any server key. Use only for first-
     /// bootstrap scenarios where you intend to record the fingerprint and
     /// transition to KnownHosts immediately after. Emits a WARN log every
-    /// time it accepts a key.
+    /// time it accepts a key. Does NOT persist the key — use
+    /// [`SshTransport::with_accept_any_and_learn`] if you want TOFU.
     pub fn with_accept_any() -> Self {
         Self {
             config: Arc::new(make_config()),
             known_hosts_path: None,
             accept_any: true,
+            learn_to: None,
+        }
+    }
+
+    /// **TOFU bootstrap**: accept any server key on the first connect AND
+    /// append it to `known_hosts_path`. Subsequent connects via
+    /// [`SshTransport::with_known_hosts_path(known_hosts_path)`] will
+    /// verify strictly. Recommended bootstrap flow for new deployments.
+    pub fn with_accept_any_and_learn(known_hosts_path: PathBuf) -> Self {
+        Self {
+            config: Arc::new(make_config()),
+            known_hosts_path: None,
+            accept_any: true,
+            learn_to: Some(known_hosts_path),
         }
     }
 
     fn policy_for(&self, host: &str, port: u16) -> HostKeyPolicy {
         if self.accept_any {
-            HostKeyPolicy::AcceptAny
+            match &self.learn_to {
+                Some(path) => HostKeyPolicy::AcceptAnyAndLearn {
+                    learn_to: path.clone(),
+                    host: host.to_owned(),
+                    port,
+                },
+                None => HostKeyPolicy::AcceptAny,
+            }
         } else {
             HostKeyPolicy::KnownHosts {
                 path: self
@@ -338,6 +372,37 @@ impl Handler for ClientHandler {
                 );
                 Ok(true)
             }
+            HostKeyPolicy::AcceptAnyAndLearn {
+                learn_to,
+                host,
+                port,
+            } => {
+                let fp = server_public_key.fingerprint();
+                match learn_known_hosts_path(host, *port, server_public_key, learn_to) {
+                    Ok(()) => {
+                        warn!(
+                            host = %host,
+                            port = *port,
+                            server_fingerprint = %fp,
+                            known_hosts = %learn_to.display(),
+                            "ssh: TOFU bootstrap — accepted server key and appended to known_hosts. \
+                             Subsequent runs should use the strict KnownHosts policy."
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            host = %host,
+                            port = *port,
+                            server_fingerprint = %fp,
+                            known_hosts = %learn_to.display(),
+                            error = %e,
+                            "ssh: TOFU bootstrap — accepted key BUT failed to persist to known_hosts. \
+                             Next run will re-accept. Fix the file permission/path."
+                        );
+                    }
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -380,6 +445,21 @@ mod tests {
         let t = SshTransport::with_accept_any();
         let policy = t.policy_for("h", 22);
         assert!(matches!(policy, HostKeyPolicy::AcceptAny));
+    }
+
+    #[tokio::test]
+    async fn learn_constructor_uses_accept_any_and_learn() {
+        let path = std::path::PathBuf::from("/tmp/daimon-test-known-hosts");
+        let t = SshTransport::with_accept_any_and_learn(path.clone());
+        let policy = t.policy_for("h", 22);
+        match policy {
+            HostKeyPolicy::AcceptAnyAndLearn { learn_to, host, port } => {
+                assert_eq!(learn_to, path);
+                assert_eq!(host, "h");
+                assert_eq!(port, 22);
+            }
+            other => panic!("expected AcceptAnyAndLearn, got {other:?}"),
+        }
     }
 
     #[tokio::test]

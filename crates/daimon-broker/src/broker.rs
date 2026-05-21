@@ -92,8 +92,18 @@ impl Broker {
 
     /// The protected operation: resolve target, resolve credential, dispatch
     /// transport, zeroize credential, return result. Credentials never leak.
-    #[instrument(skip(self, req), fields(target = %req.target_ref))]
+    /// Emits a single audit event (`broker.execute`) capturing the whole
+    /// flow — actor, target, credential ref, op summary, result, latency
+    /// (D23). On error, the failure stage is recorded in the metadata.
+    #[instrument(skip(self, req), fields(target = %req.target_ref, actor = %req.actor_id))]
     pub async fn execute(&self, req: ExecRequest) -> Result<OpResult, BrokerError> {
+        let start = std::time::Instant::now();
+        let result = self.execute_inner(&req).await;
+        self.audit_execute(&req, &result, start).await;
+        result
+    }
+
+    async fn execute_inner(&self, req: &ExecRequest) -> Result<OpResult, BrokerError> {
         // Step 1: inventory lookup (broker-only view).
         let managed = self
             .inventory
@@ -133,6 +143,71 @@ impl Broker {
             .map_err(BrokerError::from)?;
 
         Ok(result)
+    }
+
+    /// Emit one structured audit event per broker.execute call.
+    /// Captures op kind, target, and result. Failure stage and message
+    /// land in metadata for forensic queries.
+    async fn audit_execute(
+        &self,
+        req: &ExecRequest,
+        result: &Result<OpResult, BrokerError>,
+        start: std::time::Instant,
+    ) {
+        let Some(sink) = self.audit.as_ref() else {
+            // No audit configured (Broker::new without admin wiring) — silent.
+            return;
+        };
+
+        // Look up the credential ref the broker resolved against — best-effort,
+        // tolerate inventory misses (the error case already records it).
+        let credential_ref = self
+            .inventory
+            .get_managed(&req.target_ref)
+            .await
+            .ok()
+            .map(|m| m.credential_ref);
+
+        let res_tag = match result {
+            Ok(_) => daimon_audit::AuditResult::Success,
+            Err(_) => daimon_audit::AuditResult::Error,
+        };
+
+        let op_summary = op_summary_for(&req.op);
+
+        let mut ev = daimon_audit::NewAuditEvent::new(
+            req.actor_id.clone(),
+            daimon_audit::ActionKind::BrokerExecute,
+            res_tag,
+        )
+        .with_target(req.target_ref.to_string())
+        .with_op_summary(op_summary)
+        .with_latency_ms(start.elapsed().as_millis() as u64);
+
+        if let Some(c) = credential_ref {
+            ev = ev.with_credential(c);
+        }
+        if let Err(e) = result {
+            ev = ev.with_metadata("error", format!("{e}"));
+        }
+
+        if let Err(emit_err) = sink.append(ev).await {
+            tracing::warn!(error = %emit_err, "broker.execute audit emit failed");
+        }
+    }
+}
+
+fn op_summary_for(op: &daimon_transport::Op) -> String {
+    use daimon_transport::Op;
+    match op {
+        Op::ShellCommand { command, .. } => {
+            let truncated: String = command.chars().take(80).collect();
+            format!("ssh:exec:{}", truncated)
+        }
+        Op::Http { method, path, .. } => format!("http:{method:?}:{path}"),
+        Op::SnmpGet { oid } => format!("snmp:get:{oid}"),
+        Op::SnmpSet { oid, .. } => format!("snmp:set:{oid}"),
+        Op::SnmpWalk { oid_root } => format!("snmp:walk:{oid_root}"),
     }
 }
 

@@ -32,6 +32,7 @@ async fn agent_never_sees_credential() {
 
     // ---- The agent's code path -----------------------------------------
     let req = ExecRequest::new(
+        "agent:tool-network",
         TargetRef::parse("target://mikrotik-edge").unwrap(),
         Op::ShellCommand {
             command: "/ip firewall address-list print".into(),
@@ -100,6 +101,7 @@ async fn target_metadata_does_not_carry_credential_ref() {
 async fn missing_target_returns_inventory_error() {
     let (broker, _, _, _) = make_stub_broker().await;
     let req = ExecRequest::new(
+        "agent:tool-network",
         TargetRef::parse("target://does-not-exist").unwrap(),
         Op::ShellCommand {
             command: "noop".into(),

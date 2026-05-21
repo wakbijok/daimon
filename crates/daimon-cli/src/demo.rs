@@ -86,14 +86,19 @@ struct Args {
     timeout_secs: u32,
 
     /// Skip known_hosts verification and accept any server key. Required
-    /// for first-bootstrap demos; logs a WARN every time it's used.
-    /// Production deployments should populate /var/lib/daimon/known_hosts
-    /// instead.
+    /// for first-bootstrap demos; logs a WARN every time it's used. Does
+    /// NOT persist the key. Use `--learn-known-hosts` for TOFU bootstrap.
     #[arg(long)]
     accept_any_host_key: bool,
 
+    /// **TOFU bootstrap**: accept any server key on this run AND append
+    /// it to the specified known_hosts file. Subsequent runs should use
+    /// `--known-hosts <same-path>` for strict verification.
+    #[arg(long, conflicts_with = "accept_any_host_key")]
+    learn_known_hosts: Option<String>,
+
     /// Path to a known_hosts file. Default `/var/lib/daimon/known_hosts`.
-    /// Ignored if `--accept-any-host-key` is set.
+    /// Ignored if `--accept-any-host-key` or `--learn-known-hosts` is set.
     #[arg(long)]
     known_hosts: Option<String>,
 
@@ -141,8 +146,14 @@ async fn main() -> Result<()> {
 
     // ---- 3. Build SSH transport with the right policy -----------------------
     info!("==> Building SshTransport");
-    let ssh: Arc<dyn Transport> = if args.accept_any_host_key {
-        info!("  policy = AcceptAny (security downgrade — bootstrap mode only)");
+    let ssh: Arc<dyn Transport> = if let Some(learn_path) = &args.learn_known_hosts {
+        info!(
+            learn_to = %learn_path,
+            "  policy = AcceptAnyAndLearn (TOFU bootstrap — host key will be appended)"
+        );
+        Arc::new(SshTransport::with_accept_any_and_learn(learn_path.into()))
+    } else if args.accept_any_host_key {
+        info!("  policy = AcceptAny (security downgrade — bootstrap mode only, NOT persisted)");
         Arc::new(SshTransport::with_accept_any())
     } else {
         match &args.known_hosts {
@@ -199,13 +210,14 @@ async fn main() -> Result<()> {
 
     // ---- 5. The actual broker.execute call — agent code path -----------------
     info!("==> [agent] broker.execute — running `{}` via SSH", args.command);
-    let req = ExecRequest {
-        target_ref: TargetRef::parse(&format!("target://{}", args.target))?,
-        op: Op::ShellCommand {
+    let req = ExecRequest::new(
+        format!("agent:demo:{}", args.actor),
+        TargetRef::parse(&format!("target://{}", args.target))?,
+        Op::ShellCommand {
             command: args.command.clone(),
             timeout_secs: args.timeout_secs,
         },
-    };
+    );
     let result = broker.execute(req).await.context("broker.execute")?;
 
     match &result {
