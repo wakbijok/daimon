@@ -16,6 +16,29 @@ async fn main() {
     use std::sync::Arc;
     use std::collections::HashMap;
 
+    // ---- Phase 2b #19: assemble the action broker stack -----------------
+    //
+    // The broker is the single integration point between daimon-app
+    // server-fns and the (vault + inventory + transport + audit) layer.
+    // It is constructed once at boot from env-config and shared across all
+    // request handlers via AppState.
+    //
+    // Env config:
+    //   DAIMON_DATA_DIR        — directory holding vault.db, inventory.db,
+    //                            audit.db. Default: ./daimon-data
+    //   DAIMON_KNOWN_HOSTS_PATH — SSH known_hosts file. Default:
+    //                            <data_dir>/known_hosts. Production should
+    //                            point this at /var/lib/daimon/known_hosts.
+    //   CREDENTIALS_DIRECTORY  — set by systemd. Production master-key path.
+    //   DAIMON_MASTER_KEY_FILE — development fallback. WARNs loudly.
+    let broker = match boot_broker().await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("daimon-app: failed to assemble broker stack: {e:#}");
+            std::process::exit(1);
+        }
+    };
+
     // Init database
     let conn = db::init_db("daimon.db");
 
@@ -68,6 +91,7 @@ async fn main() {
         pve_clients: Arc::new(tokio::sync::RwLock::new(pve_map)),
         pve_cache: Arc::new(tokio::sync::RwLock::new(PveCache::new())),
         ws_broadcast: ws_tx,
+        broker,
     };
 
     // Spawn background PVE polling task (30s interval)
@@ -139,6 +163,48 @@ async fn main() {
     axum::serve(listener, app.into_make_service())
         .await
         .unwrap();
+}
+
+/// Assemble the production broker stack at boot.
+///
+/// All filesystem paths come from env config (see `main` for the contract).
+/// The master key is loaded via `MasterKey::from_systemd_or_dev_env` — systemd
+/// `LoadCredentialEncrypted` in production, `DAIMON_MASTER_KEY_FILE` for local
+/// dev (with a loud WARN log).
+///
+/// Per D21, daimon-app does NOT import `daimon-vault`, `daimon-inventory`,
+/// or `daimon-transport` directly. The assembly happens inside
+/// `daimon_broker::production::build_production_broker`, which is the only
+/// path the spec permits for a long-running I/O adapter.
+#[cfg(feature = "ssr")]
+async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> {
+    use std::path::PathBuf;
+
+    use anyhow::Context;
+    use daimon_broker::production::{build_production_broker, BootConfig, MasterKeyHandle};
+
+    let data_dir = PathBuf::from(
+        std::env::var("DAIMON_DATA_DIR").unwrap_or_else(|_| "daimon-data".to_string()),
+    );
+
+    let known_hosts_path = PathBuf::from(
+        std::env::var("DAIMON_KNOWN_HOSTS_PATH")
+            .unwrap_or_else(|_| data_dir.join("known_hosts").to_string_lossy().into_owned()),
+    );
+
+    let master_key = MasterKeyHandle::from_systemd_or_dev_env().context(
+        "load master key (set CREDENTIALS_DIRECTORY in systemd, or DAIMON_MASTER_KEY_FILE for dev)",
+    )?;
+
+    let broker = build_production_broker(BootConfig {
+        data_dir,
+        known_hosts_path,
+        master_key,
+    })
+    .await
+    .context("build_production_broker")?;
+
+    Ok(broker)
 }
 
 #[cfg(not(feature = "ssr"))]

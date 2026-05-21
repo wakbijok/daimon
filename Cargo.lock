@@ -761,9 +761,11 @@ dependencies = [
 name = "daimon-app"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "bcrypt",
  "console_error_panic_hook",
+ "daimon-broker",
  "daimon-pve",
  "futures",
  "gloo-timers",

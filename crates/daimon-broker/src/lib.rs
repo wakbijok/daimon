@@ -20,6 +20,7 @@
 
 pub mod admin;
 pub mod broker;
+pub mod production;
 pub mod request;
 
 pub use broker::{Broker, BrokerError};

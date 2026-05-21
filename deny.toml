@@ -68,6 +68,8 @@ deny = [
     #                  (vault SqliteVaultClient + transport SshTransport
     #                  configuration). Treated as part of broker scope.
     # Worker crates (`daimon-tool-*`) and `daimon-app` are NOT in this list.
+    # daimon-app boots the production stack via `daimon_broker::production`
+    # (Phase 2b #19) — it never imports vault/inventory/transport directly.
     { crate = "daimon-vault",     wrappers = ["daimon-broker", "daimon-cli"] },
     { crate = "daimon-inventory", wrappers = ["daimon-broker", "daimon-cli"] },
     { crate = "daimon-transport", wrappers = ["daimon-broker", "daimon-cli"] },

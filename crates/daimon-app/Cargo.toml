@@ -34,6 +34,12 @@ uuid = { version = "1", features = ["v4"], optional = true }
 futures = { version = "0.3", optional = true }
 tracing = { version = "0.1", optional = true }
 
+# Phase 2b #19: in-process broker stack. daimon-app is a permitted wrapper
+# per `deny.toml` (same rationale as daimon-cli). `for-broker` opens the
+# internal API surface on the gated three crates.
+daimon-broker = { path = "../daimon-broker", optional = true }
+anyhow = { version = "1", optional = true }
+
 [features]
 hydrate = [
     "leptos/hydrate",
@@ -57,4 +63,6 @@ ssr = [
     "dep:uuid",
     "dep:futures",
     "dep:tracing",
+    "dep:daimon-broker",
+    "dep:anyhow",
 ]

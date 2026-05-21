@@ -6,3 +6,7 @@ target/site/
 .env
 daimon.db
 .superpowers/
+
+# Phase 2b #19 dev master key + boot data — never commit these.
+.dev-data/
+daimon-data/

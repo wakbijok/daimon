@@ -65,6 +65,41 @@ impl MasterKey {
         Self::from_path(&path)
     }
 
+    /// Production-first loader with an explicit development fallback.
+    ///
+    /// Resolution order:
+    /// 1. If `CREDENTIALS_DIRECTORY` is set, load from
+    ///    `$CREDENTIALS_DIRECTORY/vault-master` (systemd `LoadCredentialEncrypted=`
+    ///    production path). No fallback if this fails — surfacing the error
+    ///    is preferable to silently dropping to dev mode under systemd.
+    /// 2. Else if `DAIMON_MASTER_KEY_FILE` is set, load from that path and
+    ///    emit a loud `WARN` log. This branch is for `cargo run` / local
+    ///    development only.
+    /// 3. Else return `MasterKeyError::Bootstrap` — neither source available.
+    ///
+    /// The dev-fallback file should be `chmod 600`, kept out of git, and
+    /// generated once via `head -c 32 /dev/urandom > /path/to/file`.
+    pub fn from_systemd_or_dev_env() -> Result<Self, MasterKeyError> {
+        if std::env::var_os("CREDENTIALS_DIRECTORY").is_some() {
+            return Self::from_systemd_credential();
+        }
+        match std::env::var("DAIMON_MASTER_KEY_FILE") {
+            Ok(path) => {
+                tracing::warn!(
+                    path = %path,
+                    "loading master key from DAIMON_MASTER_KEY_FILE — DEVELOPMENT ONLY; \
+                     production must use systemd LoadCredentialEncrypted"
+                );
+                Self::from_path(Path::new(&path))
+            }
+            Err(_) => Err(MasterKeyError::Bootstrap(
+                "no CREDENTIALS_DIRECTORY (systemd) and no DAIMON_MASTER_KEY_FILE \
+                 (development fallback) — master key cannot be loaded"
+                    .into(),
+            )),
+        }
+    }
+
     /// Read a 32-byte master key from a file. Errors if the file is missing,
     /// unreadable, or not exactly 32 bytes.
     pub fn from_path(path: &Path) -> Result<Self, MasterKeyError> {
@@ -104,6 +139,8 @@ pub enum MasterKeyError {
     },
     #[error("master key file has wrong length: expected {expected} bytes, got {actual}")]
     InvalidLength { expected: usize, actual: usize },
+    #[error("master key bootstrap: {0}")]
+    Bootstrap(String),
 }
 
 #[cfg(test)]
@@ -165,5 +202,42 @@ mod tests {
         assert!(!dbg.contains("AB"));
         assert!(!dbg.contains("171")); // decimal 0xAB
         assert!(dbg.contains("MasterKey"));
+    }
+
+    /// Serial guard for the env-var-touching tests below.
+    /// `std::env::set_var` is process-global and racy under parallel tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn from_systemd_or_dev_env_reads_dev_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let bytes = [0x5Au8; SEAL_KEY_LEN];
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        unsafe {
+            std::env::remove_var("CREDENTIALS_DIRECTORY");
+            std::env::set_var("DAIMON_MASTER_KEY_FILE", tmp.path());
+        }
+        let key = MasterKey::from_systemd_or_dev_env().unwrap();
+        unsafe {
+            std::env::remove_var("DAIMON_MASTER_KEY_FILE");
+        }
+        assert_eq!(key.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn from_systemd_or_dev_env_errors_when_neither_source() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe {
+            std::env::remove_var("CREDENTIALS_DIRECTORY");
+            std::env::remove_var("DAIMON_MASTER_KEY_FILE");
+        }
+        let err = MasterKey::from_systemd_or_dev_env().unwrap_err();
+        assert!(
+            matches!(err, MasterKeyError::Bootstrap(_)),
+            "expected Bootstrap variant, got {err:?}"
+        );
     }
 }
