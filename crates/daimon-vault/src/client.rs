@@ -11,8 +11,9 @@ use crate::refspec::CredentialRef;
 /// Trait the rest of daimon talks to when it wants a credential.
 ///
 /// Two impls today: `StubVaultClient` for development and tests (hardcoded
-/// credentials), and (next session) `VaultwardenClient` for the real
-/// Vaultwarden REST API.
+/// credentials, no encryption), and `SqliteVaultClient` for production (D22 —
+/// in-tree SQLite + per-row XChaCha20-Poly1305, master key from systemd
+/// LoadCredentialEncrypted).
 ///
 /// `VaultClient` is `Send + Sync` so it can be stored in `AgentContext` or
 /// shared across tokio tasks.

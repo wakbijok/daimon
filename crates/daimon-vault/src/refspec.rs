@@ -4,17 +4,25 @@ use thiserror::Error;
 
 /// A reference to a credential stored in the vault.
 ///
-/// Two syntactic forms are accepted:
-/// - `vault://<organization>/<collection>/<item>` — path form, looks up by
-///   organization name + collection name + item name within the vault hierarchy
-/// - `vault://<item-uuid>` — direct form, references an item by its UUID
+/// Three syntactic forms are accepted:
+/// - `vault://<name>` — **named form (D22 default)**, looks up by `name` column
+///   in the in-tree SQLite vault. This is the primary form for the in-tree vault.
+/// - `vault://<organization>/<collection>/<item>` — path form, kept for
+///   backward compatibility with the original Vaultwarden-shaped spec (D3,
+///   superseded by D22). The in-tree vault resolves Path refs by treating
+///   `item` as the credential name (the org/collection segments are ignored
+///   but parsed successfully).
+/// - `vault://<item-uuid>` — UUID form, parsed but not used by the in-tree
+///   vault (which uses INTEGER ids). Kept for forward compatibility if an
+///   external vault impl is ever bolted on.
 ///
-/// The URL form is self-describing in logs and allows non-Vaultwarden backends
-/// (HashiCorp Vault, AWS Secrets Manager, etc.) to be plugged in later without
-/// changing the reference syntax.
+/// The URL form is self-describing in logs and allows backends to be swapped
+/// without changing the reference syntax in user code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum CredentialRef {
+    /// `vault://<name>` — primary form for the in-tree vault (D22).
+    Named(String),
     Path {
         organization: String,
         collection: String,
@@ -31,12 +39,11 @@ impl CredentialRef {
         let parts: Vec<&str> = rest.split('/').collect();
         match parts.as_slice() {
             [single] if !single.is_empty() => {
-                // Single segment must look like a UUID. Light validation — actual
-                // UUID parsing is the vault client's job.
+                // UUID shape → Uuid variant; anything else → Named (D22).
                 if looks_like_uuid(single) {
                     Ok(CredentialRef::Uuid((*single).to_owned()))
                 } else {
-                    Err(RefParseError::SingleSegmentMustBeUuid)
+                    Ok(CredentialRef::Named((*single).to_owned()))
                 }
             }
             [org, coll, item] if !org.is_empty() && !coll.is_empty() && !item.is_empty() => {
@@ -49,11 +56,23 @@ impl CredentialRef {
             _ => Err(RefParseError::InvalidShape),
         }
     }
+
+    /// The credential name this ref resolves to in the in-tree vault.
+    /// Path refs resolve by the trailing `item` segment; UUID refs have no
+    /// name (returns None).
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            CredentialRef::Named(n) => Some(n),
+            CredentialRef::Path { item, .. } => Some(item),
+            CredentialRef::Uuid(_) => None,
+        }
+    }
 }
 
 impl fmt::Display for CredentialRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            CredentialRef::Named(name) => write!(f, "vault://{name}"),
             CredentialRef::Path {
                 organization,
                 collection,
@@ -99,9 +118,7 @@ fn looks_like_uuid(s: &str) -> bool {
 pub enum RefParseError {
     #[error("credential ref must begin with `vault://`")]
     MissingScheme,
-    #[error("single-segment vault:// ref must be a UUID")]
-    SingleSegmentMustBeUuid,
-    #[error("vault:// ref must be either `vault://<uuid>` or `vault://<org>/<collection>/<item>`")]
+    #[error("vault:// ref must be `vault://<name>`, `vault://<uuid>`, or `vault://<org>/<collection>/<item>`")]
     InvalidShape,
 }
 
@@ -136,9 +153,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_single_non_uuid_segment() {
-        let err = CredentialRef::parse("vault://just-a-name").unwrap_err();
-        assert_eq!(err, RefParseError::SingleSegmentMustBeUuid);
+    fn parses_named_form() {
+        let r = CredentialRef::parse("vault://mikrotik-edge").unwrap();
+        assert_eq!(r, CredentialRef::Named("mikrotik-edge".into()));
+    }
+
+    #[test]
+    fn named_form_display_round_trip() {
+        let r = CredentialRef::parse("vault://my-cred").unwrap();
+        assert_eq!(r.to_string(), "vault://my-cred");
+    }
+
+    #[test]
+    fn name_extracts_from_named() {
+        let r = CredentialRef::parse("vault://my-cred").unwrap();
+        assert_eq!(r.name(), Some("my-cred"));
+    }
+
+    #[test]
+    fn name_extracts_trailing_item_from_path() {
+        let r = CredentialRef::parse("vault://infra/network/mikrotik-edge").unwrap();
+        assert_eq!(r.name(), Some("mikrotik-edge"));
+    }
+
+    #[test]
+    fn name_returns_none_for_uuid() {
+        let r = CredentialRef::parse("vault://12345678-1234-1234-1234-123456789abc").unwrap();
+        assert_eq!(r.name(), None);
     }
 
     #[test]

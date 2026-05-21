@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use daimon_audit::AuditSink;
 use daimon_inventory::{Inventory, InventoryError, TargetMetadata, TargetRef, TransportKind};
 use daimon_transport::{OpResult, Transport, TransportError, TransportTarget};
-use daimon_vault::{CredentialRef, RefParseError as CredRefParseError, VaultClient, VaultError};
+use daimon_vault::{
+    CredentialRef, RefParseError as CredRefParseError, SqliteVaultClient, VaultClient, VaultError,
+};
 use thiserror::Error;
 use tracing::{debug, instrument};
 
@@ -19,13 +22,22 @@ use crate::request::ExecRequest;
 /// 5. Return `OpResult` to the agent
 ///
 /// The credential is in scope only for steps 3–4 and never enters worker memory.
+///
+/// Admin proxy methods (D22/D23/D24 — `vault_*`, `inventory_*`, `audit_*`)
+/// live in `daimon-broker/src/admin.rs`. They require the production
+/// constructor `with_production_admin` which wires up `vault_admin` (concrete
+/// `SqliteVaultClient`) and `audit` (the structured event sink). The legacy
+/// `new()` constructor leaves admin disabled (stub usage / tests).
 pub struct Broker {
-    inventory: Arc<dyn Inventory>,
-    vault: Arc<dyn VaultClient>,
-    transports: HashMap<TransportKind, Arc<dyn Transport>>,
+    pub(crate) inventory: Arc<dyn Inventory>,
+    pub(crate) vault: Arc<dyn VaultClient>,
+    pub(crate) vault_admin: Option<Arc<SqliteVaultClient>>,
+    pub(crate) audit: Option<Arc<dyn AuditSink>>,
+    pub(crate) transports: HashMap<TransportKind, Arc<dyn Transport>>,
 }
 
 impl Broker {
+    /// Legacy / test constructor — admin proxy disabled.
     pub fn new(
         inventory: Arc<dyn Inventory>,
         vault: Arc<dyn VaultClient>,
@@ -34,6 +46,30 @@ impl Broker {
         Self {
             inventory,
             vault,
+            vault_admin: None,
+            audit: None,
+            transports,
+        }
+    }
+
+    /// Production constructor (D22 in-tree vault + D23 audit log + D24 admin).
+    ///
+    /// `vault` is the concrete `Arc<SqliteVaultClient>` — used both as the
+    /// `dyn VaultClient` for the agent `execute` resolve path AND as the
+    /// admin-CRUD handle. `audit` is the append-only event sink — every
+    /// state-changing admin call emits an event.
+    pub fn with_production_admin(
+        inventory: Arc<dyn Inventory>,
+        vault: Arc<SqliteVaultClient>,
+        audit: Arc<dyn AuditSink>,
+        transports: HashMap<TransportKind, Arc<dyn Transport>>,
+    ) -> Self {
+        let vault_dyn: Arc<dyn VaultClient> = vault.clone();
+        Self {
+            inventory,
+            vault: vault_dyn,
+            vault_admin: Some(vault),
+            audit: Some(audit),
             transports,
         }
     }
@@ -112,6 +148,10 @@ pub enum BrokerError {
     CredentialRefParse(CredRefParseError),
     #[error("no transport registered for kind `{0:?}`")]
     NoTransport(TransportKind),
+    #[error("admin backend `{0}` not available — broker constructed without production admin wiring")]
+    AdminBackendNotAvailable(&'static str),
+    #[error("audit: {0}")]
+    Audit(String),
 }
 
 /// Helper for tests + Phase 2 prototyping — wires a Broker with stub

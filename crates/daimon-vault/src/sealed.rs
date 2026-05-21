@@ -11,15 +11,21 @@ pub const SEAL_KEY_LEN: usize = 32;
 /// Length of the XChaCha20-Poly1305 nonce (24 bytes — extended nonce).
 pub const SEAL_NONCE_LEN: usize = 24;
 
-/// Symmetric sealing of secret blobs (D4 — Vaultwarden session token at rest).
+/// Symmetric sealing of secret blobs via XChaCha20-Poly1305.
 ///
-/// The key comes from the `DAIMON_VAULT_SEAL_KEY` environment variable
-/// (32 bytes, hex-encoded → 64 hex chars). The on-disk payload is
-/// `nonce (24) || ciphertext` so a single file holds everything needed to
-/// recover the plaintext given the key.
+/// Original purpose (D4, superseded): Vaultwarden session token at rest with
+/// the key in `DAIMON_VAULT_SEAL_KEY`. Phase 2b promoted this primitive to
+/// per-row encryption inside the in-tree SQLite vault (D22) — the
+/// `SqliteVaultClient` wraps each credential payload row via `seal()` keyed
+/// by the master key loaded from systemd `LoadCredentialEncrypted=`.
 ///
-/// Disk-only theft yields nothing — the key is not on disk. Env + disk yields
-/// the sealed payload, not the original Vaultwarden master password.
+/// The payload format is `nonce (24) || ciphertext` so a single blob holds
+/// everything needed to recover the plaintext given the key.
+///
+/// The legacy `from_env()` and `from_hex()` constructors are kept for the
+/// session-token use case if it returns (e.g. external secret store
+/// integration); the in-tree vault now constructs sealers from a
+/// [`MasterKey`](crate::master_key::MasterKey) instead.
 #[derive(Clone)]
 pub struct SealedSession {
     cipher: XChaCha20Poly1305,

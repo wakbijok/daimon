@@ -24,3 +24,17 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+
+  # D21 enforcement: `daimon-vault`, `daimon-inventory`, and `daimon-transport`
+  # may only appear as dependencies of `daimon-broker`. Catches accidental
+  # direct deps from worker crates or `daimon-app`. See `deny.toml`.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+      - name: Run cargo-deny (D21 + licenses + advisories)
+        run: cargo deny check

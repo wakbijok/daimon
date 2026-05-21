@@ -1,0 +1,26 @@
+[package]
+name = "daimon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Operator CLI for dAImon. Phase 2b ships the `daimon-demo` binary — proves the broker pattern (D19) end-to-end against a real own-vault + real SSH endpoint."
+
+[[bin]]
+name = "daimon-demo"
+path = "src/demo.rs"
+
+[dependencies]
+daimon-broker = { path = "../daimon-broker" }
+# Internal crates — daimon-cli is the operator wiring tool and needs concrete
+# constructors. Allowed by deny.toml's wrapper list alongside daimon-broker.
+daimon-vault = { path = "../daimon-vault", features = ["for-broker"] }
+daimon-inventory = { path = "../daimon-inventory", features = ["for-broker"] }
+daimon-transport = { path = "../daimon-transport", features = ["for-broker"] }
+daimon-audit = { path = "../daimon-audit" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }

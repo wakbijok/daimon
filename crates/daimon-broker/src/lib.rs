@@ -1,27 +1,36 @@
-//! Public action surface for daimon agents (D19).
+//! Public action surface for daimon agents (D19) + admin proxy for daimon-app
+//! (D22/D23/D24).
 //!
 //! Workers depend on this crate (and `daimon-core`) — never on `daimon-vault`,
-//! `daimon-inventory`, or `daimon-transport`. They construct `ExecRequest`s
-//! and the broker handles credential resolution + transport dispatch
-//! internally. Credentials never reach worker memory.
+//! `daimon-inventory`, `daimon-transport`, or `daimon-audit`. They construct
+//! `ExecRequest`s and the broker handles credential resolution + transport
+//! dispatch internally. Credentials never reach worker memory.
 //!
-//! Re-exports the agent-visible types from `daimon-inventory` and
-//! `daimon-transport`: `TargetRef`, `TargetMetadata`, `Op`, `OpResult`. The
-//! broker is the agent-facing wrapper.
+//! `daimon-app` (the I/O adapter) also depends only on this crate for its
+//! admin surface — `vault_*`, `inventory_*`, `audit_*` methods on `Broker`.
+//! Per D21, daimon-app does NOT depend on vault/inventory/transport/audit
+//! directly.
 //!
-//! See `docs/specs/2026-05-20-multi-agent-architecture-design.md` D19/D20/D21.
+//! Re-exports the public types from `daimon-inventory`, `daimon-transport`,
+//! `daimon-vault`, and `daimon-audit` so workers + daimon-app depend only on
+//! daimon-broker.
+//!
+//! See `docs/specs/2026-05-20-multi-agent-architecture-design.md`
+//! D19/D20/D21/D22/D23/D24.
 
+pub mod admin;
 pub mod broker;
 pub mod request;
 
 pub use broker::{Broker, BrokerError};
 pub use request::ExecRequest;
 
-// Re-export the public types from internal crates so workers depend only on
-// daimon-broker. (Workers' Cargo.toml never lists daimon-vault, daimon-inventory,
-// or daimon-transport — D21.)
+// Re-export public types from internal crates so workers + daimon-app
+// depend only on daimon-broker.
+pub use daimon_audit::{ActionKind, AuditEvent, AuditFilter, AuditResult, NewAuditEvent};
 pub use daimon_inventory::{
-    Inventory, RefParseError as TargetRefParseError, TargetKind, TargetMetadata, TargetRef,
-    TransportKind,
+    Inventory, ManagedTarget, RefParseError as TargetRefParseError, TargetKind, TargetMetadata,
+    TargetRef, TransportKind,
 };
 pub use daimon_transport::{HttpMethod, Op, OpResult, SnmpValue};
+pub use daimon_vault::{Credential, CredentialKind, CredentialMetadata, CredentialRef};

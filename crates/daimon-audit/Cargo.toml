@@ -1,17 +1,12 @@
 [package]
-name = "daimon-inventory"
+name = "daimon-audit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Managed asset registry — target://X → host + transport + credential ref (D20). INTERNAL — only daimon-broker enables `for-broker` (D21)."
-
-[features]
-default = []
-for-broker = []
+description = "Append-only audit event log (D23). SQLite-backed with DB-level UPDATE/DELETE blocking. Broker writes; daimon-app reads via admin UI."
 
 [dependencies]
-daimon-core = { path = "../daimon-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
