@@ -1156,6 +1156,8 @@ dependencies = [
  "daimon-audit",
  "daimon-broker",
  "daimon-inventory",
+ "daimon-memory",
+ "daimon-rag",
  "daimon-transport",
  "daimon-vault",
  "tokio",
