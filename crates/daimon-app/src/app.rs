@@ -30,7 +30,7 @@ use crate::pages::{
         agent_placeholder::AgentPlaceholder,
     },
     settings::Settings,
-    admin::{AdminAudit, AdminCredentials, AdminTargets},
+    admin::{AdminAudit, AdminCredentials, AdminMemory, AdminTargets},
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -130,6 +130,10 @@ pub fn App() -> impl IntoView {
                     <Route
                         path=(StaticSegment("admin"), StaticSegment("audit"))
                         view=AdminAudit
+                    />
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("memory"))
+                        view=AdminMemory
                     />
                 </ParentRoute>
             </Routes>

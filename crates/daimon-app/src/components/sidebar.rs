@@ -187,6 +187,7 @@ pub fn Sidebar() -> impl IntoView {
                                     ("/admin/credentials", "Credentials"),
                                     ("/admin/targets", "Targets"),
                                     ("/admin/audit", "Audit Log"),
+                                    ("/admin/memory", "Memory"),
                                 ].iter().map(|(path, label)| {
                                     let path = *path;
                                     let label = *label;
