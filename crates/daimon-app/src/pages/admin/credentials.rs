@@ -583,7 +583,7 @@ fn EditModal(
                     />
                     <p class="text-text-muted text-xs mt-1">"Use Rename to change the name."</p>
                 </div>
-                <CredentialEditor draft=draft />
+                <CredentialEditor draft=draft kind_locked=true />
                 {move || error.get().map(|e| view! {
                     <div class="p-2 bg-accent-danger/10 border border-accent-danger/30 rounded text-accent-danger text-sm">{e}</div>
                 })}
@@ -1003,11 +1003,23 @@ fn copy_to_clipboard(text: String) {
 // -------- Credential editor (sub-component shared by Add + Edit) -------------
 
 #[component]
-fn CredentialEditor(draft: RwSignal<CredentialDraft>) -> impl IntoView {
+fn CredentialEditor(
+    draft: RwSignal<CredentialDraft>,
+    #[prop(default = false)] kind_locked: bool,
+) -> impl IntoView {
     view! {
         <div class="space-y-3">
             <div>
-                <label class="block text-sm text-text-secondary mb-1">"Kind"</label>
+                <label class="block text-sm text-text-secondary mb-1">
+                    "Kind"
+                    {if kind_locked {
+                        view! {
+                            <span class="ml-2 text-text-muted text-[11px]">"(fixed; delete + recreate to change kind)"</span>
+                        }.into_any()
+                    } else {
+                        view! {}.into_any()
+                    }}
+                </label>
                 <div class="flex gap-1 p-1 bg-surface-tertiary rounded-md border border-border-primary">
                     {[
                         CredentialKindDto::SshKey,
@@ -1019,14 +1031,22 @@ fn CredentialEditor(draft: RwSignal<CredentialDraft>) -> impl IntoView {
                         view! {
                             <button
                                 type="button"
-                                on:click=move |_| draft.update(|d| d.kind = kind)
+                                disabled=kind_locked
+                                on:click=move |_| {
+                                    if !kind_locked {
+                                        draft.update(|d| d.kind = kind);
+                                    }
+                                }
                                 class=move || {
                                     let active = draft.get().kind == kind;
-                                    format!(
-                                        "flex-1 px-3 py-1.5 text-[12px] rounded transition-colors {}",
-                                        if active { "bg-accent-amber text-surface-primary font-medium" }
-                                        else { "text-text-secondary hover:text-text-primary" }
-                                    )
+                                    let base = "flex-1 px-3 py-1.5 text-[12px] rounded transition-colors";
+                                    if active {
+                                        format!("{} bg-accent-amber text-surface-primary font-medium", base)
+                                    } else if kind_locked {
+                                        format!("{} text-text-muted opacity-40 cursor-not-allowed", base)
+                                    } else {
+                                        format!("{} text-text-secondary hover:text-text-primary", base)
+                                    }
                                 }
                             >
                                 {kind.label()}
@@ -1048,6 +1068,34 @@ fn CredentialEditor(draft: RwSignal<CredentialDraft>) -> impl IntoView {
 
 #[component]
 fn SshKeyFields(draft: RwSignal<CredentialDraft>) -> impl IntoView {
+    let on_file_change = move |_ev: leptos::ev::Event| {
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::closure::Closure;
+            use wasm_bindgen::JsCast;
+
+            let Some(target) = _ev.target() else { return };
+            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else { return };
+            let Some(files) = input.files() else { return };
+            let Some(file) = files.get(0) else { return };
+
+            let Ok(reader) = web_sys::FileReader::new() else { return };
+            let reader_clone = reader.clone();
+            let onload = Closure::wrap(Box::new(move |_: web_sys::ProgressEvent| {
+                if let Ok(value) = reader_clone.result() {
+                    if let Some(text) = value.as_string() {
+                        draft.update(|d| d.ssh_key_pem = text);
+                    }
+                }
+            }) as Box<dyn FnMut(web_sys::ProgressEvent)>);
+            reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+            onload.forget();
+            let _ = reader.read_as_text(&file);
+            // Clear the input value so the same file can be re-picked later.
+            input.set_value("");
+        }
+    };
+
     view! {
         <div class="space-y-3">
             <div>
@@ -1061,7 +1109,17 @@ fn SshKeyFields(draft: RwSignal<CredentialDraft>) -> impl IntoView {
                 />
             </div>
             <div>
-                <label class="block text-sm text-text-secondary mb-1">"Private Key (PEM)"</label>
+                <div class="flex items-center justify-between mb-1">
+                    <label class="block text-sm text-text-secondary">"Private Key (PEM)"</label>
+                    <label class="cursor-pointer text-xs text-accent-amber hover:underline">
+                        "Upload from file"
+                        <input
+                            type="file"
+                            class="hidden"
+                            on:change=on_file_change
+                        />
+                    </label>
+                </div>
                 <textarea
                     rows="8"
                     class="w-full px-3 py-2 bg-surface-tertiary border border-border-primary rounded-md text-text-primary text-xs font-mono focus:outline-none focus:border-accent-amber"

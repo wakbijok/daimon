@@ -73,9 +73,11 @@ dev-reset-admin:
 
 # --- Check + Test ----------------------------------------------------------
 
-# Fast compile check (ssr lib + hydrate WASM).
+# Fast compile check (ssr lib + hydrate WASM). Keep default features ON —
+# leptos's transitive deps trip when `--no-default-features` strips
+# `leptos_config` from its activated set during host SSR check.
 check:
-    cargo check -p daimon-app --features ssr --no-default-features
+    cargo check -p daimon-app --features ssr
     cargo check -p daimon-app --features hydrate --no-default-features --target wasm32-unknown-unknown
 
 # All workspace tests.
