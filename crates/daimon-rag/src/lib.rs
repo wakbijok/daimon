@@ -10,6 +10,14 @@
 //! Phase 3 lands embedder + a single-vector dense ingest/retrieve path first. Sparse / hybrid
 //! and reranker land in later deliverables (D6) per `daimon-docs/plans/2026-05-23-phase-3-memory-rag-qdrant-plan.md`.
 
+pub mod chunker;
+pub mod embedder;
 pub mod error;
+pub mod ingest;
+pub mod retrieve;
 
+pub use chunker::{Chunk, ChunkConfig, chunk};
+pub use embedder::{Embedder, cosine};
 pub use error::{Error, Result};
+pub use ingest::{Document, IngestStats, ingest_document, long_term_collection};
+pub use retrieve::retrieve;

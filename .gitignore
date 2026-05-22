@@ -8,3 +8,4 @@ daimon.db
 .dev-data/
 daimon-data/
 .qdrant-data/
+.fastembed_cache/
