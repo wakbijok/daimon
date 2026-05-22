@@ -29,7 +29,7 @@ Recipes:
 | Command | What it does |
 | --- | --- |
 | `just` | List all recipes |
-| `just dev` | Local dev server (native host bin, hot reload, http://127.0.0.1:3000) |
+| `just dev` | Local dev server (native host bin, hot reload, http://127.0.0.1:3030) |
 | `just dev-port 3030` | Same on a custom port |
 | `just keygen` | Generate `/tmp/daimon-dev.key` (auto-invoked by `just dev`) |
 | `just dev-reset` | DESTRUCTIVE — wipe local vault / inventory / audit + master key |

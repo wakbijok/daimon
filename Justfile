@@ -30,11 +30,14 @@ keygen:
     fi
 
 # Local dev server. Native host bin + WASM hot reload via cargo-leptos.
-# Opens at http://127.0.0.1:3000.
+# Opens at http://127.0.0.1:3030 (workspace default 3000 collides with the
+# Hermes WhatsApp bridge on Wak's laptop; production deploy still uses 3000
+# per workspace site-addr).
 dev: keygen
     DAIMON_MASTER_KEY_FILE={{dev_key_file}} \
     DAIMON_DATA_DIR={{dev_data_dir}} \
     LEPTOS_BIN_TARGET_TRIPLE={{host_triple}} \
+    LEPTOS_SITE_ADDR=127.0.0.1:3030 \
     cargo leptos serve
 
 # Same as `dev` but on a custom port: `just dev-port 3030`.
