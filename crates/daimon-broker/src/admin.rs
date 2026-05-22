@@ -186,6 +186,33 @@ impl Broker {
             .map_err(BrokerError::from)
     }
 
+    /// Get a target's full record — including `credential_ref`. Admin-only
+    /// read used by the targets admin UI to pre-fill the edit form. Audited
+    /// as `InventoryResolve` since the returned record discloses which vault
+    /// entry binds to which target.
+    #[instrument(skip(self), fields(actor = %actor_id, ref = %target_ref))]
+    pub async fn inventory_get_managed(
+        &self,
+        actor_id: &str,
+        target_ref: &TargetRef,
+    ) -> Result<ManagedTarget, BrokerError> {
+        let start = Instant::now();
+        let result = self.inventory.get_managed(target_ref).await;
+        let target_str = target_ref.to_string();
+        let cred_str = result.as_ref().ok().map(|t| t.credential_ref.clone());
+        self.audit_action(
+            actor_id,
+            ActionKind::InventoryResolve,
+            Some(&target_str),
+            cred_str.as_deref(),
+            Some("inventory get_managed"),
+            &result,
+            start,
+        )
+        .await;
+        result.map_err(BrokerError::from)
+    }
+
     /// Upsert a managed target (create or update).
     #[instrument(skip(self, target), fields(actor = %actor_id, ref = %target.r#ref))]
     pub async fn inventory_upsert(
@@ -457,6 +484,39 @@ mod tests {
         let actions: Vec<_> = events.iter().map(|e| e.action).collect();
         assert!(actions.contains(&ActionKind::InventoryUpsert));
         assert!(actions.contains(&ActionKind::InventoryRemove));
+    }
+
+    #[tokio::test]
+    async fn inventory_get_managed_returns_credential_ref() {
+        let b = admin_broker().await;
+        let t = ManagedTarget {
+            r#ref: TargetRef::parse("target://full-record-test").unwrap(),
+            kind: TargetKind::Network,
+            transport: TransportKind::Ssh,
+            host: "10.0.0.1".into(),
+            port: 22,
+            credential_ref: "vault://full-record-test".into(),
+            labels: BTreeMap::new(),
+            capabilities: vec![],
+        };
+        b.inventory_upsert("user:arif", t.clone()).await.unwrap();
+        let got = b
+            .inventory_get_managed("user:arif", &t.r#ref)
+            .await
+            .unwrap();
+        assert_eq!(got.credential_ref, "vault://full-record-test");
+        assert_eq!(got.host, "10.0.0.1");
+        // Audit event recorded as InventoryResolve.
+        let filter = AuditFilter {
+            action: Some(ActionKind::InventoryResolve),
+            ..Default::default()
+        };
+        let events = b.audit_query("user:arif", &filter, 10, 0).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].credential_ref.as_deref(),
+            Some("vault://full-record-test")
+        );
     }
 
     #[tokio::test]

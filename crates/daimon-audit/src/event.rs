@@ -25,6 +25,10 @@ pub enum ActionKind {
     InventoryUpsert,
     /// Inventory remove — admin removed a managed target.
     InventoryRemove,
+    /// Inventory resolve — admin read a managed target's full record
+    /// (including credential_ref). Audited because credential_ref is
+    /// sensitive — it tells the operator which vault entry binds where.
+    InventoryResolve,
     /// Transport dispatch — broker dispatched an Op to a transport impl.
     TransportDispatch,
     /// Guard decision (Phase 5+).
@@ -46,6 +50,7 @@ impl ActionKind {
             ActionKind::VaultDelete => "vault.delete",
             ActionKind::InventoryUpsert => "inventory.upsert",
             ActionKind::InventoryRemove => "inventory.remove",
+            ActionKind::InventoryResolve => "inventory.resolve",
             ActionKind::TransportDispatch => "transport.dispatch",
             ActionKind::GuardApprove => "guard.approve",
             ActionKind::GuardDeny => "guard.deny",
@@ -64,6 +69,7 @@ impl ActionKind {
             "vault.delete" => ActionKind::VaultDelete,
             "inventory.upsert" => ActionKind::InventoryUpsert,
             "inventory.remove" => ActionKind::InventoryRemove,
+            "inventory.resolve" => ActionKind::InventoryResolve,
             "transport.dispatch" => ActionKind::TransportDispatch,
             "guard.approve" => ActionKind::GuardApprove,
             "guard.deny" => ActionKind::GuardDeny,

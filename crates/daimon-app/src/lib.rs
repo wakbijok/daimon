@@ -10,6 +10,7 @@ pub mod state;
 pub mod ws;
 pub mod admin_broker;
 pub mod admin_credentials;
+pub mod admin_targets;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
