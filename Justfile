@@ -71,6 +71,78 @@ dev-reset-admin:
         echo "no daimon.db found; nothing to reset"; \
     fi
 
+# --- Qdrant (vector tier — Phase 3) ----------------------------------------
+#
+# Dev runs the native Qdrant binary (no Docker, no container runtime overhead).
+# Binary lives at ~/.daimon/bin/qdrant; data lives at ./.qdrant-data; pid + log
+# at ./.qdrant-data/qdrant.{pid,log}. Production uses the cluster build per
+# MASTERPLAN §3.2 — same protocol (gRPC :6334), same qdrant-client code path.
+
+qdrant_version := "v1.18.1"
+qdrant_bin_dir := env_var('HOME') + "/.daimon/bin"
+qdrant_bin := qdrant_bin_dir + "/qdrant"
+qdrant_data := "./.qdrant-data"
+qdrant_pid := qdrant_data + "/qdrant.pid"
+qdrant_log := qdrant_data + "/qdrant.log"
+
+# Download the Qdrant binary if not already present (idempotent).
+qdrant-install:
+    @if [ ! -x {{qdrant_bin}} ]; then \
+        mkdir -p {{qdrant_bin_dir}} && \
+        echo "downloading qdrant {{qdrant_version}} for arm64-darwin..." && \
+        curl -sSL -o /tmp/qdrant.tar.gz \
+            "https://github.com/qdrant/qdrant/releases/download/{{qdrant_version}}/qdrant-aarch64-apple-darwin.tar.gz" && \
+        tar -xzf /tmp/qdrant.tar.gz -C {{qdrant_bin_dir}} && \
+        chmod +x {{qdrant_bin}} && \
+        rm /tmp/qdrant.tar.gz && \
+        echo "installed at {{qdrant_bin}}"; \
+    else \
+        echo "qdrant already installed at {{qdrant_bin}}"; \
+    fi
+
+# Start Qdrant in the background. REST :6333, gRPC :6334, dashboard at http://localhost:6333/dashboard.
+qdrant-up: qdrant-install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p {{qdrant_data}}
+    if [ -f {{qdrant_pid}} ] && kill -0 "$(cat {{qdrant_pid}})" 2>/dev/null; then
+        echo "qdrant already running (pid $(cat {{qdrant_pid}}))"
+        exit 0
+    fi
+    cd {{qdrant_data}}
+    QDRANT__STORAGE__STORAGE_PATH=./storage \
+    QDRANT__STORAGE__SNAPSHOTS_PATH=./snapshots \
+    QDRANT__SERVICE__HTTP_PORT=6333 \
+    QDRANT__SERVICE__GRPC_PORT=6334 \
+    nohup {{qdrant_bin}} </dev/null >qdrant.log 2>&1 &
+    echo $! > qdrant.pid
+    disown
+    echo "qdrant started, pid $(cat qdrant.pid), REST :6333, gRPC :6334, dashboard http://localhost:6333/dashboard"
+
+# Stop Qdrant (preserves data).
+qdrant-down:
+    @if [ -f {{qdrant_pid}} ]; then \
+        kill $(cat {{qdrant_pid}}) 2>/dev/null && \
+        rm -f {{qdrant_pid}} && \
+        echo "stopped qdrant"; \
+    else \
+        echo "not running"; \
+    fi
+
+# DESTRUCTIVE: stop qdrant AND wipe local data.
+qdrant-reset: qdrant-down
+    rm -rf {{qdrant_data}}
+    @echo "wiped {{qdrant_data}}"
+
+# Show qdrant status + a curl healthcheck.
+qdrant-status:
+    @if [ -f {{qdrant_pid}} ] && kill -0 $(cat {{qdrant_pid}}) 2>/dev/null; then \
+        echo "qdrant running, pid $(cat {{qdrant_pid}})"; \
+    else \
+        echo "qdrant not running"; \
+    fi
+    @curl -sS http://localhost:6333/healthz 2>&1 || echo "(REST endpoint not reachable yet)"
+
 # --- Check + Test ----------------------------------------------------------
 
 # Fast compile check (ssr lib + hydrate WASM). Keep default features ON —

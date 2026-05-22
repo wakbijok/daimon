@@ -1,0 +1,23 @@
+[package]
+name = "daimon-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Three-tier memory (conversation / working / long-term) for daimon agents. Vector tier backed by Qdrant; canonical payload backed by Postgres (SQLite dev fallback)."
+
+[dependencies]
+daimon-core = { path = "../daimon-core" }
+qdrant-client = "1.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+rand = "0.8"

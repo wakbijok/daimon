@@ -7,3 +7,4 @@ target/site/
 daimon.db
 .dev-data/
 daimon-data/
+.qdrant-data/
