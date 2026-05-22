@@ -82,9 +82,13 @@ mod ssr_state {
 #[server]
 pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, ServerFnError> {
     use crate::auth_guard::require_admin;
+    use crate::state::AppState;
+    use daimon_broker::ActionKind;
     use daimon_rag::{ChunkConfig, Document, ingest_document};
+    use std::time::Instant;
 
-    require_admin().await?;
+    let claims = require_admin().await?;
+    let state = expect_context::<AppState>();
 
     let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
     let store = ssr_state::store().await.map_err(ServerFnError::new)?;
@@ -95,10 +99,36 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
         content: req.content,
     };
 
-    let stats = ingest_document(store, embedder, DEFAULT_TENANT, &doc, &ChunkConfig::default())
-        .await
-        .map_err(|e| ServerFnError::new(format!("ingest: {}", e)))?;
+    let collection_target = format!("memory://{}/{}", DEFAULT_TENANT, doc.source_id);
+    let start = Instant::now();
+    let result = ingest_document(store, embedder, DEFAULT_TENANT, &doc, &ChunkConfig::default())
+        .await;
+    let latency_ms = start.elapsed().as_millis() as u64;
 
+    let (success, summary, chunks_meta) = match &result {
+        Ok(s) => (true, format!("ingested {} chunks", s.chunks), s.chunks.to_string()),
+        Err(e) => (false, format!("ingest failed: {}", e), "0".to_string()),
+    };
+
+    let _ = state
+        .broker
+        .audit_memory_op(
+            &claims.sub,
+            ActionKind::MemoryIngest,
+            Some(&collection_target),
+            Some(&summary),
+            latency_ms,
+            success,
+            vec![
+                ("source_id".to_string(), req.source_id.clone()),
+                ("source_kind".to_string(), req.source_kind.clone()),
+                ("chunks".to_string(), chunks_meta),
+                ("tenant".to_string(), DEFAULT_TENANT.to_string()),
+            ],
+        )
+        .await;
+
+    let stats = result.map_err(|e| ServerFnError::new(format!("ingest: {}", e)))?;
     Ok(IngestResult {
         source_id: stats.source_id,
         chunks: stats.chunks,
@@ -109,16 +139,46 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
 #[server]
 pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, ServerFnError> {
     use crate::auth_guard::require_admin;
+    use crate::state::AppState;
+    use daimon_broker::ActionKind;
     use daimon_rag::retrieve;
+    use std::time::Instant;
 
-    require_admin().await?;
+    let claims = require_admin().await?;
+    let state = expect_context::<AppState>();
 
     let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
     let store = ssr_state::store().await.map_err(ServerFnError::new)?;
 
-    let hits = retrieve(store, embedder, DEFAULT_TENANT, &req.query, req.top_k as u64)
-        .await
-        .map_err(|e| ServerFnError::new(format!("retrieve: {}", e)))?;
+    let target = format!("memory://{}/_search", DEFAULT_TENANT);
+    let start = Instant::now();
+    let hits_res = retrieve(store, embedder, DEFAULT_TENANT, &req.query, req.top_k as u64).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+
+    let (success, summary, returned_count) = match &hits_res {
+        Ok(h) => (true, format!("returned {} hits", h.len()), h.len().to_string()),
+        Err(e) => (false, format!("retrieve failed: {}", e), "0".to_string()),
+    };
+
+    let _ = state
+        .broker
+        .audit_memory_op(
+            &claims.sub,
+            ActionKind::MemoryRetrieve,
+            Some(&target),
+            Some(&summary),
+            latency_ms,
+            success,
+            vec![
+                ("query_hash".to_string(), format!("{:x}", hash_query(&req.query))),
+                ("top_k".to_string(), req.top_k.to_string()),
+                ("returned".to_string(), returned_count),
+                ("tenant".to_string(), DEFAULT_TENANT.to_string()),
+            ],
+        )
+        .await;
+
+    let hits = hits_res.map_err(|e| ServerFnError::new(format!("retrieve: {}", e)))?;
 
     let out: Vec<SearchHit> = hits
         .into_iter()
@@ -151,4 +211,13 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
         .collect();
 
     Ok(out)
+}
+
+#[cfg(feature = "ssr")]
+fn hash_query(q: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    q.trim().to_lowercase().hash(&mut h);
+    h.finish()
 }

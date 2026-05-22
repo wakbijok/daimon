@@ -34,6 +34,8 @@ pub enum ActionKindDto {
     TransportDispatch,
     GuardApprove,
     GuardDeny,
+    MemoryIngest,
+    MemoryRetrieve,
     Other,
 }
 
@@ -53,11 +55,13 @@ impl ActionKindDto {
             Self::TransportDispatch => "transport.dispatch",
             Self::GuardApprove => "guard.approve",
             Self::GuardDeny => "guard.deny",
+            Self::MemoryIngest => "memory.ingest",
+            Self::MemoryRetrieve => "memory.retrieve",
             Self::Other => "other",
         }
     }
 
-    pub fn all() -> [Self; 14] {
+    pub fn all() -> [Self; 16] {
         [
             Self::BrokerExecute,
             Self::VaultResolve,
@@ -72,6 +76,8 @@ impl ActionKindDto {
             Self::TransportDispatch,
             Self::GuardApprove,
             Self::GuardDeny,
+            Self::MemoryIngest,
+            Self::MemoryRetrieve,
             Self::Other,
         ]
     }
@@ -145,6 +151,8 @@ mod bridge {
                 ActionKind::TransportDispatch => Self::TransportDispatch,
                 ActionKind::GuardApprove => Self::GuardApprove,
                 ActionKind::GuardDeny => Self::GuardDeny,
+                ActionKind::MemoryIngest => Self::MemoryIngest,
+                ActionKind::MemoryRetrieve => Self::MemoryRetrieve,
                 ActionKind::Other => Self::Other,
             }
         }
@@ -166,6 +174,8 @@ mod bridge {
                 ActionKindDto::TransportDispatch => Self::TransportDispatch,
                 ActionKindDto::GuardApprove => Self::GuardApprove,
                 ActionKindDto::GuardDeny => Self::GuardDeny,
+                ActionKindDto::MemoryIngest => Self::MemoryIngest,
+                ActionKindDto::MemoryRetrieve => Self::MemoryRetrieve,
                 ActionKindDto::Other => Self::Other,
             }
         }

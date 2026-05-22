@@ -34,6 +34,10 @@ pub enum ActionKind {
     /// Guard decision (Phase 5+).
     GuardApprove,
     GuardDeny,
+    /// Memory tier — document ingested into long-term collection (Phase 3).
+    MemoryIngest,
+    /// Memory tier — long-term retrieval performed (Phase 3).
+    MemoryRetrieve,
     /// Generic — for cases not covered above.
     Other,
 }
@@ -54,6 +58,8 @@ impl ActionKind {
             ActionKind::TransportDispatch => "transport.dispatch",
             ActionKind::GuardApprove => "guard.approve",
             ActionKind::GuardDeny => "guard.deny",
+            ActionKind::MemoryIngest => "memory.ingest",
+            ActionKind::MemoryRetrieve => "memory.retrieve",
             ActionKind::Other => "other",
         }
     }
@@ -73,6 +79,8 @@ impl ActionKind {
             "transport.dispatch" => ActionKind::TransportDispatch,
             "guard.approve" => ActionKind::GuardApprove,
             "guard.deny" => ActionKind::GuardDeny,
+            "memory.ingest" => ActionKind::MemoryIngest,
+            "memory.retrieve" => ActionKind::MemoryRetrieve,
             _ => ActionKind::Other,
         }
     }

@@ -286,6 +286,44 @@ impl Broker {
             .map_err(|e| BrokerError::Audit(format!("{e}")))
     }
 
+    /// Emit a memory-tier audit event (Phase 3). Used by daimon-app's
+    /// `/admin/memory` server-fns to log ingest + retrieve operations.
+    /// Action must be one of `ActionKind::MemoryIngest` or `MemoryRetrieve`;
+    /// the broker does not constrain this at compile time but admin UI
+    /// callers should adhere.
+    pub async fn audit_memory_op(
+        &self,
+        actor_id: &str,
+        action: ActionKind,
+        target_ref: Option<&str>,
+        op_summary: Option<&str>,
+        latency_ms: u64,
+        success: bool,
+        metadata: Vec<(String, String)>,
+    ) -> Result<(), BrokerError> {
+        let sink = self.require_audit_sink()?;
+        let res_tag = if success {
+            AuditResult::Success
+        } else {
+            AuditResult::Error
+        };
+        let mut ev = NewAuditEvent::new(actor_id.to_string(), action, res_tag)
+            .with_latency_ms(latency_ms);
+        if let Some(t) = target_ref {
+            ev = ev.with_target(t);
+        }
+        if let Some(s) = op_summary {
+            ev = ev.with_op_summary(s);
+        }
+        for (k, v) in metadata {
+            ev = ev.with_metadata(k, v);
+        }
+        sink.append(ev)
+            .await
+            .map(|_| ())
+            .map_err(|e| BrokerError::Audit(format!("{e}")))
+    }
+
     // -------- Internal helpers --------------------------------------------
 
     fn require_vault_admin(&self) -> Result<&Arc<daimon_vault::SqliteVaultClient>, BrokerError> {
