@@ -143,6 +143,63 @@ qdrant-status:
     fi
     @curl -sS http://localhost:6333/healthz 2>&1 || echo "(REST endpoint not reachable yet)"
 
+# --- Postgres (relational tier — Phase 2c) ---------------------------------
+#
+# Dev uses the brew-installed Postgres 16 with brew's default data directory.
+# Managed via pg_ctl (not brew services) so the daemon is daimon-scoped and
+# doesn't autostart at login. Same client code path (sqlx) for prod cluster.
+
+pg_bin := "/opt/homebrew/opt/postgresql@16/bin"
+pg_data := "/opt/homebrew/var/postgresql@16"
+pg_log := pg_data + "/server.log"
+pg_port := "5432"
+pg_user := env_var('USER')
+pg_db := "daimon"
+pg_url := "postgres://" + pg_user + "@localhost:" + pg_port + "/" + pg_db
+
+# Start Postgres in the background.
+pg-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if {{pg_bin}}/pg_ctl -D {{pg_data}} status >/dev/null 2>&1; then
+        echo "postgres already running"
+    else
+        {{pg_bin}}/pg_ctl -D {{pg_data}} -l {{pg_log}} start
+        echo "postgres started, port {{pg_port}}, data {{pg_data}}, log {{pg_log}}"
+    fi
+
+# Stop Postgres.
+pg-down:
+    @{{pg_bin}}/pg_ctl -D {{pg_data}} stop 2>/dev/null && echo "stopped postgres" || echo "not running"
+
+# Show status + database list.
+pg-status:
+    @{{pg_bin}}/pg_ctl -D {{pg_data}} status 2>&1 || true
+    @{{pg_bin}}/psql -p {{pg_port}} -d postgres -c '\l' 2>&1 | head -10 || echo "(no client connection)"
+
+# Create the daimon database (idempotent).
+pg-create-db:
+    @{{pg_bin}}/psql -p {{pg_port}} -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='{{pg_db}}'" | grep -q 1 && \
+        echo "database {{pg_db}} already exists" || \
+        ({{pg_bin}}/createdb -p {{pg_port}} {{pg_db}} && echo "created database {{pg_db}}")
+
+# DESTRUCTIVE: drop the daimon database (dev only).
+pg-drop-db:
+    @{{pg_bin}}/dropdb -p {{pg_port}} --if-exists {{pg_db}}
+    @echo "dropped database {{pg_db}}"
+
+# Interactive psql shell to the daimon database.
+pg-psql:
+    @{{pg_bin}}/psql -p {{pg_port}} -d {{pg_db}}
+
+# Run pending migrations against the daimon database.
+pg-migrate:
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-db --bin daimon-migrate
+
+# Echo the dev Postgres URL (for sourcing into env: `export DAIMON_PG_URL=$(just pg-url)`).
+pg-url:
+    @echo "{{pg_url}}"
+
 # --- Check + Test ----------------------------------------------------------
 
 # Fast compile check (ssr lib + hydrate WASM). Keep default features ON —
