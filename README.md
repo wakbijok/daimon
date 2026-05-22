@@ -33,6 +33,7 @@ Recipes:
 | `just dev-port 3030` | Same on a custom port |
 | `just keygen` | Generate `/tmp/daimon-dev.key` (auto-invoked by `just dev`) |
 | `just dev-reset` | DESTRUCTIVE — wipe local vault / inventory / audit + master key |
+| `just dev-reset-admin` | Drop the admin row in `daimon.db`; next `just dev` re-seeds with `devadmin` |
 | `just check` | SSR + hydrate compile check |
 | `just test` | Workspace tests |
 | `just test-broker` | Broker-only tests (D19/D21 + audit keystones) |
