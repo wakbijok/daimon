@@ -30,7 +30,7 @@ use crate::pages::{
         agent_placeholder::AgentPlaceholder,
     },
     settings::Settings,
-    admin::{AdminAudit, AdminCredentials, AdminPlaceholder, AdminTargets},
+    admin::{AdminAudit, AdminCredentials, AdminTargets},
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
