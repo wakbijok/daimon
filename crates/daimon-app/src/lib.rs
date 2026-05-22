@@ -9,6 +9,7 @@ pub mod auth_guard;
 pub mod state;
 pub mod ws;
 pub mod admin_broker;
+pub mod admin_credentials;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

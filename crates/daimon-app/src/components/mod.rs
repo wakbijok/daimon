@@ -2,6 +2,7 @@ pub mod auto_refresh;
 pub mod detail_layout;
 pub mod icons;
 pub mod layout;
+pub mod modal;
 pub mod sidebar;
 pub mod sortable_table;
 pub mod sparkline;

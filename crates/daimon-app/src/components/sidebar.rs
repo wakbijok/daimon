@@ -38,6 +38,7 @@ pub fn Sidebar() -> impl IntoView {
     let pathname = move || location.pathname.get();
     let (collapsed, set_collapsed) = signal(false);
     let (cluster_expanded, set_cluster_expanded) = signal(true);
+    let (admin_expanded, set_admin_expanded) = signal(true);
 
     let clusters = Resource::new(|| (), |_| get_sidebar_clusters());
 
@@ -153,6 +154,64 @@ pub fn Sidebar() -> impl IntoView {
                                     <span class="text-accent-amber">"+"</span>
                                     " Add Cluster"
                                 </A>
+                            </div>
+                        </Show>
+                    </div>
+
+                    // Divider
+                    <div class="mx-4 border-t border-border-primary/50" />
+
+                    // Admin section
+                    <div class="px-1">
+                        <button
+                            on:click=move |_| set_admin_expanded.update(|e| *e = !*e)
+                            class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted hover:text-text-secondary transition-colors"
+                        >
+                            <svg
+                                class=move || format!(
+                                    "w-3.5 h-3.5 text-text-muted transition-transform duration-200 {}",
+                                    if admin_expanded.get() { "rotate-90" } else { "" }
+                                )
+                                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                            >
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                            </svg>
+                            <Show when=move || !collapsed.get()>
+                                <span>"Admin"</span>
+                            </Show>
+                        </button>
+
+                        <Show when=move || admin_expanded.get() && !collapsed.get()>
+                            <div class="space-y-0.5 ml-2">
+                                {[
+                                    ("/admin/credentials", "Credentials"),
+                                    ("/admin/targets", "Targets"),
+                                    ("/admin/audit", "Audit Log"),
+                                ].iter().map(|(path, label)| {
+                                    let path = *path;
+                                    let label = *label;
+                                    let path_for_class = path;
+                                    let path_for_dot = path;
+                                    view! {
+                                        <A
+                                            href=path
+                                            attr:class=move || format!(
+                                                "flex items-center gap-2.5 pl-6 pr-3 py-1 rounded-md text-[12px] transition-colors {}",
+                                                if pathname() == path_for_class {
+                                                    "text-text-primary bg-accent-amber/10 border-l-2 border-accent-amber"
+                                                } else {
+                                                    "text-text-muted hover:text-text-secondary hover:bg-surface-tertiary"
+                                                }
+                                            )
+                                        >
+                                            <span class=move || format!(
+                                                "w-1 h-1 rounded-full {}",
+                                                if pathname() == path_for_dot { "bg-accent-amber" } else { "bg-text-muted/30" }
+                                            ) />
+                                            {label}
+                                        </A>
+                                    }
+                                }).collect_view()}
                             </div>
                         </Show>
                     </div>
