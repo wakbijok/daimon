@@ -40,6 +40,7 @@ tracing = { version = "0.1", optional = true }
 # internal API surface on the gated three crates.
 daimon-broker = { path = "../daimon-broker", optional = true }
 anyhow = { version = "1", optional = true }
+chrono = { version = "0.4", optional = true }
 
 [features]
 hydrate = [
@@ -67,4 +68,5 @@ ssr = [
     "dep:tracing",
     "dep:daimon-broker",
     "dep:anyhow",
+    "dep:chrono",
 ]
