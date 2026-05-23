@@ -325,6 +325,39 @@ impl Broker {
             .map_err(|e| BrokerError::Audit(format!("{e}")))
     }
 
+    /// Emit a generic admin-tier audit event (Phase 8 settings + others).
+    /// `target_ref` + `credential_ref` are optional pointers; `metadata`
+    /// is a flat string map flattened into the audit row.
+    pub async fn audit_admin_action(
+        &self,
+        actor_id: &str,
+        action: ActionKind,
+        target_ref: Option<&str>,
+        credential_ref: Option<&str>,
+        op_summary: Option<&str>,
+        metadata: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), BrokerError> {
+        let sink = self.require_audit_sink()?;
+        let mut ev =
+            NewAuditEvent::new(actor_id.to_string(), action, AuditResult::Success);
+        if let Some(t) = target_ref {
+            ev = ev.with_target(t);
+        }
+        if let Some(c) = credential_ref {
+            ev = ev.with_credential(c);
+        }
+        if let Some(s) = op_summary {
+            ev = ev.with_op_summary(s);
+        }
+        for (k, v) in metadata {
+            ev = ev.with_metadata(k, v);
+        }
+        sink.append(ev)
+            .await
+            .map(|_| ())
+            .map_err(|e| BrokerError::Audit(format!("{e}")))
+    }
+
     // -------- Approval inbox proxy (Phase 8) -----------------------------
 
     /// List pending approval-inbox rows for a tenant, newest first. Errors

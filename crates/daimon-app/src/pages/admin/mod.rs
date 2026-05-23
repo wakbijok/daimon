@@ -5,6 +5,7 @@ pub mod memory;
 pub mod observer;
 pub mod placeholder;
 pub mod plans;
+pub mod settings;
 pub mod targets;
 
 pub use approvals::AdminApprovals;
@@ -14,4 +15,5 @@ pub use memory::AdminMemory;
 pub use observer::AdminObserver;
 pub use placeholder::AdminPlaceholder;
 pub use plans::AdminPlans;
+pub use settings::AdminSettings;
 pub use targets::AdminTargets;

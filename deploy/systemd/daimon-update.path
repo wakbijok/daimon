@@ -1,0 +1,21 @@
+# Phase 8 — flag-file path-unit that triggers daimon-update.service
+# whenever /var/lib/daimon/UPDATE_REQUESTED appears (written by the
+# /admin/settings Update tab via the apply_update server-fn).
+#
+# Install:
+#   sudo cp deploy/systemd/daimon-update.{path,service} \
+#         deploy/systemd/daimon-update-hook.sh /etc/systemd/system/
+#   sudo chmod 0755 /etc/systemd/system/daimon-update-hook.sh
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now daimon-update.path
+
+[Unit]
+Description=Watch for daimon update requests
+Documentation=https://github.com/wakbijok/daimon
+
+[Path]
+PathExists=/var/lib/daimon/UPDATE_REQUESTED
+Unit=daimon-update.service
+
+[Install]
+WantedBy=multi-user.target

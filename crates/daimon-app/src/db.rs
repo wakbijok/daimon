@@ -176,29 +176,54 @@ pub async fn delete_session(pool: &Pool, id: &str) -> Result<()> {
 }
 
 // ---- app_config -------------------------------------------------------------
+//
+// V016 reshaped public.app_config to (tenant_id, key, JSONB value, is_secret,
+// updated_by). The legacy helpers below now wrap that schema, encoding string
+// values as JSONB strings and scoping every read/write by tenant_id. RLS
+// requires the `app.tenant_id` GUC to be set before SELECT/INSERT; we set it
+// inside the transaction.
 
 #[cfg(feature = "ssr")]
-pub async fn get_config(pool: &Pool, key: &str) -> Result<Option<String>> {
-    let client = pool.get().await.context("pg client")?;
-    let row = client
-        .query_opt(
-            "SELECT value FROM public.app_config WHERE key = $1",
-            &[&key],
-        )
-        .await
-        .context("get_config")?;
-    Ok(row.map(|r| r.get(0)))
-}
-
-#[cfg(feature = "ssr")]
-pub async fn set_config(pool: &Pool, key: &str, value: &str) -> Result<()> {
+pub async fn get_config(pool: &Pool, tenant_id: Uuid, key: &str) -> Result<Option<String>> {
     let client = pool.get().await.context("pg client")?;
     client
         .execute(
-            "INSERT INTO public.app_config (key, value)
-             VALUES ($1, $2)
-             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-            &[&key, &value],
+            "SELECT set_config('app.tenant_id', $1::text, true)",
+            &[&tenant_id.to_string()],
+        )
+        .await
+        .context("set tenant guc")?;
+    let row = client
+        .query_opt(
+            "SELECT value FROM public.app_config WHERE tenant_id = $1 AND key = $2",
+            &[&tenant_id, &key],
+        )
+        .await
+        .context("get_config")?;
+    Ok(row.and_then(|r| {
+        let v: serde_json::Value = r.get(0);
+        v.as_str().map(String::from)
+    }))
+}
+
+#[cfg(feature = "ssr")]
+pub async fn set_config(pool: &Pool, tenant_id: Uuid, key: &str, value: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "SELECT set_config('app.tenant_id', $1::text, true)",
+            &[&tenant_id.to_string()],
+        )
+        .await
+        .context("set tenant guc")?;
+    let jval = serde_json::Value::String(value.to_string());
+    client
+        .execute(
+            "INSERT INTO public.app_config (tenant_id, key, value)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (tenant_id, key) DO UPDATE
+               SET value = EXCLUDED.value, updated_at = now()",
+            &[&tenant_id, &key, &jval],
         )
         .await
         .context("set_config")?;

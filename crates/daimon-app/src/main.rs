@@ -61,11 +61,11 @@ async fn main() {
     };
 
     // Ensure JWT secret exists
-    let jwt_secret = match db::get_config(&pool, "jwt_secret").await.unwrap_or(None) {
+    let jwt_secret = match db::get_config(&pool, tenant_id, "jwt_secret").await.unwrap_or(None) {
         Some(secret) => secret,
         None => {
             let secret = auth::generate_secret();
-            db::set_config(&pool, "jwt_secret", &secret).await.unwrap();
+            db::set_config(&pool, tenant_id, "jwt_secret", &secret).await.unwrap();
             secret
         }
     };

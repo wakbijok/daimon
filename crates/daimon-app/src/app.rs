@@ -32,7 +32,7 @@ use crate::pages::{
     settings::Settings,
     admin::{
         AdminApprovals, AdminAudit, AdminCredentials, AdminMemory, AdminObserver, AdminPlans,
-        AdminTargets,
+        AdminSettings, AdminTargets,
     },
 };
 
@@ -155,6 +155,13 @@ pub fn App() -> impl IntoView {
                     <Route
                         path=(StaticSegment("admin"), StaticSegment("approvals"))
                         view=AdminApprovals
+                    />
+
+                    // Phase 8 — 9-tab settings (identity / connections /
+                    // LLM / guard / observer / RAG / vault / system / update)
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("settings"))
+                        view=AdminSettings
                     />
                 </ParentRoute>
             </Routes>

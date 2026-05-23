@@ -1,0 +1,30 @@
+# Phase 8 — oneshot that runs the update hook + clears the flag.
+#
+# Triggered by daimon-update.path when /var/lib/daimon/UPDATE_REQUESTED
+# appears. Runs as root because it has to systemctl restart the agent
+# units + replace /usr/local/bin/daimon-app.
+
+[Unit]
+Description=Apply a pending daimon update
+Documentation=https://github.com/wakbijok/daimon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/systemd/system/daimon-update-hook.sh
+# The hook is responsible for removing the flag file on success — leaving
+# it behind would trigger this service in a loop.
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10min
+
+# Hardening — the hook needs root for systemctl restart but we still
+# clamp filesystem access.
+ProtectSystem=full
+ReadWritePaths=/var/lib/daimon /usr/local/bin /usr/local/lib/daimon
+PrivateTmp=true
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
