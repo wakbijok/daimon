@@ -393,3 +393,160 @@ redis-status:
 # Echo the dev Redis URL.
 redis-url:
     @echo "{{redis_url}}"
+
+# --- VictoriaMetrics (time-series tier — Phase 8 lock) -------------------
+#
+# Dev uses native brew VictoriaMetrics single-binary with a daimon-scoped
+# data directory. Same pattern as Postgres + Qdrant + Redis — no Docker,
+# native binary. Prod uses the cluster trio (vmstorage + vminsert + vmselect).
+#
+# VM speaks PromQL (and MetricsQL superset) — `daimon-observer::PrometheusClient`
+# treats VM as a drop-in Prometheus endpoint. Default HTTP port 8428 is the
+# VM single-node convention; `/api/v1/write` accepts Prometheus remote_write
+# (snappy+protobuf) for ingest.
+
+vm_bin := "/opt/homebrew/opt/victoriametrics/bin"
+vm_data := "./.victoria-metrics-data"
+vm_log := vm_data + "/victoria-metrics.log"
+vm_pid := vm_data + "/victoria-metrics.pid"
+vm_port := "8428"
+vm_retention := "12" # months; banking floor needs 7y via downsampling in prod
+vm_url := "http://localhost:" + vm_port
+
+# Start VictoriaMetrics in the background. REST :8428.
+vm-up:
+    @mkdir -p {{vm_data}}
+    @if [ -f {{vm_pid}} ] && kill -0 "$(cat {{vm_pid}})" 2>/dev/null; then \
+        echo "vm already running, pid $(cat {{vm_pid}})"; \
+        exit 0; \
+    fi
+    @rm -f {{vm_pid}}
+    @if [ ! -x {{vm_bin}}/victoria-metrics ]; then \
+        echo "victoria-metrics binary not found — run: brew install victoriametrics"; \
+        exit 1; \
+    fi
+    @{{vm_bin}}/victoria-metrics \
+        -httpListenAddr=127.0.0.1:{{vm_port}} \
+        -storageDataPath={{vm_data}} \
+        -retentionPeriod={{vm_retention}} \
+        >> {{vm_log}} 2>&1 & \
+        echo $! > {{vm_pid}}
+    @sleep 1
+    @if kill -0 "$(cat {{vm_pid}})" 2>/dev/null; then \
+        echo "vm started, pid $(cat {{vm_pid}}), :{{vm_port}}"; \
+    else \
+        echo "vm failed to start, see {{vm_log}}"; \
+        exit 1; \
+    fi
+
+# Stop VictoriaMetrics.
+vm-down:
+    @if [ -f {{vm_pid}} ] && kill -0 "$(cat {{vm_pid}})" 2>/dev/null; then \
+        kill "$(cat {{vm_pid}})" && rm -f {{vm_pid}} && echo "stopped vm"; \
+    else \
+        echo "vm not running"; \
+    fi
+
+# Status + healthcheck.
+vm-status:
+    @if [ -f {{vm_pid}} ] && kill -0 "$(cat {{vm_pid}})" 2>/dev/null; then \
+        echo "vm running, pid $(cat {{vm_pid}})"; \
+    else \
+        echo "vm not running"; \
+    fi
+    @curl -sf {{vm_url}}/health 2>&1 || echo "(health unreachable)"
+
+# Echo the dev VictoriaMetrics URL (use as DAIMON_VM_URL).
+vm-url:
+    @echo "{{vm_url}}"
+
+# DESTRUCTIVE: stop vm AND wipe local data.
+vm-reset:
+    @just vm-down
+    @rm -rf {{vm_data}}
+    @echo "wiped {{vm_data}}"
+
+# --- NornicDB (graph tier — Phase 8 lock) --------------------------------
+#
+# Dev uses native NornicDB lite. Manual install one-time:
+#   1. Download NornicDB-1.1.0-arm64-lite.pkg from
+#      https://github.com/orneryd/NornicDB/releases/latest
+#   2. Open the .pkg and run the installer
+#   3. Confirm `nornicdb --version` resolves
+#
+# NornicDB speaks Neo4j Bolt protocol on :7687 (Cypher queries) and HTTP
+# on :7474. Wire-compat with Qdrant gRPC on :6334 too (not used here —
+# vector tier stays on Qdrant proper for Phase 8; NornicDB-as-vector is a
+# Phase 9 unification candidate).
+
+nornicdb_data := "./.nornicdb-data"
+nornicdb_log := nornicdb_data + "/nornicdb.log"
+nornicdb_pid := nornicdb_data + "/nornicdb.pid"
+nornicdb_http_port := "7474"
+nornicdb_bolt_port := "7687"
+nornicdb_url := "bolt://localhost:" + nornicdb_bolt_port
+
+# Print install instructions (NornicDB ships as a macOS .pkg, no brew yet).
+nornicdb-install:
+    @echo "NornicDB install (one-time, manual):"
+    @echo "  1. Download:  https://github.com/orneryd/NornicDB/releases/latest"
+    @echo "                pick NornicDB-1.1.0-arm64-lite.pkg (or -full.pkg for Metal GPU)"
+    @echo "  2. Open the .pkg and run the installer (requires admin password)"
+    @echo "  3. Verify:    nornicdb --version"
+    @echo ""
+    @echo "Linux/prod path: build from source via 'go build -o nornicdb ./cmd/nornicdb'"
+    @echo "in a clone of github.com/orneryd/NornicDB. Native NornicDB Linux binaries"
+    @echo "are not yet published — track the releases page for changes."
+
+# Start NornicDB in the background. Bolt :7687, HTTP :7474.
+nornicdb-up:
+    @mkdir -p {{nornicdb_data}}
+    @if [ -f {{nornicdb_pid}} ] && kill -0 "$(cat {{nornicdb_pid}})" 2>/dev/null; then \
+        echo "nornicdb already running, pid $(cat {{nornicdb_pid}})"; \
+        exit 0; \
+    fi
+    @rm -f {{nornicdb_pid}}
+    @if ! command -v nornicdb >/dev/null 2>&1; then \
+        echo "nornicdb binary not on PATH — run: just nornicdb-install"; \
+        exit 1; \
+    fi
+    @nornicdb serve \
+        --data-dir {{nornicdb_data}} \
+        --bolt-port {{nornicdb_bolt_port}} \
+        --http-port {{nornicdb_http_port}} \
+        >> {{nornicdb_log}} 2>&1 & \
+        echo $! > {{nornicdb_pid}}
+    @sleep 1
+    @if kill -0 "$(cat {{nornicdb_pid}})" 2>/dev/null; then \
+        echo "nornicdb started, pid $(cat {{nornicdb_pid}}), bolt :{{nornicdb_bolt_port}}, http :{{nornicdb_http_port}}"; \
+    else \
+        echo "nornicdb failed to start, see {{nornicdb_log}}"; \
+        exit 1; \
+    fi
+
+# Stop NornicDB.
+nornicdb-down:
+    @if [ -f {{nornicdb_pid}} ] && kill -0 "$(cat {{nornicdb_pid}})" 2>/dev/null; then \
+        kill "$(cat {{nornicdb_pid}})" && rm -f {{nornicdb_pid}} && echo "stopped nornicdb"; \
+    else \
+        echo "nornicdb not running"; \
+    fi
+
+# Status + ping.
+nornicdb-status:
+    @if [ -f {{nornicdb_pid}} ] && kill -0 "$(cat {{nornicdb_pid}})" 2>/dev/null; then \
+        echo "nornicdb running, pid $(cat {{nornicdb_pid}})"; \
+    else \
+        echo "nornicdb not running"; \
+    fi
+    @curl -sf http://localhost:{{nornicdb_http_port}}/ 2>&1 | head -3 || echo "(HTTP unreachable)"
+
+# Echo the dev NornicDB URL (use as DAIMON_GRAPH_URL).
+nornicdb-url:
+    @echo "{{nornicdb_url}}"
+
+# DESTRUCTIVE: stop nornicdb AND wipe local data.
+nornicdb-reset:
+    @just nornicdb-down
+    @rm -rf {{nornicdb_data}}
+    @echo "wiped {{nornicdb_data}}"

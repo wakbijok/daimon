@@ -157,23 +157,29 @@ async fn main() {
         orchestrator,
     };
 
-    // Phase 7 — PlatformPoller per cluster + push metrics to observer.metrics.
-    // The poller calls Platform::list_workloads on a fixed interval and
+    // Phase 7 — PlatformPoller per cluster + push metrics to the time-series
+    // tier. The poller calls Platform::list_workloads on a fixed interval and
     // broadcasts the snapshot back through ws_broadcast in the existing
-    // WsServerMsg::Update shape. Metric points (cpu/mem/disk per workload)
-    // land in observer.metrics for the time-series tier.
+    // WsServerMsg::Update shape.
+    //
+    // Phase 8 lock: metric streams land in VictoriaMetrics
+    // (`DAIMON_VM_URL`, default http://localhost:8428). The Postgres
+    // observer.metrics table was dropped in V015. PostgresMetricSink is
+    // retained in daimon-observer for tests only.
     {
         let state = app_state.clone();
         let pollers_handle = tokio::spawn(async move {
             use std::time::Duration;
-            use daimon_observer::{MetricPoint, MetricSink, PostgresMetricSink};
+            use daimon_observer::{MetricPoint, MetricSink, VictoriaMetricsSink};
 
             let clients = state.pve_clients.read().await.clone();
             let drivers: Vec<(String, std::sync::Arc<daimon_tool_platform::PveDriver>)> = clients
                 .into_iter()
                 .map(|(id, c)| (id.clone(), std::sync::Arc::new(daimon_tool_platform::PveDriver::new(id, c))))
                 .collect();
-            let metric_sink = std::sync::Arc::new(PostgresMetricSink::new(state.db.clone()));
+            let vm_url = std::env::var("DAIMON_VM_URL")
+                .unwrap_or_else(|_| "http://localhost:8428".to_string());
+            let metric_sink = std::sync::Arc::new(VictoriaMetricsSink::new(vm_url));
 
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {

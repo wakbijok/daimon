@@ -8,4 +8,7 @@ daimon.db
 .dev-data/
 daimon-data/
 .qdrant-data/
+.redis-data/
+.victoria-metrics-data/
+.nornicdb-data/
 .fastembed_cache/
