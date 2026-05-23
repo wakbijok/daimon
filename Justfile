@@ -291,6 +291,58 @@ status:
     git status
     git diff --stat
 
+# --- Release promotion ---------------------------------------------------
+#
+# Three-stage workflow:
+#   local working tree → `git push` → staging (GitLab)  → `just promote` → production (GitHub)
+#
+# `just promote` is the explicit staging → production push. It checks the
+# working tree is clean, fetches staging, refuses unless local main matches
+# staging/main (no untracked staging-side commits to bypass), and fast-forwards
+# main onto production. Use this instead of raw `git push production` so the
+# preconditions are always checked.
+#
+# Refuses if the tree is dirty, if local main is not in sync with staging/main,
+# or if production has diverged from local.
+
+# Promote staging HEAD to production (GitHub). See block comment above.
+promote:
+    @set -e; \
+    if [ -n "$(git status --porcelain)" ]; then \
+        echo "refuse: working tree is dirty — commit or stash before promoting"; \
+        exit 1; \
+    fi; \
+    branch=$(git rev-parse --abbrev-ref HEAD); \
+    if [ "$branch" != "main" ]; then \
+        echo "refuse: on branch '$branch'; promote only from main"; \
+        exit 1; \
+    fi; \
+    echo "→ fetching staging + production"; \
+    git fetch staging; \
+    git fetch production; \
+    local_head=$(git rev-parse main); \
+    staging_head=$(git rev-parse staging/main); \
+    if [ "$local_head" != "$staging_head" ]; then \
+        echo "refuse: local main ($local_head) != staging/main ($staging_head)"; \
+        echo "        run 'git push' first to align staging with local"; \
+        exit 1; \
+    fi; \
+    production_head=$(git rev-parse production/main 2>/dev/null || echo "none"); \
+    if [ "$production_head" = "$local_head" ]; then \
+        echo "already in sync: production/main = $local_head"; \
+        exit 0; \
+    fi; \
+    if [ "$production_head" != "none" ]; then \
+        if ! git merge-base --is-ancestor "$production_head" "$local_head"; then \
+            echo "refuse: production/main ($production_head) is NOT an ancestor of local main"; \
+            echo "        production has diverged — investigate before force-pushing"; \
+            exit 1; \
+        fi; \
+    fi; \
+    echo "→ promoting $local_head to production/main"; \
+    git push production main; \
+    echo "✓ promoted to production"
+
 # --- Redis (hot working memory tier — Phase 4) -----------------------------
 #
 # Dev uses native brew Redis with a daimon-scoped data directory. Same
