@@ -18,11 +18,16 @@
 //! agent-overridable by design.
 
 pub mod approvals;
+pub mod blast_radius;
 pub mod error;
 pub mod kill_switch;
 pub mod policy;
 
 pub use approvals::{ApprovalQueue, ApprovalRecord, ApprovalStatus};
+pub use blast_radius::{
+    blast_radius_for_target, enrich_with_blast_radius, ApprovalWithBlastRadius,
+    DEFAULT_BLAST_RADIUS_DEPTH,
+};
 pub use error::{Error, Result};
 pub use kill_switch::{KillState, KillSwitch};
 pub use policy::{Decision, PolicyEngine, PolicyRule, PolicyVerdict};

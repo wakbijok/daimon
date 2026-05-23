@@ -139,10 +139,47 @@ async fn main() {
         },
     };
 
-    let orchestrator = Arc::new(daimon_orchestrator::OrchestratorService::new(
+    // Phase 8 — graph tier (NornicDB). Connect best-effort; if
+    // DAIMON_GRAPH_URL isn't set or the daemon is unreachable, the
+    // orchestrator + approvals UI fall back to no graph mirror /
+    // no blast-radius summary respectively.
+    let graph: Option<Arc<dyn daimon_graph::GraphClient>> = match std::env::var("DAIMON_GRAPH_URL")
+    {
+        Ok(uri) if !uri.is_empty() => match daimon_graph::NornicGraphClient::connect(
+            &uri,
+            std::env::var("DAIMON_GRAPH_USER").unwrap_or_default().as_str(),
+            std::env::var("DAIMON_GRAPH_PASS").unwrap_or_default().as_str(),
+        )
+        .await
+        {
+            Ok(client) => {
+                if let Err(e) = daimon_graph::ensure_schema(&client).await {
+                    tracing::warn!(error = %e, "graph schema bootstrap failed; continuing without graph tier");
+                    None
+                } else {
+                    tracing::info!(uri = %uri, "connected to NornicDB graph tier");
+                    Some(Arc::new(client) as Arc<dyn daimon_graph::GraphClient>)
+                }
+            }
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "graph connect failed; continuing without graph tier");
+                None
+            }
+        },
+        _ => {
+            tracing::info!("DAIMON_GRAPH_URL not set — graph tier disabled");
+            None
+        }
+    };
+
+    let orchestrator_service = daimon_orchestrator::OrchestratorService::new(
         pool.clone(),
         broker.clone(),
-    ));
+    );
+    let orchestrator = Arc::new(match graph.clone() {
+        Some(g) => orchestrator_service.with_graph(g),
+        None => orchestrator_service,
+    });
 
     let app_state = AppState {
         db: pool,
@@ -155,6 +192,7 @@ async fn main() {
         network_agent,
         working_memory,
         orchestrator,
+        graph,
     };
 
     // Phase 7 — PlatformPoller per cluster + push metrics to the time-series

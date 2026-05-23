@@ -12,6 +12,7 @@ pub mod admin_audit;
 pub mod admin_broker;
 pub mod admin_chat_sessions;
 pub mod admin_credentials;
+pub mod admin_graph;
 pub mod admin_memory;
 pub mod admin_observer;
 pub mod admin_plans;

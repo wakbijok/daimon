@@ -7,9 +7,12 @@ use std::sync::Arc;
 use chrono::Utc;
 use daimon_broker::{Broker, ExecRequest, Op, TargetRef};
 use daimon_db::Pool;
+use daimon_graph::{
+    GraphClient, GraphPlan, GraphPlanStep, TargetRef as GraphTargetRef,
+};
 use daimon_llm::{ChatMessage, CompletionRequest, LlmClient};
 use serde_json::{Value as Json, json};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
@@ -40,11 +43,23 @@ Use the minimum number of steps that satisfies the intent.";
 pub struct OrchestratorService {
     pool: Pool,
     broker: Arc<Broker>,
+    /// Phase 8 graph tier (NornicDB). Postgres is the canonical store for
+    /// plans; the graph holds the same plan + capability + target edges
+    /// for cross-reference queries (blast-radius, lineage). Mirror writes
+    /// are best-effort — a graph-side failure logs a warning but doesn't
+    /// fail the plan creation.
+    graph: Option<Arc<dyn GraphClient>>,
 }
 
 impl OrchestratorService {
     pub fn new(pool: Pool, broker: Arc<Broker>) -> Self {
-        Self { pool, broker }
+        Self { pool, broker, graph: None }
+    }
+
+    /// Attach a graph client for plan-DAG mirroring. See struct comment.
+    pub fn with_graph(mut self, graph: Arc<dyn GraphClient>) -> Self {
+        self.graph = Some(graph);
+        self
     }
 
     // ---- create + list + get ------------------------------------------------
@@ -101,6 +116,44 @@ impl OrchestratorService {
         }
         txn.commit().await?;
         info!(plan_id = %plan.id, steps = steps.len(), "plan persisted");
+
+        // Phase 8: best-effort mirror to NornicDB. Skip steps that have no
+        // target_ref (they can't form an edge in the graph schema).
+        if let Some(graph) = &self.graph {
+            let graph_steps: Vec<GraphPlanStep> = steps
+                .iter()
+                .enumerate()
+                .filter_map(|(i, def)| {
+                    def.target_ref.as_ref().map(|tref| {
+                        let depends_on: Vec<Uuid> = def
+                            .depends_on_index
+                            .iter()
+                            .filter_map(|&idx| step_ids.get(idx).copied())
+                            .collect();
+                        GraphPlanStep {
+                            id: step_ids[i],
+                            capability_name: def.capability_name.clone(),
+                            capability_version: def.capability_version.clone(),
+                            target_ref: GraphTargetRef::from(tref.as_str()),
+                            depends_on,
+                        }
+                    })
+                })
+                .collect();
+            let graph_plan = GraphPlan {
+                id: plan.id,
+                tenant_id: plan.tenant_id,
+                intent: plan.intent.clone(),
+                created_at: plan.created_at,
+                steps: graph_steps,
+            };
+            if let Err(e) = graph.persist_plan(&graph_plan).await {
+                warn!(plan_id = %plan.id, error = %e, "graph mirror failed (non-fatal)");
+            } else {
+                info!(plan_id = %plan.id, "graph mirror persisted");
+            }
+        }
+
         Ok(plan)
     }
 

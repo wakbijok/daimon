@@ -10,6 +10,7 @@ description = "Plan orchestrator for daimon — persists Plan DAGs, executes ste
 daimon-db = { path = "../daimon-db" }
 daimon-broker = { path = "../daimon-broker" }
 daimon-llm = { path = "../daimon-llm" }
+daimon-graph = { path = "../daimon-graph" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -23,3 +24,8 @@ deadpool-postgres = "0.14"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+daimon-inventory = { path = "../daimon-inventory" }
+daimon-transport = { path = "../daimon-transport" }
+daimon-vault = { path = "../daimon-vault" }
+deadpool-postgres = "0.14"
+tokio-postgres = "0.7"

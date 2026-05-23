@@ -52,4 +52,9 @@ pub struct AppState {
     /// execution. Admin UI calls list_plans / create_plan / run_plan
     /// through this.
     pub orchestrator: Arc<daimon_orchestrator::OrchestratorService>,
+    /// Phase 8 — graph tier (NornicDB). Optional: `None` when
+    /// `DAIMON_GRAPH_URL` isn't set or the daemon was unreachable at boot.
+    /// Used by /admin/approvals to render blast-radius summaries and by
+    /// the orchestrator to mirror plan DAGs.
+    pub graph: Option<Arc<dyn daimon_graph::GraphClient>>,
 }
