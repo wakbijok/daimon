@@ -50,11 +50,13 @@ pub struct SearchHit {
 #[cfg(feature = "ssr")]
 mod ssr_state {
     use daimon_memory::VectorStore;
-    use daimon_rag::Embedder;
+    use daimon_rag::{Embedder, Reranker, SparseEmbedder};
     use std::sync::OnceLock;
     use tokio::sync::OnceCell;
 
     static EMBEDDER: OnceLock<Embedder> = OnceLock::new();
+    static SPARSE: OnceLock<SparseEmbedder> = OnceLock::new();
+    static RERANKER: OnceLock<Reranker> = OnceLock::new();
     static STORE: OnceCell<VectorStore> = OnceCell::const_new();
 
     pub fn embedder() -> Result<&'static Embedder, String> {
@@ -66,6 +68,28 @@ mod ssr_state {
         EMBEDDER
             .get()
             .ok_or_else(|| "embedder OnceLock empty after set".to_string())
+    }
+
+    pub fn sparse() -> Result<&'static SparseEmbedder, String> {
+        if let Some(s) = SPARSE.get() {
+            return Ok(s);
+        }
+        let s = SparseEmbedder::new_default().map_err(|err| format!("sparse init: {}", err))?;
+        let _ = SPARSE.set(s);
+        SPARSE
+            .get()
+            .ok_or_else(|| "sparse OnceLock empty after set".to_string())
+    }
+
+    pub fn reranker() -> Result<&'static Reranker, String> {
+        if let Some(r) = RERANKER.get() {
+            return Ok(r);
+        }
+        let r = Reranker::new_default().map_err(|err| format!("reranker init: {}", err))?;
+        let _ = RERANKER.set(r);
+        RERANKER
+            .get()
+            .ok_or_else(|| "reranker OnceLock empty after set".to_string())
     }
 
     pub async fn store() -> Result<&'static VectorStore, String> {
@@ -91,6 +115,7 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
     let state = expect_context::<AppState>();
 
     let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
+    let sparse = ssr_state::sparse().map_err(ServerFnError::new)?;
     let store = ssr_state::store().await.map_err(ServerFnError::new)?;
 
     let doc = Document {
@@ -101,8 +126,17 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
 
     let collection_target = format!("memory://{}/{}", DEFAULT_TENANT, doc.source_id);
     let start = Instant::now();
-    let result = ingest_document(store, embedder, DEFAULT_TENANT, &doc, &ChunkConfig::default())
-        .await;
+    let result = ingest_document(
+        &state.db,
+        store,
+        embedder,
+        sparse,
+        state.tenant_id,
+        DEFAULT_TENANT,
+        &doc,
+        &ChunkConfig::default(),
+    )
+    .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let (success, summary, chunks_meta) = match &result {
@@ -148,11 +182,22 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
     let state = expect_context::<AppState>();
 
     let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
+    let sparse = ssr_state::sparse().map_err(ServerFnError::new)?;
     let store = ssr_state::store().await.map_err(ServerFnError::new)?;
 
     let target = format!("memory://{}/_search", DEFAULT_TENANT);
     let start = Instant::now();
-    let hits_res = retrieve(store, embedder, DEFAULT_TENANT, &req.query, req.top_k as u64).await;
+    let hits_res = retrieve(
+        &state.db,
+        store,
+        embedder,
+        sparse,
+        state.tenant_id,
+        DEFAULT_TENANT,
+        &req.query,
+        req.top_k as u64,
+    )
+    .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let (success, summary, returned_count) = match &hits_res {
@@ -182,31 +227,13 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
 
     let out: Vec<SearchHit> = hits
         .into_iter()
-        .map(|h| {
-            let p = &h.payload;
-            SearchHit {
-                id: h.id,
-                score: h.score,
-                source_id: p
-                    .get("source_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                source_kind: p
-                    .get("source_kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                chunk_index: p
-                    .get("chunk_index")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-                text: p
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            }
+        .map(|h| SearchHit {
+            id: h.chunk_id,
+            score: h.score,
+            source_id: h.source_id,
+            source_kind: h.source_kind,
+            chunk_index: h.chunk_index as u64,
+            text: h.content,
         })
         .collect();
 

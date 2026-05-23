@@ -1,23 +1,27 @@
 //! `daimon-retrieve` — operator CLI for querying a tenant's long-term memory.
 //!
 //! Usage:
-//!   daimon-retrieve --tenant <id> --query "..." [--top-k 5] [--qdrant <url>]
+//!   daimon-retrieve --tenant <slug> --query "..." [--top-k 5] [--qdrant <url>]
 //!
-//! Embeds the query via the same fastembed model used at ingest, runs vector search
-//! against the tenant's `tenant_<id>_long_term` collection, prints top-K hits with
-//! score + snippet.
+//! Phase 3 D5: chunk text comes from Postgres canonical tier (memory.document_chunks)
+//! via JOIN against Qdrant's returned point ids. Print top-K hits with score + snippet.
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use daimon_memory::VectorStore;
-use daimon_rag::{Embedder, retrieve};
+use daimon_rag::{Embedder, SparseEmbedder, retrieve};
 
 #[derive(Parser, Debug)]
 #[command(name = "daimon-retrieve", about = "Retrieve from a tenant's long-term memory")]
 struct Args {
-    /// Tenant identifier — controls Qdrant collection scope.
-    #[arg(long)]
+    /// Tenant slug (must exist in public.tenants).
+    #[arg(long, default_value = "default")]
     tenant: String,
+
+    /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
+    /// postgres://$USER@localhost:5432/daimon.
+    #[arg(long, env = "DAIMON_PG_URL")]
+    pg_url: Option<String>,
 
     /// Natural-language query.
     #[arg(long)]
@@ -50,13 +54,42 @@ async fn main() -> Result<()> {
     eprintln!("connecting to qdrant {} ...", args.qdrant);
     let store = VectorStore::connect(&args.qdrant).context("qdrant connect")?;
 
-    eprintln!("loading embedder...");
-    let embedder = Embedder::new_default().context("embedder init")?;
+    eprintln!("connecting to postgres...");
+    let pg_url = args.pg_url.clone().unwrap_or_else(|| {
+        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
+        format!("postgres://{user}@localhost:5432/daimon")
+    });
+    let pool = daimon_db::build_pool(&pg_url).context("pg pool")?;
 
-    eprintln!("retrieving top {} for: {}", args.top_k, args.query);
-    let hits = retrieve(&store, &embedder, &args.tenant, &args.query, args.top_k)
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one(
+            "SELECT id FROM public.tenants WHERE slug = $1",
+            &[&args.tenant],
+        )
         .await
-        .context("retrieve")?;
+        .with_context(|| format!("tenant `{}` not found", args.tenant))?;
+    let tenant_uuid: uuid::Uuid = row.get(0);
+    drop(client);
+
+    eprintln!("loading dense embedder...");
+    let embedder = Embedder::new_default().context("embedder init")?;
+    eprintln!("loading sparse embedder...");
+    let sparse = SparseEmbedder::new_default().context("sparse init")?;
+
+    eprintln!("retrieving top {} (hybrid dense+sparse) for: {}", args.top_k, args.query);
+    let hits = retrieve(
+        &pool,
+        &store,
+        &embedder,
+        &sparse,
+        tenant_uuid,
+        &args.tenant,
+        &args.query,
+        args.top_k,
+    )
+    .await
+    .context("retrieve")?;
 
     if hits.is_empty() {
         eprintln!("(no hits — tenant collection empty or unknown)");
@@ -64,27 +97,18 @@ async fn main() -> Result<()> {
     }
 
     for (i, h) in hits.iter().enumerate() {
-        let text = h
-            .payload
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let source_id = h
-            .payload
-            .get("source_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let snippet = if args.snippet_len > 0 && text.len() > args.snippet_len {
-            format!("{}…", &text[..args.snippet_len])
+        let snippet = if args.snippet_len > 0 && h.content.len() > args.snippet_len {
+            format!("{}…", &h.content[..args.snippet_len])
         } else {
-            text.to_string()
+            h.content.clone()
         };
         println!(
-            "#{} score={:.4} id={} source={}\n    {}",
+            "#{} score={:.4} chunk_id={} source={} (kind={})\n    {}",
             i + 1,
             h.score,
-            h.id,
-            source_id,
+            h.chunk_id,
+            h.source_id,
+            h.source_kind,
             snippet
         );
     }

@@ -7,6 +7,9 @@ pub enum Error {
 
     #[error("embedding error: {0}")]
     Embedding(String),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

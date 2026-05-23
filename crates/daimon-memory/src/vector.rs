@@ -5,10 +5,14 @@
 //! Multi-tenant isolation is enforced at the caller level by collection naming
 //! (`tenant_<id>_<purpose>`) and payload filtering.
 
+use std::collections::HashMap;
+
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, Distance, PointStruct, ScoredPoint, SearchPointsBuilder,
-    UpsertPointsBuilder, VectorParamsBuilder,
+    CreateCollectionBuilder, Distance, Fusion, NamedVectors, PointStruct, PrefetchQueryBuilder,
+    Query, QueryPointsBuilder, ScoredPoint, SearchPointsBuilder, SparseIndexConfigBuilder,
+    SparseVectorConfig, SparseVectorParams, UpsertPointsBuilder, Vector, VectorInput,
+    VectorParamsBuilder, VectorsConfig, vectors_config,
 };
 use serde_json::Value as Json;
 
@@ -19,6 +23,17 @@ use crate::error::Result;
 pub struct Point {
     pub id: u64,
     pub vector: Vec<f32>,
+    pub payload: Json,
+}
+
+/// A hybrid point — dense + sparse vectors keyed by named-vector slots
+/// (`dense` and `sparse`).
+#[derive(Debug, Clone)]
+pub struct HybridPoint {
+    pub id: u64,
+    pub dense: Vec<f32>,
+    pub sparse_indices: Vec<u32>,
+    pub sparse_values: Vec<f32>,
     pub payload: Json,
 }
 
@@ -84,6 +99,137 @@ impl VectorStore {
     /// Drop a collection. Used by tests for cleanup.
     pub async fn drop_collection(&self, name: &str) -> Result<()> {
         self.client.delete_collection(name).await?;
+        Ok(())
+    }
+
+    /// Ensure a hybrid collection exists with the given name and dense
+    /// dimension. Hybrid = named vectors `dense` (cosine) + `sparse`. If the
+    /// collection already exists, no-op.
+    pub async fn ensure_hybrid_collection(&self, name: &str, dense_dim: u64) -> Result<()> {
+        if self.client.collection_exists(name).await? {
+            return Ok(());
+        }
+        let mut named_dense = HashMap::new();
+        named_dense.insert(
+            "dense".to_string(),
+            VectorParamsBuilder::new(dense_dim, Distance::Cosine).build(),
+        );
+        let vectors_config = VectorsConfig {
+            config: Some(vectors_config::Config::ParamsMap(
+                qdrant_client::qdrant::VectorParamsMap { map: named_dense },
+            )),
+        };
+
+        let mut sparse_map = HashMap::new();
+        sparse_map.insert(
+            "sparse".to_string(),
+            SparseVectorParams {
+                index: Some(SparseIndexConfigBuilder::default().build()),
+                modifier: None,
+            },
+        );
+        let sparse_config = SparseVectorConfig { map: sparse_map };
+
+        let mut req = CreateCollectionBuilder::new(name).sparse_vectors_config(sparse_config);
+        req = req.vectors_config(vectors_config);
+
+        self.client.create_collection(req).await?;
+        Ok(())
+    }
+
+    /// Upsert hybrid points (each carries dense + sparse vectors).
+    pub async fn upsert_hybrid(&self, collection: &str, points: Vec<HybridPoint>) -> Result<()> {
+        let qdrant_points: Vec<PointStruct> = points
+            .into_iter()
+            .map(|p| {
+                let mut vectors = HashMap::new();
+                vectors.insert(
+                    "dense".to_string(),
+                    Vector {
+                        data: p.dense,
+                        indices: None,
+                        vector: None,
+                        vectors_count: None,
+                    },
+                );
+                vectors.insert(
+                    "sparse".to_string(),
+                    Vector {
+                        data: p.sparse_values,
+                        indices: Some(qdrant_client::qdrant::SparseIndices {
+                            data: p.sparse_indices,
+                        }),
+                        vector: None,
+                        vectors_count: None,
+                    },
+                );
+                let named = NamedVectors { vectors };
+                let payload = json_to_payload(p.payload);
+                PointStruct::new(p.id, named, payload)
+            })
+            .collect();
+        let req = UpsertPointsBuilder::new(collection, qdrant_points).wait(true);
+        self.client.upsert_points(req).await?;
+        Ok(())
+    }
+
+    /// Hybrid query — prefetch dense + sparse, fuse with RRF. Returns the
+    /// fused top_k.
+    pub async fn query_hybrid(
+        &self,
+        collection: &str,
+        dense_q: Vec<f32>,
+        sparse_indices: Vec<u32>,
+        sparse_values: Vec<f32>,
+        top_k: u64,
+    ) -> Result<Vec<Hit>> {
+        let prefetch_limit = (top_k * 4).max(25);
+        let dense_prefetch = PrefetchQueryBuilder::default()
+            .query(Query::new_nearest(VectorInput::from(dense_q)))
+            .using("dense")
+            .limit(prefetch_limit)
+            .build();
+        let sparse_prefetch = PrefetchQueryBuilder::default()
+            .query(Query::new_nearest(VectorInput::new_sparse(
+                sparse_indices,
+                sparse_values,
+            )))
+            .using("sparse")
+            .limit(prefetch_limit)
+            .build();
+
+        let req = QueryPointsBuilder::new(collection.to_string())
+            .add_prefetch(dense_prefetch)
+            .add_prefetch(sparse_prefetch)
+            .query(Query::new_fusion(Fusion::Rrf))
+            .limit(top_k)
+            .with_payload(true)
+            .build();
+
+        let resp = self.client.query(req).await?;
+        Ok(resp.result.into_iter().map(scored_point_to_hit).collect())
+    }
+
+    /// Delete a set of points by their numeric ids. Returns Ok even if some
+    /// ids didn't exist — Qdrant's behaviour is best-effort delete-by-id.
+    pub async fn delete_points(&self, collection: &str, ids: &[u64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        use qdrant_client::qdrant::{DeletePointsBuilder, PointsIdsList, PointId};
+        let points = PointsIdsList {
+            ids: ids
+                .iter()
+                .map(|&id| PointId {
+                    point_id_options: Some(
+                        qdrant_client::qdrant::point_id::PointIdOptions::Num(id),
+                    ),
+                })
+                .collect(),
+        };
+        self.client
+            .delete_points(DeletePointsBuilder::new(collection).points(points).wait(true))
+            .await?;
         Ok(())
     }
 }

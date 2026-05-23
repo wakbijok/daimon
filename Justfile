@@ -255,6 +255,11 @@ vault-rotate-dek:
 test-isolation:
     DAIMON_PG_URL="{{pg_url}}" cargo test -p daimon-broker --test multi_tenant_isolation -- --ignored
 
+# Phase 3 hybrid RAG e2e test (Postgres + Qdrant + fastembed models).
+# First run downloads ~250 MB of model weights into ~/.cache/fastembed/.
+test-rag:
+    DAIMON_PG_URL="{{pg_url}}" cargo test -p daimon-rag --test phase3_e2e -- --ignored
+
 # --- Check + Test ----------------------------------------------------------
 
 # Fast compile check (ssr lib + hydrate WASM). Keep default features ON —

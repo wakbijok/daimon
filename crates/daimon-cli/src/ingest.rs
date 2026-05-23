@@ -12,14 +12,20 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use daimon_memory::VectorStore;
-use daimon_rag::{ChunkConfig, Document, Embedder, ingest_document};
+use daimon_rag::{ChunkConfig, Document, Embedder, SparseEmbedder, ingest_document};
 
 #[derive(Parser, Debug)]
 #[command(name = "daimon-ingest", about = "Ingest a file into a tenant's long-term memory")]
 struct Args {
-    /// Tenant identifier — controls Qdrant collection scope.
-    #[arg(long)]
+    /// Tenant identifier — controls Qdrant collection scope. Resolved against
+    /// public.tenants (slug column) for the Postgres canonical-content tier.
+    #[arg(long, default_value = "default")]
     tenant: String,
+
+    /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
+    /// postgres://$USER@localhost:5432/daimon.
+    #[arg(long, env = "DAIMON_PG_URL")]
+    pg_url: Option<String>,
 
     /// Path to the source file to ingest.
     #[arg(long)]
@@ -88,9 +94,31 @@ async fn main() -> Result<()> {
     eprintln!("connecting to qdrant...");
     let store = VectorStore::connect(&args.qdrant).context("qdrant connect")?;
 
-    eprintln!("loading embedder (first run downloads model, ~33MB)...");
+    eprintln!("connecting to postgres...");
+    let pg_url = args.pg_url.clone().unwrap_or_else(|| {
+        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
+        format!("postgres://{user}@localhost:5432/daimon")
+    });
+    let pool = daimon_db::build_pool(&pg_url).context("pg pool")?;
+
+    eprintln!("resolving tenant `{}`...", args.tenant);
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one(
+            "SELECT id FROM public.tenants WHERE slug = $1",
+            &[&args.tenant],
+        )
+        .await
+        .with_context(|| format!("tenant `{}` not found", args.tenant))?;
+    let tenant_uuid: uuid::Uuid = row.get(0);
+    drop(client);
+
+    eprintln!("loading dense embedder (first run downloads model, ~33MB)...");
     let embedder = Embedder::new_default().context("embedder init")?;
-    eprintln!("embedder ready, dim={}", embedder.dim());
+    eprintln!("dense embedder ready, dim={}", embedder.dim());
+
+    eprintln!("loading sparse embedder (SPLADE++, first run downloads ~100MB)...");
+    let sparse = SparseEmbedder::new_default().context("sparse embedder init")?;
 
     let doc = Document {
         source_id: source_id.clone(),
@@ -98,14 +126,28 @@ async fn main() -> Result<()> {
         content,
     };
 
-    eprintln!("ingesting...");
-    let stats = ingest_document(&store, &embedder, &args.tenant, &doc, &chunk_cfg)
-        .await
-        .context("ingest")?;
+    eprintln!("ingesting (dense + sparse)...");
+    let stats = ingest_document(
+        &pool,
+        &store,
+        &embedder,
+        &sparse,
+        tenant_uuid,
+        &args.tenant,
+        &doc,
+        &chunk_cfg,
+    )
+    .await
+    .context("ingest")?;
 
     println!(
-        "ok: tenant={} source_id={} chunks={} collection={}",
-        args.tenant, stats.source_id, stats.chunks, stats.collection
+        "ok: tenant={} source_id={} document_id={} chunks={} collection={} skipped={}",
+        args.tenant,
+        stats.source_id,
+        stats.document_id,
+        stats.chunks,
+        stats.collection,
+        stats.skipped_unchanged,
     );
 
     Ok(())
