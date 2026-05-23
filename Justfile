@@ -468,17 +468,19 @@ vm-reset:
 
 # --- NornicDB (graph tier — Phase 8 lock) --------------------------------
 #
-# Dev uses native NornicDB lite. Manual install one-time:
-#   1. Download NornicDB-1.1.0-arm64-lite.pkg from
-#      https://github.com/orneryd/NornicDB/releases/latest
-#   2. Open the .pkg and run the installer
-#   3. Confirm `nornicdb --version` resolves
+# Dev builds NornicDB from source via Go (no Docker, no .pkg admin
+# prompt). Source clone lives at ~/.daimon/src/NornicDB; binary lands at
+# ~/.daimon/bin/nornicdb. Same pattern as Qdrant — daimon owns its
+# dependency binaries under ~/.daimon/{src,bin}.
 #
 # NornicDB speaks Neo4j Bolt protocol on :7687 (Cypher queries) and HTTP
 # on :7474. Wire-compat with Qdrant gRPC on :6334 too (not used here —
 # vector tier stays on Qdrant proper for Phase 8; NornicDB-as-vector is a
 # Phase 9 unification candidate).
 
+nornicdb_version := "v1.1.1"
+nornicdb_src := env_var('HOME') + "/.daimon/src/NornicDB"
+nornicdb_bin := env_var('HOME') + "/.daimon/bin/nornicdb"
 nornicdb_data := "./.nornicdb-data"
 nornicdb_log := nornicdb_data + "/nornicdb.log"
 nornicdb_pid := nornicdb_data + "/nornicdb.pid"
@@ -486,34 +488,54 @@ nornicdb_http_port := "7474"
 nornicdb_bolt_port := "7687"
 nornicdb_url := "bolt://localhost:" + nornicdb_bolt_port
 
-# Print install instructions (NornicDB ships as a macOS .pkg, no brew yet).
+# Build NornicDB from source (idempotent). Requires Go toolchain (brew install go).
 nornicdb-install:
-    @echo "NornicDB install (one-time, manual):"
-    @echo "  1. Download:  https://github.com/orneryd/NornicDB/releases/latest"
-    @echo "                pick NornicDB-1.1.0-arm64-lite.pkg (or -full.pkg for Metal GPU)"
-    @echo "  2. Open the .pkg and run the installer (requires admin password)"
-    @echo "  3. Verify:    nornicdb --version"
-    @echo ""
-    @echo "Linux/prod path: build from source via 'go build -o nornicdb ./cmd/nornicdb'"
-    @echo "in a clone of github.com/orneryd/NornicDB. Native NornicDB Linux binaries"
-    @echo "are not yet published — track the releases page for changes."
+    @if [ -x {{nornicdb_bin}} ]; then \
+        echo "nornicdb already built at {{nornicdb_bin}}"; \
+        exit 0; \
+    fi
+    @if ! command -v go >/dev/null 2>&1; then \
+        echo "go toolchain not found — run: brew install go"; \
+        exit 1; \
+    fi
+    @mkdir -p $(dirname {{nornicdb_bin}}) $(dirname {{nornicdb_src}})
+    @if [ ! -d {{nornicdb_src}} ]; then \
+        echo "cloning NornicDB {{nornicdb_version}}..."; \
+        git clone --depth 1 --branch {{nornicdb_version}} \
+            https://github.com/orneryd/NornicDB.git {{nornicdb_src}}; \
+    else \
+        echo "source already at {{nornicdb_src}} — pulling tag {{nornicdb_version}}"; \
+        cd {{nornicdb_src}} && git fetch --tags && git checkout {{nornicdb_version}}; \
+    fi
+    @echo "building (this takes ~30s)..."
+    @# Build tags:
+    @#   noui          — skip embedded web UI (needs a pre-built npm dist).
+    @#   nolocalllm    — skip the cgo-linked llama.cpp embedded LLM. daimon
+    @#                   uses daimon-llm for LLM calls; the in-process LLM
+    @#                   shipped with NornicDB is not wired into daimon and
+    @#                   its libllama_darwin_arm64 prebuilt is not in the
+    @#                   source repo.
+    @cd {{nornicdb_src}} && go build -tags 'noui nolocalllm' -o {{nornicdb_bin}} ./cmd/nornicdb
+    @echo "installed at {{nornicdb_bin}}"
 
 # Start NornicDB in the background. Bolt :7687, HTTP :7474.
-nornicdb-up:
+nornicdb-up: nornicdb-install
     @mkdir -p {{nornicdb_data}}
     @if [ -f {{nornicdb_pid}} ] && kill -0 "$(cat {{nornicdb_pid}})" 2>/dev/null; then \
         echo "nornicdb already running, pid $(cat {{nornicdb_pid}})"; \
         exit 0; \
     fi
     @rm -f {{nornicdb_pid}}
-    @if ! command -v nornicdb >/dev/null 2>&1; then \
-        echo "nornicdb binary not on PATH — run: just nornicdb-install"; \
+    @if [ ! -x {{nornicdb_bin}} ]; then \
+        echo "nornicdb binary missing — run: just nornicdb-install"; \
         exit 1; \
     fi
-    @nornicdb serve \
+    @nohup {{nornicdb_bin}} serve \
         --data-dir {{nornicdb_data}} \
         --bolt-port {{nornicdb_bolt_port}} \
         --http-port {{nornicdb_http_port}} \
+        --no-auth \
+        --headless \
         >> {{nornicdb_log}} 2>&1 & \
         echo $! > {{nornicdb_pid}}
     @sleep 1

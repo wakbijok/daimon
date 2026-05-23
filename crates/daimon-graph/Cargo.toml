@@ -9,12 +9,13 @@ description = "Graph tier (#5) — NornicDB Bolt client for blast-radius queries
 [dependencies]
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-neo4rs = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
 tracing = "0.1"
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]

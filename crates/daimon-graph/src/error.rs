@@ -2,8 +2,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("bolt: {0}")]
-    Bolt(#[from] neo4rs::Error),
+    #[error("http: {0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("cypher error: {code}: {message}")]
+    Cypher { code: String, message: String },
 
     #[error("decode: {0}")]
     Decode(String),
