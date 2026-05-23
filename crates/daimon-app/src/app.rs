@@ -31,6 +31,7 @@ use crate::pages::{
     },
     settings::Settings,
     admin::{AdminAudit, AdminCredentials, AdminMemory, AdminTargets},
+    chat::Chat,
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -135,6 +136,9 @@ pub fn App() -> impl IntoView {
                         path=(StaticSegment("admin"), StaticSegment("memory"))
                         view=AdminMemory
                     />
+
+                    // Phase 4 D3 — operator chat surface
+                    <Route path=StaticSegment("chat") view=Chat />
                 </ParentRoute>
             </Routes>
         </Router>

@@ -40,4 +40,12 @@ pub struct AppState {
     /// (vault + inventory + transport + audit). Constructed once at boot
     /// in `main.rs::boot_broker()` and shared across all request handlers.
     pub broker: Arc<daimon_broker::Broker>,
+    /// Phase 4 D2 — first worker agent. Owned here so the chat handler
+    /// (Phase 4 D3) can dispatch tool calls without spinning up a fresh
+    /// agent per request.
+    pub network_agent: Arc<daimon_tool_network::NetworkAgent>,
+    /// Phase 4 D4 — hot working memory tier (Redis in prod; in-proc fallback
+    /// when Redis is unavailable). Used by the chat handler for session
+    /// persistence + by Phase 5 for the kill-switch signal channel.
+    pub working_memory: Arc<dyn daimon_redis::WorkingMemory>,
 }

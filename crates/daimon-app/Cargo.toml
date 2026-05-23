@@ -15,8 +15,8 @@ leptos_router = { version = "0.8" }
 leptos_meta = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
-web-sys = { version = "0.3", features = ["Window", "Location", "Document", "HtmlDocument", "HtmlElement", "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType", "Storage", "MediaQueryList", "Navigator", "Clipboard", "KeyboardEvent", "HtmlInputElement", "File", "FileList", "FileReader", "Blob", "ProgressEvent", "EventTarget"], optional = true }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "HtmlDocument", "HtmlElement", "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType", "Storage", "MediaQueryList", "Navigator", "Clipboard", "KeyboardEvent", "HtmlInputElement", "File", "FileList", "FileReader", "Blob", "ProgressEvent", "EventTarget", "Crypto"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
@@ -48,6 +48,13 @@ chrono = { version = "0.4", optional = true }
 daimon-memory = { path = "../daimon-memory", optional = true }
 daimon-rag = { path = "../daimon-rag", optional = true }
 
+# Phase 4: LLM + first worker agent for /chat.
+daimon-llm = { path = "../daimon-llm", optional = true }
+daimon-tool-network = { path = "../daimon-tool-network", optional = true }
+daimon-core = { path = "../daimon-core", optional = true }
+daimon-redis = { path = "../daimon-redis", optional = true }
+futures-util = { version = "0.3", optional = true }
+
 [features]
 hydrate = [
     "leptos/hydrate",
@@ -77,4 +84,9 @@ ssr = [
     "dep:chrono",
     "dep:daimon-memory",
     "dep:daimon-rag",
+    "dep:daimon-llm",
+    "dep:daimon-tool-network",
+    "dep:daimon-core",
+    "dep:daimon-redis",
+    "dep:futures-util",
 ]

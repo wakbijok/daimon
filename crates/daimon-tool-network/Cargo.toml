@@ -1,0 +1,21 @@
+[package]
+name = "daimon-tool-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Network worker agent for daimon. Phase 4 reads (RouterOS CLI via SSH broker). Writes land in Phase 5 (Guard-gated). Worker crate — does NOT depend on vault/inventory/transport directly (D21)."
+
+[dependencies]
+daimon-core = { path = "../daimon-core" }
+daimon-broker = { path = "../daimon-broker" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+tracing = "0.1"
+semver = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

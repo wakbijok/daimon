@@ -103,6 +103,42 @@ async fn main() {
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
 
+    // Phase 4 D2 — first worker agent. Held in AppState so the chat
+    // handler can dispatch tool calls without recreating per request.
+    let network_agent = Arc::new(daimon_tool_network::NetworkAgent::new(
+        daimon_core::AgentId::new("network"),
+        broker.clone(),
+        "agent:network",
+    ));
+    // Phase 4 D4 — working memory tier. Redis when reachable; in-process
+    // fallback otherwise. Set DAIMON_REDIS_URL=disabled to force in-process.
+    let working_memory: Arc<dyn daimon_redis::WorkingMemory> = match std::env::var("DAIMON_REDIS_URL") {
+        Ok(s) if s == "disabled" => {
+            log!("DAIMON_REDIS_URL=disabled — using in-process working memory");
+            Arc::new(daimon_redis::InProcWorkingMemory::new())
+        }
+        Ok(url) => match daimon_redis::RedisWorkingMemory::from_url(&url) {
+            Ok(c) => {
+                log!("connected to Redis at {}", url);
+                Arc::new(c)
+            }
+            Err(e) => {
+                log!("Redis connect failed ({e}) — falling back to in-process working memory");
+                Arc::new(daimon_redis::InProcWorkingMemory::new())
+            }
+        },
+        Err(_) => match daimon_redis::RedisWorkingMemory::from_url("redis://localhost:6379") {
+            Ok(c) => {
+                log!("connected to Redis at redis://localhost:6379 (default)");
+                Arc::new(c)
+            }
+            Err(e) => {
+                log!("Redis default-connect failed ({e}) — using in-process working memory");
+                Arc::new(daimon_redis::InProcWorkingMemory::new())
+            }
+        },
+    };
+
     let app_state = AppState {
         db: pool,
         tenant_id,
@@ -111,6 +147,8 @@ async fn main() {
         pve_cache: Arc::new(tokio::sync::RwLock::new(PveCache::new())),
         ws_broadcast: ws_tx,
         broker,
+        network_agent,
+        working_memory,
     };
 
     // Spawn background PVE polling task (30s interval)

@@ -13,6 +13,17 @@ pub enum WsClientMsg {
     Subscribe { scope: WsScope },
     Unsubscribe { scope: WsScope },
     Ping,
+    /// Phase 4 D3 — open or continue a chat session. `session_id` ties
+    /// subsequent ChatSend/AgentTokenDelta to the same conversation. The
+    /// server handler keeps prior turns in working memory.
+    ChatSend {
+        session_id: String,
+        user_message: String,
+        /// Optional model override (e.g. "claude-opus-4-7"); otherwise the
+        /// LLM client's default applies.
+        #[serde(default)]
+        model: Option<String>,
+    },
 }
 
 /// Server -> Client messages
@@ -30,6 +41,40 @@ pub enum WsServerMsg {
     Pong,
     Error {
         message: String,
+    },
+    /// Phase 4 D3 — streamed token / content delta from an agent. Multiple
+    /// deltas land before the matching `AgentDone`.
+    AgentTokenDelta {
+        agent_id: String,
+        session_id: String,
+        content_delta: String,
+    },
+    /// Phase 4 D3 — an LLM emitted a tool-use block; the server has
+    /// dispatched it and is awaiting the worker reply. Surfaces in the UI
+    /// as a "calling tool X with input Y" status row.
+    AgentToolUse {
+        agent_id: String,
+        session_id: String,
+        tool: String,
+        params: serde_json::Value,
+    },
+    /// Phase 4 D3 — tool result the server fed back to the LLM, surfaced
+    /// for the UI to render alongside the assistant message.
+    AgentToolResult {
+        agent_id: String,
+        session_id: String,
+        tool: String,
+        output: String,
+        is_error: bool,
+    },
+    /// Phase 4 D3 — the assistant turn completed (no more deltas for this
+    /// session until the next ChatSend).
+    AgentDone {
+        agent_id: String,
+        session_id: String,
+        stop_reason: String,
+        input_tokens: u32,
+        output_tokens: u32,
     },
 }
 
@@ -101,6 +146,18 @@ async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState) {
                                 WsClientMsg::Ping => {
                                     let pong = serde_json::to_string(&WsServerMsg::Pong).unwrap_or_default();
                                     let _ = socket.send(Message::Text(pong.into())).await;
+                                }
+                                WsClientMsg::ChatSend { session_id, user_message, model } => {
+                                    let actor = "operator"; // Phase 4.1 plumbs auth claims here
+                                    crate::chat::handle_chat_send(
+                                        &mut socket,
+                                        &state,
+                                        actor,
+                                        session_id,
+                                        user_message,
+                                        model,
+                                    )
+                                    .await;
                                 }
                             }
                         }
