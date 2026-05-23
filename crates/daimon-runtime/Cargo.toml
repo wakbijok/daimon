@@ -8,7 +8,7 @@ description = "Agent lifecycle and message routing — AgentBus trait, InProcBus
 
 [features]
 default = []
-nats = ["dep:async-nats"]
+nats = ["dep:async-nats", "dep:futures-util"]
 
 [dependencies]
 daimon-core = { path = "../daimon-core" }
@@ -20,7 +20,11 @@ async-trait = "0.1"
 semver = { version = "1", features = ["serde"] }
 tracing = "0.1"
 async-nats = { version = "0.42", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = "0.3"
+# Phase 8 kill-switch e2e test pulls in the real KillSwitch from daimon-guard.
+daimon-guard = { path = "../daimon-guard" }
+tempfile = "3"

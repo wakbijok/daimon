@@ -56,6 +56,101 @@ impl NetworkAgent {
                 "network.routeros.firewall_filter_list",
                 Version::new(1, 0, 0),
             ),
+            // Phase 8 — write capabilities. Both go through Guard's
+            // policy + approval-inbox pre-flight in broker.execute (D19/
+            // Phase 5). The compensating pair is D18-saga material:
+            // `firewall_add_drop_rule` is rolled back by
+            // `firewall_remove_rule`, which is itself irreversible (a
+            // removed rule is gone). Phase 6.1 wires the auto-rollback.
+            Capability {
+                name: "network.routeros.firewall_add_drop_rule".into(),
+                version: Version::new(1, 0, 0),
+                description: Some(
+                    "Append a drop-action rule to `/ip firewall filter`. \
+                     Params: src_address (CIDR), dst_address (CIDR or address-list name), \
+                     in_interface (optional), comment (optional)."
+                        .into(),
+                ),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["dst_address"],
+                    "properties": {
+                        "src_address": { "type": "string" },
+                        "dst_address": { "type": "string" },
+                        "in_interface": { "type": "string" },
+                        "comment": { "type": "string" }
+                    }
+                })),
+                compensating: Some(daimon_core::CompensatingCapability {
+                    name: "network.routeros.firewall_remove_rule".into(),
+                    version_req: None,
+                }),
+                irreversible: false,
+            },
+            // Phase 8 second vertical — SSH user key rotation. RouterOS
+            // syntax: `/user ssh-keys import file=<basename> user=<user>`.
+            // The new key has to be uploaded out-of-band first (SFTP or
+            // /file print upload); this capability runs the import.
+            // Compensating capability is the removal of the new key —
+            // operator runs this if the new key is revealed compromised.
+            Capability {
+                name: "network.routeros.user_ssh_key_import".into(),
+                version: Version::new(1, 0, 0),
+                description: Some(
+                    "Import a public SSH key into RouterOS `/user ssh-keys`. \
+                     Params: user (RouterOS user name), file (basename of \
+                     the uploaded .pub key on the device)."
+                        .into(),
+                ),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["user", "file"],
+                    "properties": {
+                        "user": { "type": "string" },
+                        "file": { "type": "string" }
+                    }
+                })),
+                compensating: Some(daimon_core::CompensatingCapability {
+                    name: "network.routeros.user_ssh_key_remove".into(),
+                    version_req: None,
+                }),
+                irreversible: false,
+            },
+            Capability {
+                name: "network.routeros.user_ssh_key_remove".into(),
+                version: Version::new(1, 0, 0),
+                description: Some(
+                    "Remove an SSH key entry from `/user ssh-keys`. \
+                     Params: number (the row number from ssh-keys print)."
+                        .into(),
+                ),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["number"],
+                    "properties": { "number": { "type": "string" } }
+                })),
+                compensating: None,
+                irreversible: true,
+            },
+            Capability {
+                name: "network.routeros.firewall_remove_rule".into(),
+                version: Version::new(1, 0, 0),
+                description: Some(
+                    "Remove a rule from `/ip firewall filter` by id or comment match."
+                        .into(),
+                ),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["match"],
+                    "properties": {
+                        "match": { "type": "string" }
+                    }
+                })),
+                compensating: None,
+                // A removed rule can't be auto-restored — operator
+                // confirmation required on every invocation.
+                irreversible: true,
+            },
         ];
         Self {
             id,
@@ -115,20 +210,21 @@ impl Agent for NetworkAgent {
 
 impl NetworkAgent {
     async fn invoke(&self, req: &NetworkRequest) -> Result<NetworkOutput, NetworkAgentError> {
-        let command = command_for(&req.capability)?;
+        let command = build_command(&req.capability, req.params.as_ref())?;
         let target = InvTargetRef::parse(&req.target_ref)
             .map_err(|e| NetworkAgentError::BadTarget(format!("{e}")))?;
         let timeout_secs = req.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1);
+        let is_read_only = is_read_only_capability(&req.capability);
 
         let exec_req = ExecRequest::new(
             self.actor_id.clone(),
             target,
             Op::ShellCommand {
-                command: command.to_string(),
+                command: command.clone(),
                 timeout_secs,
             },
         )
-        .with_capability(&req.capability, true /* Phase 4 capabilities are all read-only */);
+        .with_capability(&req.capability, is_read_only);
 
         let op_result = self
             .broker
@@ -142,7 +238,7 @@ impl NetworkAgent {
                 stderr,
                 exit_status,
             } => Ok(NetworkOutput {
-                command: command.to_string(),
+                command,
                 stdout,
                 stderr,
                 exit_status,
@@ -162,15 +258,137 @@ impl NetworkAgent {
     }
 }
 
-/// Map a capability name to the corresponding read-only RouterOS CLI command.
-fn command_for(capability: &str) -> Result<&'static str, NetworkAgentError> {
+fn is_read_only_capability(capability: &str) -> bool {
+    matches!(
+        capability,
+        "network.routeros.system_info"
+            | "network.routeros.interface_list"
+            | "network.routeros.ip_addresses"
+            | "network.routeros.firewall_filter_list"
+    )
+}
+
+/// Build the RouterOS CLI command for a capability. Read capabilities take
+/// no params and resolve to a fixed string; write capabilities interpolate
+/// from `params` against the schema declared in the capability registry.
+///
+/// Failures: unknown capability, missing required params, or params that
+/// would inject shell control characters (validated client-side; the SSH
+/// transport on the server side also escapes, but we double-check here).
+fn build_command(
+    capability: &str,
+    params: Option<&serde_json::Value>,
+) -> Result<String, NetworkAgentError> {
     match capability {
-        "network.routeros.system_info" => Ok("/system identity print"),
-        "network.routeros.interface_list" => Ok("/interface print"),
-        "network.routeros.ip_addresses" => Ok("/ip address print"),
-        "network.routeros.firewall_filter_list" => Ok("/ip firewall filter print"),
+        "network.routeros.system_info" => Ok("/system identity print".into()),
+        "network.routeros.interface_list" => Ok("/interface print".into()),
+        "network.routeros.ip_addresses" => Ok("/ip address print".into()),
+        "network.routeros.firewall_filter_list" => Ok("/ip firewall filter print".into()),
+        "network.routeros.firewall_add_drop_rule" => {
+            let p = params.ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "firewall_add_drop_rule requires params".into(),
+                )
+            })?;
+            let dst = p
+                .get("dst_address")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    NetworkAgentError::UnknownCapability(
+                        "firewall_add_drop_rule.dst_address is required".into(),
+                    )
+                })?;
+            reject_shell_metachars(dst)?;
+            let mut cmd = format!(
+                "/ip firewall filter add chain=forward action=drop dst-address={dst}"
+            );
+            if let Some(src) = p.get("src_address").and_then(|v| v.as_str()) {
+                reject_shell_metachars(src)?;
+                cmd.push_str(&format!(" src-address={src}"));
+            }
+            if let Some(iface) = p.get("in_interface").and_then(|v| v.as_str()) {
+                reject_shell_metachars(iface)?;
+                cmd.push_str(&format!(" in-interface={iface}"));
+            }
+            if let Some(comment) = p.get("comment").and_then(|v| v.as_str()) {
+                reject_shell_metachars(comment)?;
+                cmd.push_str(&format!(" comment=\"{comment}\""));
+            }
+            Ok(cmd)
+        }
+        "network.routeros.firewall_remove_rule" => {
+            let p = params.ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "firewall_remove_rule requires params".into(),
+                )
+            })?;
+            let m = p.get("match").and_then(|v| v.as_str()).ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "firewall_remove_rule.match is required".into(),
+                )
+            })?;
+            reject_shell_metachars(m)?;
+            Ok(format!("/ip firewall filter remove [find {m}]"))
+        }
+        "network.routeros.user_ssh_key_import" => {
+            let p = params.ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "user_ssh_key_import requires params".into(),
+                )
+            })?;
+            let user = p.get("user").and_then(|v| v.as_str()).ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "user_ssh_key_import.user is required".into(),
+                )
+            })?;
+            let file = p.get("file").and_then(|v| v.as_str()).ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "user_ssh_key_import.file is required".into(),
+                )
+            })?;
+            reject_shell_metachars(user)?;
+            reject_shell_metachars(file)?;
+            Ok(format!("/user ssh-keys import user={user} public-key-file={file}"))
+        }
+        "network.routeros.user_ssh_key_remove" => {
+            let p = params.ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "user_ssh_key_remove requires params".into(),
+                )
+            })?;
+            let n = p.get("number").and_then(|v| v.as_str()).ok_or_else(|| {
+                NetworkAgentError::UnknownCapability(
+                    "user_ssh_key_remove.number is required".into(),
+                )
+            })?;
+            reject_shell_metachars(n)?;
+            Ok(format!("/user ssh-keys remove {n}"))
+        }
         other => Err(NetworkAgentError::UnknownCapability(other.to_string())),
     }
+}
+
+/// Reject params containing shell metachars / quotes — RouterOS's CLI
+/// parser tolerates more than POSIX sh, but daimon's brokered SSH
+/// transport pipes the line as a single command and any unescaped quote
+/// or semicolon would break the boundary. Banking-grade input validation:
+/// allow `[A-Za-z0-9._:/!@\-]` plus dot, slash, dash. Anything else is
+/// rejected and the operator must use a more specific capability with
+/// stronger schema.
+fn reject_shell_metachars(s: &str) -> Result<(), NetworkAgentError> {
+    if s.is_empty() {
+        return Err(NetworkAgentError::UnknownCapability("empty param".into()));
+    }
+    for c in s.chars() {
+        let ok = c.is_ascii_alphanumeric()
+            || matches!(c, '.' | '/' | '-' | '_' | ':' | '!' | '@');
+        if !ok {
+            return Err(NetworkAgentError::UnknownCapability(format!(
+                "param contains disallowed char `{c}` (allow [A-Za-z0-9._:/!@-])"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +397,10 @@ pub struct NetworkRequest {
     pub target_ref: String,
     #[serde(default)]
     pub timeout_secs: Option<u32>,
+    /// Write-capability params (validated by `build_command`). `None` for
+    /// read capabilities.
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

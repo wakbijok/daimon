@@ -1,0 +1,40 @@
+# NATS sidecar for daimon multi-agent bus (Phase 8).
+#
+# Pairs with daimon-agent@.service. The NatsBus impl in daimon-runtime
+# connects to nats://127.0.0.1:4222 by default; override via
+# DAIMON_NATS_URL on the daimon-agent units.
+#
+# Install: sudo cp deploy/systemd/daimon-nats.service /etc/systemd/system/
+# Enable:  sudo systemctl daemon-reload && sudo systemctl enable --now daimon-nats
+
+[Unit]
+Description=NATS message bus for daimon agents
+Documentation=https://docs.nats.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nats-server \
+    --port 4222 \
+    --http_port 8222 \
+    --store_dir /var/lib/daimon/nats/jetstream \
+    --jetstream
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+User=daimon
+Group=daimon
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=daimon/nats
+ReadWritePaths=/var/lib/daimon/nats
+
+# Sane resource floor for a banking-grade per-tenant LXC. Tune up by SLA.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

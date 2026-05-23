@@ -1,0 +1,63 @@
+# Per-agent systemd template unit for daimon (Phase 8).
+#
+# Instance name is the agent id, e.g.:
+#     systemctl enable --now daimon-agent@tool-network.service
+#     systemctl enable --now daimon-agent@tool-platform.service
+#     systemctl enable --now daimon-agent@orchestrator.service
+#
+# Each instance:
+# - loads the same daimon-agent binary (configured via DAIMON_AGENT_KIND=%i)
+# - shares the NatsBus over nats://127.0.0.1:4222 (provided by daimon-nats)
+# - holds its own credentials via systemd LoadCredentialEncrypted=
+# - is supervised independently (restart on failure, isolated namespace)
+#
+# Install: sudo cp deploy/systemd/daimon-agent@.service /etc/systemd/system/
+# Enable:  sudo systemctl daemon-reload &&
+#          sudo systemctl enable --now daimon-agent@tool-network.service
+
+[Unit]
+Description=daimon agent — %i
+Documentation=https://github.com/wakbijok/daimon
+After=network-online.target daimon-nats.service
+Wants=network-online.target
+Requires=daimon-nats.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/daimon-agent
+Environment=DAIMON_AGENT_KIND=%i
+Environment=DAIMON_NATS_URL=nats://127.0.0.1:4222
+Environment=DAIMON_PG_URL=postgres:///daimon
+Environment=DAIMON_REDIS_URL=redis://127.0.0.1:6379
+Environment=DAIMON_VM_URL=http://127.0.0.1:8428
+Environment=DAIMON_GRAPH_URL=bolt://127.0.0.1:7687
+
+# Credentials: the vault master key + per-tenant DEK envelope live under
+# /etc/credstore.encrypted/. systemd decrypts on start and exposes via
+# %d/<id>. Reference inside daimon-vault via DAIMON_MASTER_KEY_FILE.
+LoadCredentialEncrypted=daimon-vault-master:/etc/credstore.encrypted/daimon-vault-master
+Environment=DAIMON_MASTER_KEY_FILE=%d/daimon-vault-master
+
+# Kill switch is filesystem-flag based (D13) — every daimon binary
+# checks /var/lib/daimon/KILL before every action. Per-tenant scope at
+# /var/lib/daimon/tenants/<tenant_id>/KILL.
+ReadOnlyPaths=/var/lib/daimon
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Hardening
+User=daimon
+Group=daimon
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=daimon
+RuntimeDirectory=daimon
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -11,10 +11,14 @@
 
 pub mod bus;
 pub mod error;
+#[cfg(feature = "nats")]
+pub mod nats_bus;
 pub mod registry;
 pub mod supervisor;
 
 pub use bus::{AgentBus, InProcBus};
 pub use error::RuntimeError;
+#[cfg(feature = "nats")]
+pub use nats_bus::{NatsBus, NatsBusError};
 pub use registry::{CapabilityRegistry, RegistryEntry};
 pub use supervisor::{Supervisor, SupervisorConfig};

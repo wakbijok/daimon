@@ -572,3 +572,72 @@ nornicdb-reset:
     @just nornicdb-down
     @rm -rf {{nornicdb_data}}
     @echo "wiped {{nornicdb_data}}"
+
+# --- NATS (Phase 8 bus sidecar) ------------------------------------------
+#
+# Dev uses native brew nats-server. Phase 8 NatsBus impl talks to it on
+# :4222 (NATS client port). The systemd template at
+# deploy/systemd/daimon-nats.service wraps the same binary for prod.
+#
+# One install: `brew install nats-server`.
+
+nats_bin := "/opt/homebrew/opt/nats-server/bin"
+nats_data := "./.nats-data"
+nats_log := nats_data + "/nats.log"
+nats_pid := nats_data + "/nats.pid"
+nats_port := "4222"
+nats_url := "nats://localhost:" + nats_port
+
+# Start nats-server in the background. Client :4222, monitoring :8222.
+nats-up:
+    @mkdir -p {{nats_data}}
+    @if [ -f {{nats_pid}} ] && kill -0 "$(cat {{nats_pid}})" 2>/dev/null; then \
+        echo "nats already running, pid $(cat {{nats_pid}})"; \
+        exit 0; \
+    fi
+    @rm -f {{nats_pid}}
+    @if [ ! -x {{nats_bin}}/nats-server ]; then \
+        echo "nats-server not installed — run: brew install nats-server"; \
+        exit 1; \
+    fi
+    @nohup {{nats_bin}}/nats-server \
+        --port {{nats_port}} \
+        --http_port 8222 \
+        --store_dir {{nats_data}}/jetstream \
+        --jetstream \
+        >> {{nats_log}} 2>&1 & \
+        echo $! > {{nats_pid}}
+    @sleep 1
+    @if kill -0 "$(cat {{nats_pid}})" 2>/dev/null; then \
+        echo "nats started, pid $(cat {{nats_pid}}), :{{nats_port}}"; \
+    else \
+        echo "nats failed to start, see {{nats_log}}"; \
+        exit 1; \
+    fi
+
+# Stop nats-server.
+nats-down:
+    @if [ -f {{nats_pid}} ] && kill -0 "$(cat {{nats_pid}})" 2>/dev/null; then \
+        kill "$(cat {{nats_pid}})" && rm -f {{nats_pid}} && echo "stopped nats"; \
+    else \
+        echo "nats not running"; \
+    fi
+
+# Status + monitoring info.
+nats-status:
+    @if [ -f {{nats_pid}} ] && kill -0 "$(cat {{nats_pid}})" 2>/dev/null; then \
+        echo "nats running, pid $(cat {{nats_pid}})"; \
+    else \
+        echo "nats not running"; \
+    fi
+    @curl -sf http://localhost:8222/varz 2>&1 | head -1 || echo "(monitoring unreachable)"
+
+# Echo the dev NATS URL.
+nats-url:
+    @echo "{{nats_url}}"
+
+# DESTRUCTIVE: stop nats AND wipe local data.
+nats-reset:
+    @just nats-down
+    @rm -rf {{nats_data}}
+    @echo "wiped {{nats_data}}"

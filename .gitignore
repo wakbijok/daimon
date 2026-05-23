@@ -11,4 +11,5 @@ daimon-data/
 .redis-data/
 .victoria-metrics-data/
 .nornicdb-data/
+.nats-data/
 .fastembed_cache/
