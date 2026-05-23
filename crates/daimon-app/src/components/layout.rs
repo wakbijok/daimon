@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use leptos_router::components::Outlet;
+use super::chat_bubble::ChatBubble;
 use super::sidebar::Sidebar;
 use super::user_menu::UserMenu;
 use super::auto_refresh::{provide_refresh, RefreshSelector};
@@ -29,6 +30,7 @@ pub fn Layout() -> impl IntoView {
                                 </div>
                             </main>
                         </div>
+                        <ChatBubble />
                     </div>
                 }.into_any(),
                 _ => view! {

@@ -237,9 +237,18 @@ mod bridge {
 
 // -------- Server-fns ---------------------------------------------------------
 
+/// Server-fn args flattened — passing the filter struct directly was hitting
+/// a Leptos 0.8 serialization quirk where the WASM client body arrived
+/// without the top-level `filter` field. Flat individual params avoid the
+/// nested-struct path entirely.
 #[server]
 pub async fn list_audit_events(
-    filter: AuditFilterDto,
+    actor_id: Option<String>,
+    action: Option<ActionKindDto>,
+    target_ref: Option<String>,
+    result: Option<AuditResultDto>,
+    since_epoch_s: Option<i64>,
+    until_epoch_s: Option<i64>,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<AuditEventRow>, ServerFnError> {
@@ -248,6 +257,14 @@ pub async fn list_audit_events(
 
     let claims = require_admin().await?;
     let state = expect_context::<AppState>();
+    let filter = AuditFilterDto {
+        actor_id,
+        action,
+        target_ref,
+        result,
+        since_epoch_s,
+        until_epoch_s,
+    };
     let broker_filter = bridge::dto_to_filter(&filter);
     let events = state
         .broker
@@ -258,12 +275,27 @@ pub async fn list_audit_events(
 }
 
 #[server]
-pub async fn count_audit_events(filter: AuditFilterDto) -> Result<u64, ServerFnError> {
+pub async fn count_audit_events(
+    actor_id: Option<String>,
+    action: Option<ActionKindDto>,
+    target_ref: Option<String>,
+    result: Option<AuditResultDto>,
+    since_epoch_s: Option<i64>,
+    until_epoch_s: Option<i64>,
+) -> Result<u64, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
     let claims = require_admin().await?;
     let state = expect_context::<AppState>();
+    let filter = AuditFilterDto {
+        actor_id,
+        action,
+        target_ref,
+        result,
+        since_epoch_s,
+        until_epoch_s,
+    };
     let broker_filter = bridge::dto_to_filter(&filter);
     state
         .broker

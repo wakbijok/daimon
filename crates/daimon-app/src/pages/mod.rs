@@ -5,4 +5,3 @@ pub mod incident_detail;
 pub mod cluster;
 pub mod settings;
 pub mod admin;
-pub mod chat;

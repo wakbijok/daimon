@@ -186,7 +186,9 @@ pub fn Sidebar() -> impl IntoView {
                             <div class="space-y-0.5 ml-2">
                                 {[
                                     ("/admin/credentials", "Credentials"),
-                                    ("/admin/targets", "Targets"),
+                                    ("/admin/targets", "Endpoints"),
+                                    ("/admin/plans", "Plans"),
+                                    ("/admin/observer", "Observer"),
                                     ("/admin/audit", "Audit Log"),
                                     ("/admin/memory", "Memory"),
                                 ].iter().map(|(path, label)| {

@@ -309,22 +309,22 @@ pub fn AdminTargets() -> impl IntoView {
     view! {
         <div>
             <div class="flex items-center justify-between mb-6">
-                <h1 class="text-xl font-semibold text-text-primary">"Targets"</h1>
+                <h1 class="text-xl font-semibold text-text-primary">"Endpoints"</h1>
                 <button
                     type="button"
                     on:click=move |_| add_open.set(true)
                     class="px-4 py-2 bg-accent-amber text-surface-primary font-medium rounded-md hover:bg-accent-amber/90 transition-colors text-sm"
                 >
-                    "Add Target"
+                    "Add Endpoint"
                 </button>
             </div>
 
             <Suspense fallback=|| view! {
-                <p class="text-text-muted text-sm">"Loading targets..."</p>
+                <p class="text-text-muted text-sm">"Loading endpoints..."</p>
             }>
                 {move || targets_res.get().map(|result| match result {
                     Ok(rows) if rows.is_empty() => view! {
-                        <p class="text-text-muted text-sm">"No targets yet. Click \"Add Target\" to register one."</p>
+                        <p class="text-text-muted text-sm">"No endpoints yet. Click \"Add Endpoint\" to register one."</p>
                     }.into_any(),
                     Ok(rows) => view! {
                         <SortableTable<TargetRow> rows=rows table_id="admin-targets" />
@@ -391,7 +391,7 @@ fn AddModal(
     };
 
     view! {
-        <Modal title="Add Target".to_string() open=open max_width="max-w-xl">
+        <Modal title="Add Endpoint".to_string() open=open max_width="max-w-xl">
             <div class="space-y-4">
                 <TargetEditor draft=draft credentials_res=credentials_res ref_locked=false />
                 {move || error.get().map(|e| view! {

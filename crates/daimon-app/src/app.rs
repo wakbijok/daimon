@@ -30,8 +30,7 @@ use crate::pages::{
         agent_placeholder::AgentPlaceholder,
     },
     settings::Settings,
-    admin::{AdminAudit, AdminCredentials, AdminMemory, AdminTargets},
-    chat::Chat,
+    admin::{AdminAudit, AdminCredentials, AdminMemory, AdminObserver, AdminPlans, AdminTargets},
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -137,8 +136,17 @@ pub fn App() -> impl IntoView {
                         view=AdminMemory
                     />
 
-                    // Phase 4 D3 — operator chat surface
-                    <Route path=StaticSegment("chat") view=Chat />
+                    // Phase 6 D1 — plans + DAG inspector
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("plans"))
+                        view=AdminPlans
+                    />
+
+                    // Phase 7 — observer (anomalies + metric streams)
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("observer"))
+                        view=AdminObserver
+                    />
                 </ParentRoute>
             </Routes>
         </Router>

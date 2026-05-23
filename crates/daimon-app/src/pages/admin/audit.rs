@@ -50,17 +50,39 @@ pub fn AdminAudit() -> impl IntoView {
         until_epoch_s: until_epoch_s.get(),
     };
 
-    // Resource depends on filter + page; refetches on any change.
+    // Resource depends on filter + page; refetches on any change. Server
+    // fns take flat args (not the DTO struct) to dodge a Leptos 0.8 JSON
+    // codec issue with nested struct args.
     let events_res = Resource::new(
         move || (build_filter(), page.get()),
         |(filter, p)| async move {
-            list_audit_events(filter, PAGE_SIZE, p * PAGE_SIZE).await
+            list_audit_events(
+                filter.actor_id,
+                filter.action,
+                filter.target_ref,
+                filter.result,
+                filter.since_epoch_s,
+                filter.until_epoch_s,
+                PAGE_SIZE,
+                p * PAGE_SIZE,
+            )
+            .await
         },
     );
 
     let count_res = Resource::new(
         move || build_filter(),
-        |filter| async move { count_audit_events(filter).await },
+        |filter| async move {
+            count_audit_events(
+                filter.actor_id,
+                filter.action,
+                filter.target_ref,
+                filter.result,
+                filter.since_epoch_s,
+                filter.until_epoch_s,
+            )
+            .await
+        },
     );
 
     // Detail modal state
@@ -134,6 +156,16 @@ pub fn AdminAudit() -> impl IntoView {
             .unwrap_or(1)
             .max(1)
     };
+    // Extracted memos so the view! macro doesn't see a `>=` operator inside
+    // a `disabled=move || ...` (Leptos 0.8 tokenizer leaks source as text
+    // otherwise).
+    let prev_disabled = Memo::new(move |_| page.get() == 0);
+    let next_disabled = Memo::new(move |_| page.get() + 1 >= total_pages());
+    let page_label = Memo::new(move |_| {
+        let cur = page.get() + 1;
+        let total = total_pages();
+        format!("Page {cur} of {total}")
+    });
 
     view! {
         <div>
@@ -283,18 +315,18 @@ pub fn AdminAudit() -> impl IntoView {
                 <div class="flex items-center gap-2">
                     <button
                         type="button"
-                        disabled=move || page.get() == 0
+                        disabled=prev_disabled
                         on:click=move |_| page.update(|p| if *p > 0 { *p -= 1; })
                         class="px-3 py-1 bg-surface-tertiary border border-border-primary rounded hover:bg-surface-tertiary/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                         "Prev"
                     </button>
                     <span class="text-text-muted">
-                        "Page " {move || page.get() + 1} " of " {move || total_pages()}
+                        {move || page_label.get()}
                     </span>
                     <button
                         type="button"
-                        disabled=move || page.get() + 1 >= total_pages()
+                        disabled=next_disabled
                         on:click=move |_| page.update(|p| *p += 1)
                         class="px-3 py-1 bg-surface-tertiary border border-border-primary rounded hover:bg-surface-tertiary/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >

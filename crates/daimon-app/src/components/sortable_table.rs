@@ -474,6 +474,16 @@ pub fn SortableTable<T: TableRow + Send + Sync>(
 
     let total_filtered = move || processed_rows().len();
     let total_page_count = move || total_pages(total_filtered(), page_size.get());
+    // Extracted memos so the view! macro doesn't see a `>=` operator inside
+    // a `prop:disabled=move || ...` (Leptos 0.8 tokenizer treats `>` inside
+    // attribute closures as an end-of-tag delimiter, leaking source text).
+    let prev_disabled = Memo::new(move |_| current_page.get() == 0);
+    let next_disabled = Memo::new(move |_| current_page.get() + 1 >= total_page_count());
+    let page_label = Memo::new(move |_| {
+        let cur = current_page.get() + 1;
+        let total = total_page_count().max(1);
+        format!("{cur} / {total}")
+    });
 
     // --- Handlers ---
 
@@ -736,17 +746,17 @@ pub fn SortableTable<T: TableRow + Send + Sync>(
             <div class="flex items-center gap-2">
                 <button
                     on:click=on_prev
-                    prop:disabled=move || current_page.get() == 0
+                    prop:disabled=prev_disabled
                     class="px-2 py-1 text-xs text-text-muted border border-border-primary rounded-md hover:text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                     "Prev"
                 </button>
-                <span>
-                    {move || format!("{} / {}", current_page.get() + 1, total_page_count().max(1))}
+                <span class="text-text-muted text-xs">
+                    {move || page_label.get()}
                 </span>
                 <button
                     on:click=on_next
-                    prop:disabled=move || current_page.get() + 1 >= total_page_count()
+                    prop:disabled=next_disabled
                     class="px-2 py-1 text-xs text-text-muted border border-border-primary rounded-md hover:text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                     "Next"
