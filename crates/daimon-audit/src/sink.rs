@@ -1,15 +1,16 @@
 use async_trait::async_trait;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::event::{AuditEvent, AuditFilter, NewAuditEvent};
 
 /// The audit log contract. Writes are append-only; the sink implementation
-/// is expected to enforce immutability (e.g. via DB triggers blocking
-/// UPDATE/DELETE for SQLite). Queries return ordered events with paging.
+/// is expected to enforce immutability (e.g. via Postgres BEFORE UPDATE/DELETE
+/// triggers from migration V005). Queries return ordered events with paging.
 #[async_trait]
 pub trait AuditSink: Send + Sync {
     /// Append a new event. Returns the assigned id.
-    async fn append(&self, event: NewAuditEvent) -> Result<i64, AuditError>;
+    async fn append(&self, event: NewAuditEvent) -> Result<Uuid, AuditError>;
 
     /// Query events matching the filter. `limit` caps result size;
     /// `offset` skips the first N rows. Results are ordered by `ts DESC`

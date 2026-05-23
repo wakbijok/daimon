@@ -12,25 +12,26 @@
 //!
 //! Two `Inventory` impls:
 //! - `InMemoryRegistry` — useful for tests + dev workflows
-//! - `SqliteRegistry` — production default (Phase 2b), WAL mode, persistent
+//! - `PostgresRegistry` — production default (Phase 2c). Replaces the prior
+//!   `SqliteRegistry` (D3b rip-and-replace).
 //!
-//! See `docs/specs/2026-05-20-multi-agent-architecture-design.md` D19/D20/D21.
+//! See `daimon-docs/specs/2026-05-20-multi-agent-architecture-design.md` D19/D20/D21.
 
+#[cfg(feature = "for-broker")]
+pub mod postgres_registry;
 #[cfg(feature = "for-broker")]
 pub mod refspec;
 #[cfg(feature = "for-broker")]
 pub mod registry;
 #[cfg(feature = "for-broker")]
-pub mod sqlite_registry;
-#[cfg(feature = "for-broker")]
 pub mod target;
 
+#[cfg(feature = "for-broker")]
+pub use postgres_registry::PostgresRegistry;
 #[cfg(feature = "for-broker")]
 pub use refspec::{RefParseError, TargetRef};
 #[cfg(feature = "for-broker")]
 pub use registry::{InMemoryRegistry, Inventory, InventoryError};
-#[cfg(feature = "for-broker")]
-pub use sqlite_registry::SqliteRegistry;
 #[cfg(feature = "for-broker")]
 pub use target::{ManagedTarget, TargetKind, TargetMetadata, TransportKind};
 
@@ -38,7 +39,5 @@ pub use target::{ManagedTarget, TargetKind, TargetMetadata, TransportKind};
 mod refspec;
 #[cfg(all(test, not(feature = "for-broker")))]
 mod registry;
-#[cfg(all(test, not(feature = "for-broker")))]
-mod sqlite_registry;
 #[cfg(all(test, not(feature = "for-broker")))]
 mod target;

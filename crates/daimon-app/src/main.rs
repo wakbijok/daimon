@@ -16,22 +16,24 @@ async fn main() {
     use std::sync::Arc;
     use std::collections::HashMap;
 
-    // ---- Phase 2b #19: assemble the action broker stack -----------------
+    // ---- Phase 2b #19 + Phase 2c D3b: assemble the broker stack ----------
     //
     // The broker is the single integration point between daimon-app
     // server-fns and the (vault + inventory + transport + audit) layer.
-    // It is constructed once at boot from env-config and shared across all
-    // request handlers via AppState.
+    // Phase 2c moved storage from SQLite files to PostgreSQL; the boot now
+    // needs DAIMON_PG_URL + DAIMON_TENANT_SLUG + DAIMON_KNOWN_HOSTS_PATH.
     //
     // Env config:
-    //   DAIMON_DATA_DIR        — directory holding vault.db, inventory.db,
-    //                            audit.db. Default: ./daimon-data
-    //   DAIMON_KNOWN_HOSTS_PATH — SSH known_hosts file. Default:
-    //                            <data_dir>/known_hosts. Production should
-    //                            point this at /var/lib/daimon/known_hosts.
-    //   CREDENTIALS_DIRECTORY  — set by systemd. Production master-key path.
-    //   DAIMON_MASTER_KEY_FILE — development fallback. WARNs loudly.
-    let broker = match boot_broker().await {
+    //   DAIMON_PG_URL           — postgres://... Default
+    //                             postgres://$USER@localhost:5432/daimon
+    //   DAIMON_TENANT_SLUG      — tenant scope. Default `default`.
+    //   DAIMON_KNOWN_HOSTS_PATH — SSH known_hosts file. Default
+    //                             ./daimon-data/known_hosts.
+    //   CREDENTIALS_DIRECTORY   — set by systemd. Production master-key path.
+    //   DAIMON_MASTER_KEY_FILE  — development fallback. WARNs loudly.
+    let tenant_slug = std::env::var("DAIMON_TENANT_SLUG").unwrap_or_else(|_| "default".into());
+
+    let broker = match boot_broker(&tenant_slug).await {
         Ok(b) => b,
         Err(e) => {
             eprintln!("daimon-app: failed to assemble broker stack: {e:#}");
@@ -39,21 +41,37 @@ async fn main() {
         }
     };
 
-    // Init database
-    let conn = db::init_db("daimon.db");
+    // Phase 2c D3b: Postgres pool replaces SQLite. Migrations run on every
+    // boot so dev iteration is one-shot — production runs them once via
+    // `daimon-migrate`.
+    let pg_url = resolve_pg_url();
+    let pool = match db::init_pool(&pg_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("daimon-app: failed to initialise Postgres pool ({pg_url}): {e:#}");
+            std::process::exit(1);
+        }
+    };
+    let tenant_id = match db::resolve_tenant_id(&pool, &tenant_slug).await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("daimon-app: tenant `{tenant_slug}` not found: {e:#}");
+            std::process::exit(1);
+        }
+    };
 
     // Ensure JWT secret exists
-    let jwt_secret = match db::get_config(&conn, "jwt_secret") {
+    let jwt_secret = match db::get_config(&pool, "jwt_secret").await.unwrap_or(None) {
         Some(secret) => secret,
         None => {
             let secret = auth::generate_secret();
-            db::set_config(&conn, "jwt_secret", &secret).unwrap();
+            db::set_config(&pool, "jwt_secret", &secret).await.unwrap();
             secret
         }
     };
 
     // Seed admin user if no users exist
-    if db::find_user(&conn, "admin").is_none() {
+    if db::find_user(&pool, "admin").await.unwrap_or(None).is_none() {
         let password = std::env::var("DAIMON_ADMIN_PASSWORD")
             .unwrap_or_else(|_| {
                 let pwd = auth::generate_secret();
@@ -62,16 +80,16 @@ async fn main() {
                 short.to_string()
             });
         let hash = auth::hash_password(&password);
-        db::create_user(&conn, "admin", &hash).unwrap();
+        db::create_user(&pool, tenant_id, "admin", &hash).await.unwrap();
         log!("Admin user created");
     }
 
     // Load clusters and build PVE clients
-    let clusters = db::list_clusters(&conn);
+    let clusters = db::list_clusters(&pool, tenant_id).await.unwrap_or_default();
     let mut pve_map = HashMap::new();
     for (cid, _name) in &clusters {
-        if let Some((_id, _n, api_url, token, _notes, _created)) = db::get_cluster(&conn, cid) {
-            let client = daimon_pve::Client::from_token_string(&api_url, &token);
+        if let Some(c) = db::get_cluster(&pool, tenant_id, cid).await.unwrap_or(None) {
+            let client = daimon_pve::Client::from_token_string(&c.api_url, &c.token);
             pve_map.insert(cid.clone(), client);
         }
     }
@@ -86,7 +104,8 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app_state = AppState {
-        db: Arc::new(tokio::sync::Mutex::new(conn)),
+        db: pool,
+        tenant_id,
         jwt_secret,
         pve_clients: Arc::new(tokio::sync::RwLock::new(pve_map)),
         pve_cache: Arc::new(tokio::sync::RwLock::new(PveCache::new())),
@@ -177,19 +196,20 @@ async fn main() {
 /// `daimon_broker::production::build_production_broker`, which is the only
 /// path the spec permits for a long-running I/O adapter.
 #[cfg(feature = "ssr")]
-async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> {
+async fn boot_broker(tenant_slug: &str) -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> {
     use std::path::PathBuf;
 
     use anyhow::Context;
     use daimon_broker::production::{build_production_broker, BootConfig, MasterKeyHandle};
 
-    let data_dir = PathBuf::from(
-        std::env::var("DAIMON_DATA_DIR").unwrap_or_else(|_| "daimon-data".to_string()),
-    );
+    let pg_url = resolve_pg_url();
 
     let known_hosts_path = PathBuf::from(
-        std::env::var("DAIMON_KNOWN_HOSTS_PATH")
-            .unwrap_or_else(|_| data_dir.join("known_hosts").to_string_lossy().into_owned()),
+        std::env::var("DAIMON_KNOWN_HOSTS_PATH").unwrap_or_else(|_| {
+            std::env::var("DAIMON_DATA_DIR")
+                .map(|d| format!("{d}/known_hosts"))
+                .unwrap_or_else(|_| "daimon-data/known_hosts".to_string())
+        }),
     );
 
     let master_key = MasterKeyHandle::from_systemd_or_dev_env().context(
@@ -197,7 +217,8 @@ async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> 
     )?;
 
     let broker = build_production_broker(BootConfig {
-        data_dir,
+        pg_url,
+        tenant_slug: tenant_slug.to_string(),
         known_hosts_path,
         master_key,
     })
@@ -205,6 +226,15 @@ async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> 
     .context("build_production_broker")?;
 
     Ok(broker)
+}
+
+#[cfg(feature = "ssr")]
+fn resolve_pg_url() -> String {
+    if let Ok(u) = std::env::var("DAIMON_PG_URL") {
+        return u;
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
+    format!("postgres://{user}@localhost:5432/daimon")
 }
 
 #[cfg(not(feature = "ssr"))]

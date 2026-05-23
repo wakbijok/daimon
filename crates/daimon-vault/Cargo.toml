@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "In-tree credential vault — SQLite + per-row XChaCha20-Poly1305, master key via systemd LoadCredentialEncrypted (D22, supersedes D3+D4). INTERNAL — only daimon-broker enables `for-broker` (D21)."
+description = "In-tree credential vault — PostgreSQL + per-row XChaCha20-Poly1305, master DEK wrapped by KMS at rest (D22 + D4 update Phase 2c). INTERNAL — only daimon-broker enables `for-broker` (D21)."
 
 [features]
 default = []
@@ -27,8 +27,12 @@ zeroize = { version = "1", features = ["derive"] }
 chacha20poly1305 = "0.10"
 hex = "0.4"
 rand_core = { version = "0.6", features = ["std"] }
-# D22: SQLite-backed in-tree vault
-rusqlite = { version = "0.34", features = ["bundled"] }
+# Phase 2c D3b: Postgres-backed vault. SQLite removed.
+daimon-db = { path = "../daimon-db" }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4"] }
+deadpool-postgres = "0.14"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+bincode = "1"
 lru = "0.13"
 
 [dev-dependencies]

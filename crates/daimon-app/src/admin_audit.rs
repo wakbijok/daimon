@@ -115,7 +115,7 @@ pub struct AuditFilterDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEventRow {
-    pub id: i64,
+    pub id: uuid::Uuid,
     pub ts_rfc3339: String,
     pub actor_id: String,
     pub action: ActionKindDto,

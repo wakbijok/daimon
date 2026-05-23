@@ -5,7 +5,7 @@ use daimon_audit::AuditSink;
 use daimon_inventory::{Inventory, InventoryError, TargetMetadata, TargetRef, TransportKind};
 use daimon_transport::{OpResult, Transport, TransportError, TransportTarget};
 use daimon_vault::{
-    CredentialRef, RefParseError as CredRefParseError, SqliteVaultClient, VaultClient, VaultError,
+    CredentialRef, PostgresVaultClient, RefParseError as CredRefParseError, VaultClient, VaultError,
 };
 use thiserror::Error;
 use tracing::{debug, instrument};
@@ -26,12 +26,12 @@ use crate::request::ExecRequest;
 /// Admin proxy methods (D22/D23/D24 — `vault_*`, `inventory_*`, `audit_*`)
 /// live in `daimon-broker/src/admin.rs`. They require the production
 /// constructor `with_production_admin` which wires up `vault_admin` (concrete
-/// `SqliteVaultClient`) and `audit` (the structured event sink). The legacy
-/// `new()` constructor leaves admin disabled (stub usage / tests).
+/// `PostgresVaultClient`) and `audit` (the structured event sink). The
+/// legacy `new()` constructor leaves admin disabled (stub usage / tests).
 pub struct Broker {
     pub(crate) inventory: Arc<dyn Inventory>,
     pub(crate) vault: Arc<dyn VaultClient>,
-    pub(crate) vault_admin: Option<Arc<SqliteVaultClient>>,
+    pub(crate) vault_admin: Option<Arc<PostgresVaultClient>>,
     pub(crate) audit: Option<Arc<dyn AuditSink>>,
     pub(crate) transports: HashMap<TransportKind, Arc<dyn Transport>>,
 }
@@ -54,13 +54,13 @@ impl Broker {
 
     /// Production constructor (D22 in-tree vault + D23 audit log + D24 admin).
     ///
-    /// `vault` is the concrete `Arc<SqliteVaultClient>` — used both as the
+    /// `vault` is the concrete `Arc<PostgresVaultClient>` — used both as the
     /// `dyn VaultClient` for the agent `execute` resolve path AND as the
     /// admin-CRUD handle. `audit` is the append-only event sink — every
     /// state-changing admin call emits an event.
     pub fn with_production_admin(
         inventory: Arc<dyn Inventory>,
-        vault: Arc<SqliteVaultClient>,
+        vault: Arc<PostgresVaultClient>,
         audit: Arc<dyn AuditSink>,
         transports: HashMap<TransportKind, Arc<dyn Transport>>,
     ) -> Self {

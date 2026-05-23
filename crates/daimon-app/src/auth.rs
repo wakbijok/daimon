@@ -2,12 +2,14 @@
 use jsonwebtoken::{encode, decode, Header, Algorithm, Validation, EncodingKey, DecodingKey};
 #[cfg(feature = "ssr")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ssr")]
+use uuid::Uuid;
 
 #[cfg(feature = "ssr")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
-    pub user_id: i64,
+    pub user_id: Uuid,
     pub role: String,
     pub exp: usize,
     pub session_id: String,
@@ -24,7 +26,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 #[cfg(feature = "ssr")]
-pub fn create_jwt(secret: &str, username: &str, user_id: i64, role: &str, session_id: &str) -> String {
+pub fn create_jwt(secret: &str, username: &str, user_id: Uuid, role: &str, session_id: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let claims = Claims {
@@ -73,17 +75,19 @@ mod tests {
     #[test]
     fn test_jwt_roundtrip() {
         let secret = "test-secret-key";
-        let token = create_jwt(secret, "admin", 1, "admin", "sess-abc");
+        let uid = Uuid::new_v4();
+        let token = create_jwt(secret, "admin", uid, "admin", "sess-abc");
         let claims = validate_jwt(secret, &token).unwrap();
         assert_eq!(claims.sub, "admin");
-        assert_eq!(claims.user_id, 1);
+        assert_eq!(claims.user_id, uid);
         assert_eq!(claims.role, "admin");
         assert_eq!(claims.session_id, "sess-abc");
     }
 
     #[test]
     fn test_jwt_invalid_secret() {
-        let token = create_jwt("secret1", "admin", 1, "admin", "sess-abc");
+        let uid = Uuid::new_v4();
+        let token = create_jwt("secret1", "admin", uid, "admin", "sess-abc");
         assert!(validate_jwt("secret2", &token).is_none());
     }
 

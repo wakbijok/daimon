@@ -8,31 +8,38 @@
 //! module instead, so the architectural single-integration-point invariant
 //! holds.
 //!
+//! Phase 2c D3b: storage moved from SQLite to PostgreSQL. The boot now
+//! requires a `pg_url` + `tenant_slug`; vault/inventory/audit are all
+//! pool-backed against the relational tier owned by `daimon-db`. SSH
+//! transport unchanged.
+//!
 //! Typical use from `daimon-app/src/main.rs`:
 //!
 //! ```text
 //! let master_key = daimon_broker::production::MasterKey::from_systemd_or_dev_env()?;
 //! let broker = daimon_broker::production::build_production_broker(BootConfig {
-//!     data_dir: "/var/lib/daimon".into(),
+//!     pg_url: std::env::var("DAIMON_PG_URL")?,
+//!     tenant_slug: "default".into(),
 //!     known_hosts_path: "/var/lib/daimon/known_hosts".into(),
 //!     master_key,
 //! })
 //! .await?;
 //! ```
 //!
-//! See `docs/specs/2026-05-20-multi-agent-architecture-design.md` D21 / D22 /
-//! D23 / D24.
+//! See `daimon-docs/specs/2026-05-20-multi-agent-architecture-design.md` D21
+//! / D22 / D23 / D24 and `daimon-docs/MASTERPLAN.md` §5.2.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use daimon_audit::{AuditSink, SqliteAuditSink};
-use daimon_inventory::{Inventory, SqliteRegistry};
+use daimon_audit::{AuditSink, PostgresAuditSink};
+use daimon_inventory::{Inventory, PostgresRegistry};
 use daimon_transport::{SshTransport, Transport};
-use daimon_vault::{MasterKey, SqliteVaultClient};
+use daimon_vault::{MasterKey, PostgresVaultClient};
 use thiserror::Error;
 use tracing::info;
+use uuid::Uuid;
 
 use crate::{Broker, TransportKind};
 
@@ -41,13 +48,12 @@ use crate::{Broker, TransportKind};
 pub use daimon_vault::{MasterKey as MasterKeyHandle, MasterKeyError};
 
 /// Boot configuration for the production broker stack.
-///
-/// Filesystem paths are caller-owned — `daimon-app` typically derives them
-/// from `DAIMON_DATA_DIR` + `DAIMON_KNOWN_HOSTS_PATH` env vars at start.
 pub struct BootConfig {
-    /// Directory holding `vault.db`, `inventory.db`, `audit.db`. Created if
-    /// missing.
-    pub data_dir: PathBuf,
+    /// PostgreSQL connection URL. Typically derived from `$DAIMON_PG_URL`.
+    pub pg_url: String,
+    /// Tenant slug this broker instance serves. D6 will plumb multi-tenant
+    /// routing; for now the broker is single-tenant per process.
+    pub tenant_slug: String,
     /// SSH `known_hosts` file path. Production should be
     /// `/var/lib/daimon/known_hosts`. The file does not need to exist at
     /// startup — it is created on first SSH connect or by an explicit
@@ -60,12 +66,14 @@ pub struct BootConfig {
 
 #[derive(Debug, Error)]
 pub enum BootError {
-    #[error("io: {context}: {source}")]
-    Io {
-        context: String,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("db: {0}")]
+    Db(#[from] daimon_db::Error),
+    #[error("pg client: {0}")]
+    PgClient(#[from] tokio_postgres::Error),
+    #[error("pool: {0}")]
+    Pool(String),
+    #[error("tenant `{0}` not found in public.tenants")]
+    TenantNotFound(String),
     #[error("vault: {0}")]
     Vault(#[from] daimon_vault::VaultError),
     #[error("inventory: {0}")]
@@ -74,34 +82,24 @@ pub enum BootError {
     Audit(#[from] daimon_audit::AuditError),
 }
 
-/// Assemble the production broker. Opens (or creates) the three SQLite
-/// databases inside `cfg.data_dir`, wires the russh-backed SSH transport
-/// against `cfg.known_hosts_path`, and returns the broker wrapped in `Arc`
-/// for sharing across request handlers.
-///
-/// SSH transport defaults to `KnownHosts` policy — first-connect failures
-/// against unknown hosts surface as an explicit `TransportError`, never
-/// silent trust. Operators bootstrap a new host via `daimon-cli`'s
-/// `--learn-known-hosts` flag.
+/// Assemble the production broker. Opens a Postgres pool, resolves the
+/// tenant id, and wires the russh-backed SSH transport against
+/// `cfg.known_hosts_path`. Returns the broker wrapped in `Arc` for sharing
+/// across request handlers.
 pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, BootError> {
-    std::fs::create_dir_all(&cfg.data_dir).map_err(|e| BootError::Io {
-        context: format!("create data_dir `{}`", cfg.data_dir.display()),
-        source: e,
-    })?;
-
-    let vault_path = cfg.data_dir.join("vault.db");
-    let inventory_path = cfg.data_dir.join("inventory.db");
-    let audit_path = cfg.data_dir.join("audit.db");
-
     info!(
-        data_dir = %cfg.data_dir.display(),
+        pg_url = %scrub_pg_url(&cfg.pg_url),
+        tenant = %cfg.tenant_slug,
         known_hosts = %cfg.known_hosts_path.display(),
         "assembling production broker stack"
     );
 
-    let vault = Arc::new(SqliteVaultClient::open(&vault_path, cfg.master_key).await?);
-    let inventory: Arc<dyn Inventory> = Arc::new(SqliteRegistry::open(&inventory_path).await?);
-    let audit: Arc<dyn AuditSink> = Arc::new(SqliteAuditSink::open(&audit_path).await?);
+    let pool = daimon_db::build_pool(&cfg.pg_url)?;
+    let tenant_id = resolve_tenant(&pool, &cfg.tenant_slug).await?;
+
+    let vault = Arc::new(PostgresVaultClient::new(pool.clone(), tenant_id, cfg.master_key));
+    let inventory: Arc<dyn Inventory> = Arc::new(PostgresRegistry::new(pool.clone(), tenant_id));
+    let audit: Arc<dyn AuditSink> = Arc::new(PostgresAuditSink::new(pool.clone(), tenant_id));
 
     let ssh: Arc<dyn Transport> =
         Arc::new(SshTransport::with_known_hosts_path(cfg.known_hosts_path));
@@ -112,43 +110,22 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
     Ok(Arc::new(broker))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+async fn resolve_tenant(pool: &daimon_db::Pool, slug: &str) -> Result<Uuid, BootError> {
+    let client = pool.get().await.map_err(|e| BootError::Pool(e.to_string()))?;
+    let row = client
+        .query_opt("SELECT id FROM public.tenants WHERE slug = $1", &[&slug])
+        .await?
+        .ok_or_else(|| BootError::TenantNotFound(slug.to_string()))?;
+    Ok(row.get(0))
+}
 
-    #[tokio::test]
-    async fn build_production_broker_opens_all_three_dbs_in_fresh_data_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = BootConfig {
-            data_dir: tmp.path().to_path_buf(),
-            known_hosts_path: tmp.path().join("known_hosts"),
-            master_key: MasterKey::from_bytes([0xC3u8; 32]),
-        };
-
-        let broker = build_production_broker(cfg).await.expect("boot");
-
-        // Sanity: broker is reachable as an admin proxy and returns empty
-        // results on a fresh stack.
-        let targets = broker.list_targets(None).await;
-        assert!(targets.is_empty(), "fresh inventory should be empty");
-
-        // Three DB files should exist on disk.
-        assert!(tmp.path().join("vault.db").exists());
-        assert!(tmp.path().join("inventory.db").exists());
-        assert!(tmp.path().join("audit.db").exists());
+fn scrub_pg_url(url: &str) -> String {
+    if let Some(at) = url.rfind('@') {
+        if let Some(scheme_end) = url.find("://") {
+            let scheme = &url[..scheme_end + 3];
+            let after_at = &url[at..];
+            return format!("{scheme}*****{after_at}");
+        }
     }
-
-    #[tokio::test]
-    async fn build_production_broker_creates_missing_data_dir() {
-        let parent = tempfile::tempdir().unwrap();
-        let data_dir = parent.path().join("nested/dir");
-        let cfg = BootConfig {
-            data_dir: data_dir.clone(),
-            known_hosts_path: data_dir.join("known_hosts"),
-            master_key: MasterKey::from_bytes([0x55u8; 32]),
-        };
-
-        let _broker = build_production_broker(cfg).await.expect("boot");
-        assert!(data_dir.exists(), "data_dir should be created on boot");
-    }
+    url.to_string()
 }

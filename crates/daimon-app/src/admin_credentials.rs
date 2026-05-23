@@ -68,7 +68,7 @@ impl CredentialDto {
 /// List row — metadata only (no secret material).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRow {
-    pub id: i64,
+    pub id: uuid::Uuid,
     pub name: String,
     pub kind: CredentialKindDto,
     pub created_at: String,
@@ -179,7 +179,7 @@ pub async fn list_credentials() -> Result<Vec<CredentialRow>, ServerFnError> {
 pub async fn create_credential(
     name: String,
     cred: CredentialDto,
-) -> Result<i64, ServerFnError> {
+) -> Result<uuid::Uuid, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
@@ -193,7 +193,7 @@ pub async fn create_credential(
 }
 
 #[server]
-pub async fn update_credential(id: i64, cred: CredentialDto) -> Result<(), ServerFnError> {
+pub async fn update_credential(id: uuid::Uuid, cred: CredentialDto) -> Result<(), ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
@@ -207,7 +207,7 @@ pub async fn update_credential(id: i64, cred: CredentialDto) -> Result<(), Serve
 }
 
 #[server]
-pub async fn rename_credential(id: i64, new_name: String) -> Result<(), ServerFnError> {
+pub async fn rename_credential(id: uuid::Uuid, new_name: String) -> Result<(), ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
@@ -221,7 +221,7 @@ pub async fn rename_credential(id: i64, new_name: String) -> Result<(), ServerFn
 }
 
 #[server]
-pub async fn delete_credential(id: i64) -> Result<(), ServerFnError> {
+pub async fn delete_credential(id: uuid::Uuid) -> Result<(), ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
@@ -235,7 +235,7 @@ pub async fn delete_credential(id: i64) -> Result<(), ServerFnError> {
 }
 
 #[server]
-pub async fn reveal_credential(id: i64) -> Result<CredentialDto, ServerFnError> {
+pub async fn reveal_credential(id: uuid::Uuid) -> Result<CredentialDto, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 

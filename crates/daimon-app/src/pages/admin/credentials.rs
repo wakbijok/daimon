@@ -31,7 +31,7 @@ use crate::components::sortable_table::{
 
 #[derive(Clone, Debug)]
 pub struct CredentialTarget {
-    pub id: i64,
+    pub id: uuid::Uuid,
     pub name: String,
     pub kind: CredentialKindDto,
 }

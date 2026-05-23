@@ -1,273 +1,325 @@
-#[cfg(feature = "ssr")]
-use rusqlite::{Connection, params};
+//! Postgres-backed app data layer (Phase 2c D3b).
+//!
+//! Async helpers against `daimon_db::Pool`. Replaces the prior rusqlite-on-
+//! tokio-Mutex implementation. The same set of operations the SQLite version
+//! provided (find_user, create_user, sessions, app_config, clusters, prefs).
+//!
+//! IDs are UUIDs; tenant scoping is wired through the function signature
+//! where it matters (clusters, prefs, user-create). D6 will replace the
+//! hardcoded default-tenant pattern at the call site with the JWT tenant
+//! claim.
 
 #[cfg(feature = "ssr")]
-pub fn init_db(path: &str) -> Connection {
-    let conn = Connection::open(path).expect("Failed to open database");
-    conn.execute_batch("
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'admin',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            expires_at TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS clusters (
-            id TEXT PRIMARY KEY,
-            name TEXT UNIQUE NOT NULL,
-            api_url TEXT NOT NULL,
-            token TEXT NOT NULL,
-            notes TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS user_preferences (
-            user_id INTEGER NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (user_id, key),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    ").expect("Failed to create tables");
-    conn
+use anyhow::{Context, Result};
+#[cfg(feature = "ssr")]
+use chrono::{DateTime, Utc};
+#[cfg(feature = "ssr")]
+use daimon_db::Pool;
+#[cfg(feature = "ssr")]
+use uuid::Uuid;
+
+// ---- bootstrap --------------------------------------------------------------
+
+/// Initialise the Postgres pool + run migrations. Returns a cheaply-cloneable
+/// pool handle.
+#[cfg(feature = "ssr")]
+pub async fn init_pool(pg_url: &str) -> Result<Pool> {
+    daimon_db::run_migrations(pg_url)
+        .await
+        .context("run migrations")?;
+    let pool = daimon_db::build_pool(pg_url).context("build pool")?;
+    Ok(pool)
+}
+
+/// Resolve a tenant slug to its UUID. Default-tenant default for Phase 2c
+/// single-tenant deployments; D6 plumbs per-request tenant routing.
+#[cfg(feature = "ssr")]
+pub async fn resolve_tenant_id(pool: &Pool, slug: &str) -> Result<Uuid> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one("SELECT id FROM public.tenants WHERE slug = $1", &[&slug])
+        .await
+        .with_context(|| format!("tenant lookup {slug}"))?;
+    Ok(row.get(0))
+}
+
+// ---- users ------------------------------------------------------------------
+
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone)]
+pub struct UserRow {
+    pub id: Uuid,
+    pub username: String,
+    pub password_hash: String,
+    pub role: String,
 }
 
 #[cfg(feature = "ssr")]
-pub fn find_user(conn: &Connection, username: &str) -> Option<(i64, String, String, String)> {
-    conn.query_row(
-        "SELECT id, username, password_hash, role FROM users WHERE username = ?1",
-        params![username],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    ).ok()
+pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT u.id, u.username, u.password_hash,
+                    COALESCE((
+                        SELECT r.slug
+                        FROM public.role_grants rg
+                        JOIN public.roles r ON r.id = rg.role_id
+                        WHERE rg.user_id = u.id
+                        ORDER BY r.is_system DESC, r.slug
+                        LIMIT 1
+                    ), 'operator') AS role_slug
+             FROM public.users u
+             WHERE u.username = $1
+             LIMIT 1",
+            &[&username],
+        )
+        .await
+        .context("find_user")?;
+    Ok(row.map(|r| UserRow {
+        id: r.get(0),
+        username: r.get(1),
+        password_hash: r.get(2),
+        role: r.get(3),
+    }))
 }
 
 #[cfg(feature = "ssr")]
-pub fn create_user(conn: &Connection, username: &str, password_hash: &str) -> rusqlite::Result<i64> {
-    conn.execute(
-        "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
-        params![username, password_hash],
-    )?;
-    Ok(conn.last_insert_rowid())
+pub async fn create_user(
+    pool: &Pool,
+    tenant_id: Uuid,
+    username: &str,
+    password_hash: &str,
+) -> Result<Uuid> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one(
+            "INSERT INTO public.users (tenant_id, username, password_hash, status)
+             VALUES ($1, $2, $3, 'active')
+             RETURNING id",
+            &[&tenant_id, &username, &password_hash],
+        )
+        .await
+        .with_context(|| format!("create user {username}"))?;
+    let user_id: Uuid = row.get(0);
+
+    let role_row = client
+        .query_one(
+            "SELECT id FROM public.roles WHERE slug = 'tenant_admin'",
+            &[],
+        )
+        .await
+        .context("tenant_admin role lookup")?;
+    let role_id: Uuid = role_row.get(0);
+    let scope = format!("tenant:{tenant_id}");
+    client
+        .execute(
+            "INSERT INTO public.role_grants (user_id, role_id, scope)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, role_id, scope) DO NOTHING",
+            &[&user_id, &role_id, &scope],
+        )
+        .await
+        .context("grant tenant_admin")?;
+    Ok(user_id)
 }
 
+// ---- sessions ---------------------------------------------------------------
+
 #[cfg(feature = "ssr")]
-pub fn insert_session(conn: &Connection, id: &str, user_id: i64, expires_at: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT INTO sessions (id, user_id, expires_at) VALUES (?1, ?2, ?3)",
-        params![id, user_id, expires_at],
-    )?;
+pub async fn insert_session(
+    pool: &Pool,
+    id: &str,
+    user_id: Uuid,
+    expires_at: DateTime<Utc>,
+) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "INSERT INTO public.sessions (id, user_id, expires_at)
+             VALUES ($1, $2, $3)",
+            &[&id, &user_id, &expires_at],
+        )
+        .await
+        .with_context(|| format!("insert session {id}"))?;
     Ok(())
 }
 
 #[cfg(feature = "ssr")]
-pub fn find_valid_session(conn: &Connection, id: &str) -> Option<(String, i64, String)> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
-    conn.query_row(
-        "SELECT id, user_id, expires_at FROM sessions WHERE id = ?1 AND expires_at > ?2",
-        params![id, now],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).ok()
+pub async fn find_valid_session(pool: &Pool, id: &str) -> Result<Option<Uuid>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT user_id FROM public.sessions
+             WHERE id = $1 AND expires_at > now()",
+            &[&id],
+        )
+        .await
+        .context("find_valid_session")?;
+    Ok(row.map(|r| r.get::<_, Uuid>(0)))
 }
 
 #[cfg(feature = "ssr")]
-pub fn delete_session(conn: &Connection, id: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+pub async fn delete_session(pool: &Pool, id: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute("DELETE FROM public.sessions WHERE id = $1", &[&id])
+        .await
+        .with_context(|| format!("delete session {id}"))?;
+    Ok(())
+}
+
+// ---- app_config -------------------------------------------------------------
+
+#[cfg(feature = "ssr")]
+pub async fn get_config(pool: &Pool, key: &str) -> Result<Option<String>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT value FROM public.app_config WHERE key = $1",
+            &[&key],
+        )
+        .await
+        .context("get_config")?;
+    Ok(row.map(|r| r.get(0)))
+}
+
+#[cfg(feature = "ssr")]
+pub async fn set_config(pool: &Pool, key: &str, value: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "INSERT INTO public.app_config (key, value)
+             VALUES ($1, $2)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            &[&key, &value],
+        )
+        .await
+        .context("set_config")?;
+    Ok(())
+}
+
+// ---- clusters ---------------------------------------------------------------
+
+#[cfg(feature = "ssr")]
+pub async fn list_clusters(pool: &Pool, tenant_id: Uuid) -> Result<Vec<(String, String)>> {
+    let client = pool.get().await.context("pg client")?;
+    let rows = client
+        .query(
+            "SELECT id, name FROM public.clusters
+             WHERE tenant_id = $1
+             ORDER BY name",
+            &[&tenant_id],
+        )
+        .await
+        .context("list_clusters")?;
+    Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+}
+
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone)]
+pub struct ClusterRow {
+    pub id: String,
+    pub name: String,
+    pub api_url: String,
+    pub token: String,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[cfg(feature = "ssr")]
+pub async fn get_cluster(
+    pool: &Pool,
+    tenant_id: Uuid,
+    id: &str,
+) -> Result<Option<ClusterRow>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT id, name, api_url, token, notes, created_at
+             FROM public.clusters
+             WHERE tenant_id = $1 AND id = $2",
+            &[&tenant_id, &id],
+        )
+        .await
+        .with_context(|| format!("get_cluster {id}"))?;
+    Ok(row.map(|r| ClusterRow {
+        id: r.get(0),
+        name: r.get(1),
+        api_url: r.get(2),
+        token: r.get(3),
+        notes: r.get(4),
+        created_at: r.get(5),
+    }))
+}
+
+#[cfg(feature = "ssr")]
+pub async fn insert_cluster(
+    pool: &Pool,
+    tenant_id: Uuid,
+    id: &str,
+    name: &str,
+    api_url: &str,
+    token: &str,
+    notes: &str,
+) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "INSERT INTO public.clusters
+                (id, tenant_id, name, api_url, token, notes)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            &[&id, &tenant_id, &name, &api_url, &token, &notes],
+        )
+        .await
+        .with_context(|| format!("insert cluster {id}"))?;
     Ok(())
 }
 
 #[cfg(feature = "ssr")]
-pub fn get_config(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT value FROM config WHERE key = ?1",
-        params![key],
-        |row| row.get(0),
-    ).ok()
-}
-
-#[cfg(feature = "ssr")]
-pub fn set_config(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
-        params![key, value],
-    )?;
+pub async fn delete_cluster(pool: &Pool, tenant_id: Uuid, id: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "DELETE FROM public.clusters WHERE tenant_id = $1 AND id = $2",
+            &[&tenant_id, &id],
+        )
+        .await
+        .with_context(|| format!("delete cluster {id}"))?;
     Ok(())
 }
 
-// --- Cluster CRUD ---
+// ---- user_preferences -------------------------------------------------------
 
 #[cfg(feature = "ssr")]
-pub fn list_clusters(conn: &Connection) -> Vec<(String, String)> {
-    let mut stmt = conn
-        .prepare("SELECT id, name FROM clusters ORDER BY name")
-        .expect("prepare list_clusters");
-    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .expect("query list_clusters")
-        .filter_map(|r| r.ok())
-        .collect()
+pub async fn get_preference(pool: &Pool, user_id: Uuid, key: &str) -> Result<Option<String>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT value FROM public.user_preferences
+             WHERE user_id = $1 AND key = $2",
+            &[&user_id, &key],
+        )
+        .await
+        .context("get_preference")?;
+    Ok(row.map(|r| r.get(0)))
 }
 
 #[cfg(feature = "ssr")]
-pub fn get_cluster(conn: &Connection, id: &str) -> Option<(String, String, String, String, String, String)> {
-    conn.query_row(
-        "SELECT id, name, api_url, token, notes, created_at FROM clusters WHERE id = ?1",
-        params![id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-    ).ok()
-}
-
-#[cfg(feature = "ssr")]
-pub fn insert_cluster(conn: &Connection, id: &str, name: &str, api_url: &str, token: &str, notes: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT INTO clusters (id, name, api_url, token, notes) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, name, api_url, token, notes],
-    )?;
+pub async fn set_preference(
+    pool: &Pool,
+    user_id: Uuid,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "INSERT INTO public.user_preferences (user_id, key, value)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            &[&user_id, &key, &value],
+        )
+        .await
+        .with_context(|| format!("set_preference {key}"))?;
     Ok(())
-}
-
-#[cfg(feature = "ssr")]
-pub fn delete_cluster(conn: &Connection, id: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM clusters WHERE id = ?1", params![id])?;
-    Ok(())
-}
-
-// --- User Preferences ---
-
-#[cfg(feature = "ssr")]
-pub fn get_preference(conn: &Connection, user_id: i64, key: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT value FROM user_preferences WHERE user_id = ?1 AND key = ?2",
-        params![user_id, key],
-        |row| row.get(0),
-    ).ok()
-}
-
-#[cfg(feature = "ssr")]
-pub fn set_preference(conn: &Connection, user_id: i64, key: &str, value: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO user_preferences (user_id, key, value) VALUES (?1, ?2, ?3)",
-        params![user_id, key, value],
-    )?;
-    Ok(())
-}
-
-#[cfg(all(test, feature = "ssr"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_user_crud() {
-        let conn = init_db(":memory:");
-        let id = create_user(&conn, "admin", "$2b$12$hash").unwrap();
-        assert!(id > 0);
-
-        let (uid, username, hash, role) = find_user(&conn, "admin").unwrap();
-        assert_eq!(uid, id);
-        assert_eq!(username, "admin");
-        assert_eq!(hash, "$2b$12$hash");
-        assert_eq!(role, "admin");
-
-        assert!(find_user(&conn, "nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_session_crud() {
-        let conn = init_db(":memory:");
-        let user_id = create_user(&conn, "admin", "hash").unwrap();
-
-        // Use a far-future timestamp so the session is valid
-        let far_future = "9999999999";
-        insert_session(&conn, "sess-123", user_id, far_future).unwrap();
-
-        let (sid, uid, exp) = find_valid_session(&conn, "sess-123").unwrap();
-        assert_eq!(sid, "sess-123");
-        assert_eq!(uid, user_id);
-        assert_eq!(exp, far_future);
-
-        delete_session(&conn, "sess-123").unwrap();
-        assert!(find_valid_session(&conn, "sess-123").is_none());
-    }
-
-    #[test]
-    fn test_expired_session_not_found() {
-        let conn = init_db(":memory:");
-        let user_id = create_user(&conn, "admin", "hash").unwrap();
-
-        // Use a past timestamp
-        insert_session(&conn, "sess-old", user_id, "0").unwrap();
-        assert!(find_valid_session(&conn, "sess-old").is_none());
-    }
-
-    #[test]
-    fn test_config_crud() {
-        let conn = init_db(":memory:");
-        set_config(&conn, "jwt_secret", "mysecret").unwrap();
-        assert_eq!(get_config(&conn, "jwt_secret").unwrap(), "mysecret");
-
-        set_config(&conn, "jwt_secret", "newsecret").unwrap();
-        assert_eq!(get_config(&conn, "jwt_secret").unwrap(), "newsecret");
-    }
-
-    #[test]
-    fn test_cluster_crud() {
-        let conn = init_db(":memory:");
-        insert_cluster(&conn, "c1", "Lab", "https://pve:8006", "root@pam!t=abc", "").unwrap();
-
-        let clusters = list_clusters(&conn);
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].0, "c1");
-        assert_eq!(clusters[0].1, "Lab");
-
-        let (id, name, url, token, notes, _created) = get_cluster(&conn, "c1").unwrap();
-        assert_eq!(id, "c1");
-        assert_eq!(name, "Lab");
-        assert_eq!(url, "https://pve:8006");
-        assert_eq!(token, "root@pam!t=abc");
-        assert_eq!(notes, "");
-
-        delete_cluster(&conn, "c1").unwrap();
-        assert!(get_cluster(&conn, "c1").is_none());
-        assert!(list_clusters(&conn).is_empty());
-    }
-
-    #[test]
-    fn test_cluster_name_unique() {
-        let conn = init_db(":memory:");
-        insert_cluster(&conn, "c1", "Lab", "https://pve:8006", "tok", "").unwrap();
-        let res = insert_cluster(&conn, "c2", "Lab", "https://pve:8006", "tok", "");
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn test_preference_crud() {
-        let conn = init_db(":memory:");
-        let uid = create_user(&conn, "admin", "hash").unwrap();
-
-        assert!(get_preference(&conn, uid, "theme").is_none());
-
-        set_preference(&conn, uid, "theme", "dark").unwrap();
-        assert_eq!(get_preference(&conn, uid, "theme").unwrap(), "dark");
-
-        set_preference(&conn, uid, "theme", "light").unwrap();
-        assert_eq!(get_preference(&conn, uid, "theme").unwrap(), "light");
-    }
-
-    #[test]
-    fn test_find_user_returns_role() {
-        let conn = init_db(":memory:");
-        create_user(&conn, "admin", "hash").unwrap();
-        let (_id, _name, _hash, role) = find_user(&conn, "admin").unwrap();
-        assert_eq!(role, "admin");
-    }
 }

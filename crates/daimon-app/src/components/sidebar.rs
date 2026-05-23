@@ -28,8 +28,9 @@ async fn get_sidebar_clusters() -> Result<Vec<(String, String)>, ServerFnError> 
     use crate::db;
 
     let state = expect_context::<AppState>();
-    let conn = state.db.lock().await;
-    Ok(db::list_clusters(&conn))
+    db::list_clusters(&state.db, state.tenant_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("list_clusters: {e}")))
 }
 
 #[component]

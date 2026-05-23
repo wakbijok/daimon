@@ -33,8 +33,10 @@ pub async fn get_current_user() -> Result<Option<(String, String)>, ServerFnErro
     };
 
     // Validate session exists and not expired
-    let conn = state.db.lock().await;
-    if db::find_valid_session(&conn, &claims.session_id).is_none() {
+    let sess = db::find_valid_session(&state.db, &claims.session_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("session lookup: {e}")))?;
+    if sess.is_none() {
         return Ok(None);
     }
 
@@ -77,8 +79,10 @@ pub async fn require_authenticated() -> Result<crate::auth::Claims, ServerFnErro
 
     let claims = auth::validate_jwt(&state.jwt_secret, token).ok_or_else(unauthenticated)?;
 
-    let conn = state.db.lock().await;
-    if db::find_valid_session(&conn, &claims.session_id).is_none() {
+    let sess = db::find_valid_session(&state.db, &claims.session_id)
+        .await
+        .map_err(|_| unauthenticated())?;
+    if sess.is_none() {
         return Err(unauthenticated());
     }
 

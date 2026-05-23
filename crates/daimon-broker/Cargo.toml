@@ -12,6 +12,8 @@ daimon-inventory = { path = "../daimon-inventory", features = ["for-broker"] }
 daimon-vault = { path = "../daimon-vault", features = ["for-broker"] }
 daimon-transport = { path = "../daimon-transport", features = ["for-broker"] }
 daimon-audit = { path = "../daimon-audit" }
+daimon-db = { path = "../daimon-db" }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -20,6 +22,7 @@ tokio = { version = "1", features = ["sync", "time"] }
 tracing = "0.1"
 zeroize = "1"
 chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

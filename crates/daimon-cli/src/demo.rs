@@ -1,6 +1,11 @@
 //! Phase 2b acceptance demo — proves the broker pattern (D19) end-to-end
 //! against a real own-vault + real SSH endpoint.
 //!
+//! Phase 2c update: vault/inventory/audit are Postgres-backed via the
+//! production stack assembler (`daimon-broker::production`). The demo
+//! therefore needs a running Postgres + a known tenant. Default
+//! configuration points at the dev `daimon` database with tenant `default`.
+//!
 //! Usage:
 //!   daimon-demo \
 //!     --target mikrotik-edge \
@@ -10,42 +15,25 @@
 //!     --key ~/.ssh/arif \
 //!     --command "uname -a"
 //!
-//! What this proves:
-//! - SqliteVaultClient (in-memory + file-backed both supported) holds a
-//!   real SSH private key, encrypted with chacha20poly1305 (D22).
-//! - SqliteRegistry maps target://<name> to host+port+credential_ref (D20).
-//! - Broker::with_production_admin wires the lot.
-//! - broker.execute(...) drives the russh SshTransport against the real
-//!   endpoint with the credential resolved from the in-tree vault.
-//! - The agent code path NEVER touches the raw SSH key (D19) — we only
-//!   call broker.execute().
-//! - Every action emits an audit event (D23). The demo prints the event
-//!   log at the end.
-//!
-//! For demo purposes the master key is generated in-process (NOT from
-//! systemd LoadCredentialEncrypted). A flag opts in to file-backed
-//! storage at a temp dir if you want to inspect the on-disk shape.
+//! D19 invariant proved: the agent code path NEVER touches the raw SSH key
+//! — we only call broker.execute().
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use daimon_broker::production::{build_production_broker, BootConfig, MasterKeyHandle};
 use daimon_broker::{
-    AuditFilter, Broker, Credential, ExecRequest, Inventory, ManagedTarget, Op, OpResult,
-    TargetKind, TargetRef, TransportKind,
+    AuditFilter, Credential, ExecRequest, ManagedTarget, Op, OpResult, TargetKind, TargetRef,
+    TransportKind,
 };
-use daimon_audit::SqliteAuditSink;
-use daimon_inventory::SqliteRegistry;
-use daimon_transport::{SshTransport, Transport};
-use daimon_vault::{MasterKey, SqliteVaultClient};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "daimon-demo",
-    about = "Phase 2b acceptance: broker → vault → ssh-transport end-to-end."
+    about = "Phase 2b/2c acceptance: broker → vault → ssh-transport end-to-end against Postgres."
 )]
 struct Args {
     /// Logical target name (becomes target://<name>).
@@ -85,22 +73,18 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     timeout_secs: u32,
 
-    /// Skip known_hosts verification and accept any server key. Required
-    /// for first-bootstrap demos; logs a WARN every time it's used. Does
-    /// NOT persist the key. Use `--learn-known-hosts` for TOFU bootstrap.
-    #[arg(long)]
-    accept_any_host_key: bool,
+    /// Path to a known_hosts file. Default `./daimon-data/known_hosts`.
+    #[arg(long, default_value = "./daimon-data/known_hosts")]
+    known_hosts: String,
 
-    /// **TOFU bootstrap**: accept any server key on this run AND append
-    /// it to the specified known_hosts file. Subsequent runs should use
-    /// `--known-hosts <same-path>` for strict verification.
-    #[arg(long, conflicts_with = "accept_any_host_key")]
-    learn_known_hosts: Option<String>,
+    /// Tenant slug (must exist in public.tenants). Default `default`.
+    #[arg(long, default_value = "default", env = "DAIMON_TENANT_SLUG")]
+    tenant_slug: String,
 
-    /// Path to a known_hosts file. Default `/var/lib/daimon/known_hosts`.
-    /// Ignored if `--accept-any-host-key` or `--learn-known-hosts` is set.
-    #[arg(long)]
-    known_hosts: Option<String>,
+    /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
+    /// postgres://$USER@localhost:5432/daimon.
+    #[arg(long, env = "DAIMON_PG_URL")]
+    pg_url: Option<String>,
 
     /// Actor id recorded in audit events. Defaults to "demo:operator".
     #[arg(long, default_value = "demo:operator")]
@@ -117,9 +101,9 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    info!("==> dAImon Phase 2b demo — in-tree vault + real russh SSH");
+    info!("==> dAImon Phase 2c demo — Postgres-backed in-tree vault + real russh SSH");
 
-    // ---- 1. Build the credential from CLI inputs ------------------------------
+    // ---- 1. Build the credential from CLI inputs -----------------------------
     let cred = match (&args.key, &args.password) {
         (Some(key_path), None) => {
             let pem = std::fs::read_to_string(key_path)
@@ -137,43 +121,28 @@ async fn main() -> Result<()> {
         _ => anyhow::bail!("exactly one of --key or --password is required"),
     };
 
-    // ---- 2. Seed vault + inventory + audit (in-memory for demo) --------------
-    info!("==> Seeding in-memory vault, inventory, audit DBs");
-    let master_key = MasterKey::from_bytes(rand_master_key()?);
-    let vault = Arc::new(SqliteVaultClient::in_memory(master_key)?);
-    let inventory = Arc::new(SqliteRegistry::in_memory()?);
-    let audit: Arc<dyn daimon_audit::AuditSink> = Arc::new(SqliteAuditSink::in_memory()?);
+    // ---- 2. Assemble the production broker against Postgres ------------------
+    info!("==> Assembling production broker (Postgres-backed)");
+    let pg_url = args
+        .pg_url
+        .clone()
+        .or_else(|| std::env::var("DAIMON_PG_URL").ok())
+        .unwrap_or_else(|| {
+            let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
+            format!("postgres://{user}@localhost:5432/daimon")
+        });
+    let master_key = MasterKeyHandle::from_systemd_or_dev_env()
+        .context("load master key (set DAIMON_MASTER_KEY_FILE for dev)")?;
+    let broker = build_production_broker(BootConfig {
+        pg_url,
+        tenant_slug: args.tenant_slug.clone(),
+        known_hosts_path: args.known_hosts.clone().into(),
+        master_key,
+    })
+    .await
+    .context("build_production_broker")?;
 
-    // ---- 3. Build SSH transport with the right policy -----------------------
-    info!("==> Building SshTransport");
-    let ssh: Arc<dyn Transport> = if let Some(learn_path) = &args.learn_known_hosts {
-        info!(
-            learn_to = %learn_path,
-            "  policy = AcceptAnyAndLearn (TOFU bootstrap — host key will be appended)"
-        );
-        Arc::new(SshTransport::with_accept_any_and_learn(learn_path.into()))
-    } else if args.accept_any_host_key {
-        info!("  policy = AcceptAny (security downgrade — bootstrap mode only, NOT persisted)");
-        Arc::new(SshTransport::with_accept_any())
-    } else {
-        match &args.known_hosts {
-            Some(path) => {
-                info!(known_hosts = %path, "  policy = KnownHosts (custom path)");
-                Arc::new(SshTransport::with_known_hosts_path(path.into()))
-            }
-            None => {
-                info!("  policy = KnownHosts (default /var/lib/daimon/known_hosts)");
-                Arc::new(SshTransport::new())
-            }
-        }
-    };
-
-    let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
-    transports.insert(TransportKind::Ssh, ssh);
-
-    let broker = Broker::with_production_admin(inventory.clone(), vault, audit.clone(), transports);
-
-    // ---- 4. Operator workflow via the admin proxy (D22/D23/D24) -------------
+    // ---- 3. Operator workflow via the admin proxy (D22/D23/D24) -------------
     info!("==> [admin] vault_create — store SSH credential");
     let cred_id = broker
         .vault_create(&args.actor, &args.target, cred)
@@ -197,18 +166,7 @@ async fn main() -> Result<()> {
         .await
         .context("inventory_upsert")?;
 
-    let metadata = inventory
-        .list(None)
-        .await
-        .into_iter()
-        .find(|m| m.r#ref.to_string() == format!("target://{}", args.target))
-        .context("target not in inventory after upsert")?;
-    info!(
-        "  registered target://{} → {}:{} ({:?} / {:?})",
-        args.target, metadata.host, metadata.port, metadata.kind, metadata.transport
-    );
-
-    // ---- 5. The actual broker.execute call — agent code path -----------------
+    // ---- 4. The actual broker.execute call — agent code path -----------------
     info!("==> [agent] broker.execute — running `{}` via SSH", args.command);
     let req = ExecRequest::new(
         format!("agent:demo:{}", args.actor),
@@ -239,13 +197,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    // ---- 6. Print the audit log ---------------------------------------------
-    info!("==> Audit log:");
+    // ---- 5. Print the audit log ----------------------------------------------
+    info!("==> Audit log (recent first):");
     let events = broker
         .audit_query(&args.actor, &AuditFilter::default(), 50, 0)
         .await
         .context("audit_query")?;
-    for ev in events.iter().rev() {
+    for ev in events.iter() {
         println!(
             "  [{ts}] actor={actor} action={action} target={target} result={result} latency_ms={latency} {op}",
             ts = ev.ts.to_rfc3339(),
@@ -260,15 +218,4 @@ async fn main() -> Result<()> {
 
     info!("==> Demo complete. D19 invariant proven: agent code path never touched the SSH key.");
     Ok(())
-}
-
-/// Generate a 32-byte master key without bringing in a heavy RNG crate.
-/// Uses `getrandom` semantically by reading from system entropy via a
-/// dedicated rng if available, falling back to thread RNG.
-fn rand_master_key() -> Result<[u8; 32]> {
-    use std::io::Read;
-    let mut buf = [0u8; 32];
-    let mut f = std::fs::File::open("/dev/urandom").context("open /dev/urandom")?;
-    f.read_exact(&mut buf).context("read /dev/urandom")?;
-    Ok(buf)
 }

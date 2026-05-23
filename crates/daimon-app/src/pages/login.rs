@@ -6,25 +6,27 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
     use crate::db;
     use crate::state::AppState;
     use axum::http::header::SET_COOKIE;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use chrono::Utc;
 
     let state = expect_context::<AppState>();
-    let conn = state.db.lock().await;
 
-    let (user_id, _username, hash, role) = db::find_user(&conn, &username)
+    let user = db::find_user(&state.db, &username)
+        .await
+        .map_err(|e| ServerFnError::new(format!("find_user: {e}")))?
         .ok_or_else(|| ServerFnError::new("Invalid credentials"))?;
 
-    if !auth::verify_password(&password, &hash) {
+    if !auth::verify_password(&password, &user.password_hash) {
         return Err(ServerFnError::new("Invalid credentials"));
     }
 
     let session_id = auth::generate_secret();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let expires_at = (now + 86400).to_string();
+    let expires_at = Utc::now() + chrono::Duration::seconds(86400);
 
-    db::insert_session(&conn, &session_id, user_id, &expires_at).unwrap();
+    db::insert_session(&state.db, &session_id, user.id, expires_at)
+        .await
+        .map_err(|e| ServerFnError::new(format!("insert_session: {e}")))?;
 
-    let token = auth::create_jwt(&state.jwt_secret, &username, user_id, &role, &session_id);
+    let token = auth::create_jwt(&state.jwt_secret, &username, user.id, &user.role, &session_id);
 
     let cookie = format!(
         "daimon_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",

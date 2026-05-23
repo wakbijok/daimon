@@ -1,0 +1,31 @@
+[package]
+name = "daimon-anchor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tamper-evidence anchoring + verification for the audit hash chain (Phase 2c D5)."
+
+[[bin]]
+name = "daimon-anchor"
+path = "src/main.rs"
+
+[dependencies]
+daimon-db = { path = "../daimon-db" }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = "0.14"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "fs"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

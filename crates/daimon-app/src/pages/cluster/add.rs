@@ -19,11 +19,9 @@ async fn save_cluster(name: String, api_url: String, token: String, notes: Strin
     let state = expect_context::<AppState>();
     let id = uuid::Uuid::new_v4().to_string();
 
-    {
-        let conn = state.db.lock().await;
-        db::insert_cluster(&conn, &id, &name, &api_url, &token, &notes)
-            .map_err(|e| ServerFnError::new(e.to_string()))?;
-    }
+    db::insert_cluster(&state.db, state.tenant_id, &id, &name, &api_url, &token, &notes)
+        .await
+        .map_err(|e| ServerFnError::new(format!("insert_cluster: {e}")))?;
 
     // Add to in-memory PVE clients
     {

@@ -25,7 +25,12 @@ impl PveCache {
 #[cfg(feature = "ssr")]
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    /// Phase 2c D3b: Postgres pool. Replaces the prior
+    /// `Arc<Mutex<rusqlite::Connection>>`.
+    pub db: daimon_db::Pool,
+    /// Tenant scope this AppState is constructed against. D6 will move this
+    /// to per-request resolution from the JWT tenant claim.
+    pub tenant_id: uuid::Uuid,
     pub jwt_secret: String,
     pub pve_clients: Arc<tokio::sync::RwLock<HashMap<String, daimon_pve::Client>>>,
     pub pve_cache: Arc<tokio::sync::RwLock<PveCache>>,

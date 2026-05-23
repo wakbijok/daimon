@@ -136,10 +136,11 @@ pub async fn get_cluster_info(cluster_id: String) -> Result<(String, String), Se
     use crate::db;
 
     let state = expect_context::<AppState>();
-    let conn = state.db.lock().await;
-    let (_id, name, api_url, _token, _notes, _created) = db::get_cluster(&conn, &cluster_id)
+    let cluster = db::get_cluster(&state.db, state.tenant_id, &cluster_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("get_cluster: {e}")))?
         .ok_or_else(|| ServerFnError::new("Cluster not found"))?;
-    Ok((name, api_url))
+    Ok((cluster.name, cluster.api_url))
 }
 
 #[server]
@@ -268,11 +269,9 @@ pub async fn delete_cluster(cluster_id: String) -> Result<(), ServerFnError> {
     use crate::db;
 
     let state = expect_context::<AppState>();
-    {
-        let conn = state.db.lock().await;
-        db::delete_cluster(&conn, &cluster_id)
-            .map_err(|e| ServerFnError::new(e.to_string()))?;
-    }
+    db::delete_cluster(&state.db, state.tenant_id, &cluster_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("delete_cluster: {e}")))?;
     state.pve_clients.write().await.remove(&cluster_id);
     Ok(())
 }

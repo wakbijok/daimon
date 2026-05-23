@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use uuid::Uuid;
 
 /// A canonical action recorded in the audit log. Free-form strings are
 /// rejected at the API boundary to keep audit queries semantically reliable.
@@ -171,7 +172,7 @@ impl NewAuditEvent {
 /// A persisted audit event. `id` and `ts` are filled in by the sink.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
-    pub id: i64,
+    pub id: Uuid,
     pub ts: DateTime<Utc>,
     pub actor_id: String,
     pub action: ActionKind,
