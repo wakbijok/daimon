@@ -1,8 +1,12 @@
 //! Postgres-backed `VaultClient` impl (Phase 2c D3b).
 //!
 //! Storage: one row per credential in `vault.credentials`. The payload is
-//! bincode-serialized `Credential`, then sealed via XChaCha20-Poly1305 with
-//! the master key. Each row carries its own nonce inside the sealed blob.
+//! serde_json-serialized `Credential`, then sealed via XChaCha20-Poly1305
+//! with the master key. Each row carries its own nonce inside the sealed
+//! blob. JSON (not bincode) because Credential uses
+//! `#[serde(tag = "kind")]` internally-tagged enums which bincode cannot
+//! deserialize. Payload is encrypted anyway — JSON's verbosity costs ~3-5x
+//! more disk per row but the rows are small (~hundreds of bytes each).
 //!
 //! Concurrency: tokio-postgres async + deadpool pool. No mutex; Postgres
 //! handles concurrency internally. The 5-minute TTL LRU cache lives on a
@@ -117,8 +121,8 @@ impl PostgresVaultClient {
     #[instrument(skip(self, cred), level = "debug")]
     pub async fn create(&self, name: &str, cred: Credential) -> Result<Uuid, VaultError> {
         let kind = cred.kind();
-        let blob = bincode::serialize(&cred)
-            .map_err(|e| VaultError::Other(format!("bincode: {e}")))?;
+        let blob = serde_json::to_vec(&cred)
+            .map_err(|e| VaultError::Other(format!("serialize: {e}")))?;
         let sealed = self
             .inner
             .sealer
@@ -151,8 +155,8 @@ impl PostgresVaultClient {
     #[instrument(skip(self, cred), level = "debug")]
     pub async fn update(&self, id: Uuid, cred: Credential) -> Result<(), VaultError> {
         let kind = cred.kind();
-        let blob = bincode::serialize(&cred)
-            .map_err(|e| VaultError::Other(format!("bincode: {e}")))?;
+        let blob = serde_json::to_vec(&cred)
+            .map_err(|e| VaultError::Other(format!("serialize: {e}")))?;
         let sealed = self
             .inner
             .sealer
@@ -249,7 +253,7 @@ impl PostgresVaultClient {
             .sealer
             .unseal(&sealed)
             .map_err(|e| VaultError::Other(format!("unseal: {e}")))?;
-        let cred: Credential = bincode::deserialize(&blob)
+        let cred: Credential = serde_json::from_slice(&blob)
             .map_err(|e| VaultError::Other(format!("decode: {e}")))?;
         Ok(cred)
     }
@@ -303,7 +307,7 @@ impl VaultClient for PostgresVaultClient {
             .sealer
             .unseal(&sealed)
             .map_err(|e| VaultError::Other(format!("unseal: {e}")))?;
-        let cred: Credential = bincode::deserialize(&blob)
+        let cred: Credential = serde_json::from_slice(&blob)
             .map_err(|e| VaultError::Other(format!("decode: {e}")))?;
 
         // Cache.

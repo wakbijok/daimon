@@ -51,7 +51,8 @@ pub struct UserRow {
     pub id: Uuid,
     pub username: String,
     pub password_hash: String,
-    pub role: String,
+    pub tenant_id: Uuid,
+    pub roles: Vec<String>,
 }
 
 #[cfg(feature = "ssr")]
@@ -59,15 +60,17 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
     let client = pool.get().await.context("pg client")?;
     let row = client
         .query_opt(
-            "SELECT u.id, u.username, u.password_hash,
-                    COALESCE((
-                        SELECT r.slug
-                        FROM public.role_grants rg
-                        JOIN public.roles r ON r.id = rg.role_id
-                        WHERE rg.user_id = u.id
-                        ORDER BY r.is_system DESC, r.slug
-                        LIMIT 1
-                    ), 'operator') AS role_slug
+            "SELECT u.id, u.username, u.password_hash, u.tenant_id,
+                    COALESCE(
+                        ARRAY(
+                            SELECT r.slug
+                            FROM public.role_grants rg
+                            JOIN public.roles r ON r.id = rg.role_id
+                            WHERE rg.user_id = u.id
+                            ORDER BY r.is_system DESC, r.slug
+                        ),
+                        ARRAY[]::TEXT[]
+                    ) AS roles
              FROM public.users u
              WHERE u.username = $1
              LIMIT 1",
@@ -75,11 +78,15 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
         )
         .await
         .context("find_user")?;
-    Ok(row.map(|r| UserRow {
-        id: r.get(0),
-        username: r.get(1),
-        password_hash: r.get(2),
-        role: r.get(3),
+    Ok(row.map(|r| {
+        let tenant_opt: Option<Uuid> = r.get(3);
+        UserRow {
+            id: r.get(0),
+            username: r.get(1),
+            password_hash: r.get(2),
+            tenant_id: tenant_opt.unwrap_or_else(Uuid::nil),
+            roles: r.get(4),
+        }
     }))
 }
 

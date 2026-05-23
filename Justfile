@@ -200,6 +200,61 @@ pg-migrate:
 pg-url:
     @echo "{{pg_url}}"
 
+# DESTRUCTIVE: wipe one tenant's data without affecting other tenants. Preserves
+# the public.tenants row itself; clears vault/inventory/audit/clusters/plans/users.
+pg-reset-tenant slug:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{pg_bin}}/psql -p {{pg_port}} -d {{pg_db}} -v ON_ERROR_STOP=1 <<SQL
+    DO \$\$ DECLARE t_id UUID;
+    BEGIN
+        SELECT id INTO t_id FROM public.tenants WHERE slug = '{{slug}}';
+        IF t_id IS NULL THEN
+            RAISE EXCEPTION 'no tenant with slug = {{slug}}';
+        END IF;
+        DELETE FROM vault.credentials WHERE tenant_id = t_id;
+        DELETE FROM inventory.targets WHERE tenant_id = t_id;
+        DELETE FROM public.clusters WHERE tenant_id = t_id;
+        DELETE FROM public.plan_steps WHERE plan_id IN (SELECT id FROM public.plans WHERE tenant_id = t_id);
+        DELETE FROM public.plans WHERE tenant_id = t_id;
+        DELETE FROM public.role_grants WHERE user_id IN (SELECT id FROM public.users WHERE tenant_id = t_id);
+        DELETE FROM public.users WHERE tenant_id = t_id;
+    END \$\$;
+    SQL
+    echo "tenant {{slug}} content wiped"
+
+# --- Phase 2c data migration + anchoring ---------------------------------
+
+# SQLite → Postgres data migrate (one-shot, idempotent). Run after pg-migrate.
+migrate-data:
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-migrate-data --bin daimon-migrate-data -- run
+
+# Side-by-side row count compare (sqlite vs pg).
+migrate-data-verify:
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-migrate-data --bin daimon-migrate-data -- verify
+
+# Snapshot the current audit chain head for a tenant (defaults to `default`).
+audit-snapshot tenant="default":
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-anchor --bin daimon-anchor -- snapshot --tenant {{tenant}}
+
+# Verify a tenant's audit chain by recomputing hashes from canonical fields.
+audit-verify tenant="default":
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-anchor --bin daimon-anchor -- verify --tenant {{tenant}}
+
+# List anchors for a tenant.
+audit-anchors tenant="default":
+    DAIMON_PG_URL="{{pg_url}}" cargo run -p daimon-anchor --bin daimon-anchor -- list --tenant {{tenant}}
+
+# Placeholder: DEK rotation. Phase 2c.1 wires this to daimon-vault.
+vault-rotate-dek:
+    @echo "vault-rotate-dek is a Phase 2c.1 deliverable — daimon-kms crate exists but the rotate orchestration is not yet wired."
+    @echo "See daimon-docs/plans/2026-05-23-phase-2c-compliance-posture-plan.md D4."
+    @exit 1
+
+# Multi-tenant isolation e2e test. Requires Postgres running.
+test-isolation:
+    DAIMON_PG_URL="{{pg_url}}" cargo test -p daimon-broker --test multi_tenant_isolation -- --ignored
+
 # --- Check + Test ----------------------------------------------------------
 
 # Fast compile check (ssr lib + hydrate WASM). Keep default features ON —

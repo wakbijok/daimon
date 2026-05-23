@@ -26,7 +26,14 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
         .await
         .map_err(|e| ServerFnError::new(format!("insert_session: {e}")))?;
 
-    let token = auth::create_jwt(&state.jwt_secret, &username, user.id, &user.role, &session_id);
+    let token = auth::create_jwt(
+        &state.jwt_secret,
+        &username,
+        user.id,
+        user.tenant_id,
+        &user.roles,
+        &session_id,
+    );
 
     let cookie = format!(
         "daimon_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",

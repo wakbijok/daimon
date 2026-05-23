@@ -10,7 +10,16 @@ use uuid::Uuid;
 pub struct Claims {
     pub sub: String,
     pub user_id: Uuid,
+    /// Tenant the caller is acting on behalf of. For cluster_admin sessions
+    /// this still carries the user's home tenant; the cluster_admin escape
+    /// hatch lives in `roles`, not here.
+    pub tenant_id: Uuid,
+    /// Primary role (first grant). Kept for backward-compat with
+    /// `require_admin()` which checked `role == "admin"`. Phase 2c.D6
+    /// introduces `roles` as the canonical multi-grant view.
     pub role: String,
+    /// All role grants for this user. Use `roles.iter().any(|r| r == "...")`.
+    pub roles: Vec<String>,
     pub exp: usize,
     pub session_id: String,
 }
@@ -26,13 +35,23 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 #[cfg(feature = "ssr")]
-pub fn create_jwt(secret: &str, username: &str, user_id: Uuid, role: &str, session_id: &str) -> String {
+pub fn create_jwt(
+    secret: &str,
+    username: &str,
+    user_id: Uuid,
+    tenant_id: Uuid,
+    roles: &[String],
+    session_id: &str,
+) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let primary = roles.first().cloned().unwrap_or_else(|| "operator".into());
     let claims = Claims {
         sub: username.to_string(),
         user_id,
-        role: role.to_string(),
+        tenant_id,
+        role: primary,
+        roles: roles.to_vec(),
         exp: (now + 86400) as usize, // 24 hours
         session_id: session_id.to_string(),
     };
@@ -76,18 +95,23 @@ mod tests {
     fn test_jwt_roundtrip() {
         let secret = "test-secret-key";
         let uid = Uuid::new_v4();
-        let token = create_jwt(secret, "admin", uid, "admin", "sess-abc");
+        let tid = Uuid::new_v4();
+        let roles = vec!["tenant_admin".to_string()];
+        let token = create_jwt(secret, "admin", uid, tid, &roles, "sess-abc");
         let claims = validate_jwt(secret, &token).unwrap();
         assert_eq!(claims.sub, "admin");
         assert_eq!(claims.user_id, uid);
-        assert_eq!(claims.role, "admin");
+        assert_eq!(claims.tenant_id, tid);
+        assert_eq!(claims.role, "tenant_admin");
+        assert_eq!(claims.roles, roles);
         assert_eq!(claims.session_id, "sess-abc");
     }
 
     #[test]
     fn test_jwt_invalid_secret() {
         let uid = Uuid::new_v4();
-        let token = create_jwt("secret1", "admin", uid, "admin", "sess-abc");
+        let tid = Uuid::new_v4();
+        let token = create_jwt("secret1", "admin", uid, tid, &["tenant_admin".into()], "sess-abc");
         assert!(validate_jwt("secret2", &token).is_none());
     }
 

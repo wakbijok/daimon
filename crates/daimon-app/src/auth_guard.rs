@@ -89,28 +89,67 @@ pub async fn require_authenticated() -> Result<crate::auth::Claims, ServerFnErro
     Ok(claims)
 }
 
-/// Resolve the current request's JWT + session AND enforce `role == "admin"`.
+/// Resolve the current request's JWT + session AND enforce that the caller
+/// holds at least one role permitting administration.
 ///
-/// Server-only helper called from inside `#[server]` functions backing
-/// `/admin/*` routes. Returns:
-/// - `Ok(claims)` — caller is authenticated AND has admin role
-/// - `Err(ServerFnError::ServerError("unauthenticated"))` — no valid session
-/// - `Err(ServerFnError::ServerError("forbidden"))` — session valid but role != "admin"
-///
-/// Used by Phase 2b admin surfaces (`/admin/credentials`, `/admin/targets`,
-/// `/admin/audit`). Per D24, this is the single gate every admin server-fn
-/// passes through.
+/// Phase 2c.D6: `admin` is no longer a single string. Callers with any of
+/// `tenant_admin`, `cluster_admin`, or the legacy `admin` slug pass. Other
+/// roles (operator, viewer, auditor) are rejected.
 #[cfg(feature = "ssr")]
 pub async fn require_admin() -> Result<crate::auth::Claims, ServerFnError> {
     fn forbidden() -> ServerFnError {
         ServerFnError::ServerError("forbidden".into())
     }
     let claims = require_authenticated().await?;
-    if claims.role != "admin" {
+    let is_admin = claims.roles.iter().any(|r| matches!(r.as_str(),
+        "tenant_admin" | "cluster_admin" | "admin"));
+    if !is_admin {
         tracing::warn!(
             actor = %claims.sub,
-            role = %claims.role,
-            "admin route denied — caller is authenticated but not admin"
+            roles = ?claims.roles,
+            "admin route denied — caller has no admin-class role"
+        );
+        return Err(forbidden());
+    }
+    Ok(claims)
+}
+
+/// Enforce a specific role slug. Cluster admins satisfy any role check.
+#[cfg(feature = "ssr")]
+pub async fn require_role(slug: &str) -> Result<crate::auth::Claims, ServerFnError> {
+    fn forbidden() -> ServerFnError {
+        ServerFnError::ServerError("forbidden".into())
+    }
+    let claims = require_authenticated().await?;
+    let ok = claims
+        .roles
+        .iter()
+        .any(|r| r == slug || r == "cluster_admin");
+    if !ok {
+        tracing::warn!(
+            actor = %claims.sub,
+            required = %slug,
+            roles = ?claims.roles,
+            "role check denied"
+        );
+        return Err(forbidden());
+    }
+    Ok(claims)
+}
+
+/// Enforce that the caller holds `cluster_admin`. Used by cross-tenant
+/// management surfaces (tenant CRUD, system role config).
+#[cfg(feature = "ssr")]
+pub async fn require_cluster_admin() -> Result<crate::auth::Claims, ServerFnError> {
+    fn forbidden() -> ServerFnError {
+        ServerFnError::ServerError("forbidden".into())
+    }
+    let claims = require_authenticated().await?;
+    if !claims.roles.iter().any(|r| r == "cluster_admin") {
+        tracing::warn!(
+            actor = %claims.sub,
+            roles = ?claims.roles,
+            "cluster_admin route denied"
         );
         return Err(forbidden());
     }
