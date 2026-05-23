@@ -48,4 +48,8 @@ pub struct AppState {
     /// when Redis is unavailable). Used by the chat handler for session
     /// persistence + by Phase 5 for the kill-switch signal channel.
     pub working_memory: Arc<dyn daimon_redis::WorkingMemory>,
+    /// Phase 6 D1 — orchestrator. Owns plan persistence + topological
+    /// execution. Admin UI calls list_plans / create_plan / run_plan
+    /// through this.
+    pub orchestrator: Arc<daimon_orchestrator::OrchestratorService>,
 }

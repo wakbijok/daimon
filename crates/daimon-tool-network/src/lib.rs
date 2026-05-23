@@ -127,7 +127,8 @@ impl NetworkAgent {
                 command: command.to_string(),
                 timeout_secs,
             },
-        );
+        )
+        .with_capability(&req.capability, true /* Phase 4 capabilities are all read-only */);
 
         let op_result = self
             .broker

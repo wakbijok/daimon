@@ -20,6 +20,18 @@ pub struct ExecRequest {
     /// convention is `agent:<id>` for worker agents, `user:<username>` for
     /// admin proxy callers, `orchestrator:<plan_id>` for plan steps.
     pub actor_id: String,
+    /// Phase 5 — capability name being invoked, e.g.
+    /// `"network.routeros.system_info"` or `"network.firewall.filter_add"`.
+    /// When `Some`, the broker consults Guard's policy engine before
+    /// dispatching. When `None`, the call bypasses policy (legacy /
+    /// orchestrator-trusted path); KILL switch still fires unconditionally.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Read-only capabilities skip policy + approval (kill switch still
+    /// applies). Set to `true` for read paths so the operator doesn't see
+    /// approval prompts for harmless queries.
+    #[serde(default)]
+    pub is_read_only: bool,
 }
 
 impl ExecRequest {
@@ -28,6 +40,14 @@ impl ExecRequest {
             target_ref,
             op,
             actor_id: actor_id.into(),
+            capability: None,
+            is_read_only: false,
         }
+    }
+
+    pub fn with_capability(mut self, capability: impl Into<String>, is_read_only: bool) -> Self {
+        self.capability = Some(capability.into());
+        self.is_read_only = is_read_only;
+        self
     }
 }

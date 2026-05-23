@@ -1,0 +1,140 @@
+//! Guard for daimon (Phase 5).
+//!
+//! The Guard sits between broker.execute and transport dispatch. It owns
+//! three concerns:
+//!
+//! - **KillSwitch** (D13) — file watcher + SIGUSR1 handler. When engaged,
+//!   every broker.execute is denied. Resume requires `rm` of the file —
+//!   no auto-resume, no agent override.
+//! - **Policy DSL** — Rust + TOML, type-checked at load. Rules: allow,
+//!   deny, require_approval, optional time-of-day / blast-radius
+//!   thresholds.
+//! - **ApprovalQueue** — Postgres-backed inbox. broker.execute on a
+//!   require_approval capability blocks until an operator approves
+//!   (with a timeout that defaults to denied).
+//!
+//! Per the masterplan §4.6 and the practitioner-AI-Guard incident (Post 2
+//! reference) this kill-switch posture is operator-only and not
+//! agent-overridable by design.
+
+pub mod approvals;
+pub mod error;
+pub mod kill_switch;
+pub mod policy;
+
+pub use approvals::{ApprovalQueue, ApprovalRecord, ApprovalStatus};
+pub use error::{Error, Result};
+pub use kill_switch::{KillState, KillSwitch};
+pub use policy::{Decision, PolicyEngine, PolicyRule, PolicyVerdict};
+
+use std::sync::Arc;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// Guard facade — the single struct the broker holds for kill / policy /
+/// approval checks. Cheap to clone (Arc-internal).
+#[derive(Clone)]
+pub struct Guard {
+    kill: KillState,
+    policy: Arc<PolicyEngine>,
+    approvals: Arc<ApprovalQueue>,
+    /// Default tenant when broker.execute can't supply one (Phase 5
+    /// transitional — Phase 6 has plan-bound tenant context).
+    default_tenant: Uuid,
+    /// How long broker.execute will wait for an operator approval before
+    /// failing.
+    approval_timeout: Duration,
+}
+
+impl Guard {
+    pub fn new(
+        kill: KillState,
+        policy: PolicyEngine,
+        approvals: ApprovalQueue,
+        default_tenant: Uuid,
+    ) -> Self {
+        Self {
+            kill,
+            policy: Arc::new(policy),
+            approvals: Arc::new(approvals),
+            default_tenant,
+            approval_timeout: Duration::from_secs(300),
+        }
+    }
+
+    pub fn kill(&self) -> &KillState {
+        &self.kill
+    }
+
+    pub fn policy(&self) -> &PolicyEngine {
+        &self.policy
+    }
+
+    pub fn approvals(&self) -> &Arc<ApprovalQueue> {
+        &self.approvals
+    }
+
+    pub fn approval_timeout(&self) -> Duration {
+        self.approval_timeout
+    }
+
+    pub fn default_tenant(&self) -> Uuid {
+        self.default_tenant
+    }
+
+    /// Pre-flight a capability invocation. Returns Ok(()) if the broker may
+    /// proceed; Err with a specific variant otherwise.
+    ///
+    /// `is_read_only` short-circuits to allow — read capabilities (per
+    /// the Capability struct metadata) skip policy + approval.
+    pub async fn pre_flight(
+        &self,
+        actor_id: &str,
+        capability: &str,
+        target_ref: Option<&str>,
+        params: serde_json::Value,
+        is_read_only: bool,
+    ) -> Result<()> {
+        // 1. Kill switch FIRST — it overrides everything.
+        if self.kill.engaged() {
+            return Err(Error::KillEngaged {
+                reason: self.kill.reason(),
+            });
+        }
+        if is_read_only {
+            return Ok(());
+        }
+        // 2. Policy decision.
+        let verdict = self.policy.evaluate(capability);
+        match verdict.decision {
+            Decision::Allow => Ok(()),
+            Decision::Deny => Err(Error::PolicyDenied {
+                reason: format!("policy denies capability `{capability}`"),
+            }),
+            Decision::RequireApproval => {
+                let id = self
+                    .approvals
+                    .enqueue(self.default_tenant, actor_id, capability, target_ref, params)
+                    .await?;
+                tracing::info!(
+                    approval = %id,
+                    capability,
+                    "approval required — broker parking on inbox row"
+                );
+                let rec = self
+                    .approvals
+                    .wait_for_decision(id, self.approval_timeout, Duration::from_secs(2))
+                    .await?;
+                match rec.status {
+                    ApprovalStatus::Approved => Ok(()),
+                    ApprovalStatus::Denied => Err(Error::PolicyDenied {
+                        reason: format!(
+                            "operator denied approval {id} for `{capability}`"
+                        ),
+                    }),
+                    _ => Err(Error::ApprovalTimeout(id.to_string())),
+                }
+            }
+        }
+    }
+}

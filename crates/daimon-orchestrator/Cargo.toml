@@ -1,0 +1,24 @@
+[package]
+name = "daimon-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plan orchestrator for daimon — persists Plan DAGs, executes steps in topological order via broker, replans on failure (saga rollback ships in Phase 6.1)."
+
+[dependencies]
+daimon-db = { path = "../daimon-db" }
+daimon-broker = { path = "../daimon-broker" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = "0.14"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

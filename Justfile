@@ -290,3 +290,54 @@ build:
 status:
     git status
     git diff --stat
+
+# --- Redis (hot working memory tier — Phase 4) -----------------------------
+#
+# Dev uses native brew Redis with a daimon-scoped data directory. Same
+# pattern as Postgres + Qdrant — no Docker, native binary.
+
+redis_bin := "/opt/homebrew/opt/redis/bin"
+redis_data := "./.redis-data"
+redis_log := redis_data + "/redis.log"
+redis_pid := redis_data + "/redis.pid"
+redis_port := "6379"
+redis_url := "redis://localhost:" + redis_port
+
+# Start Redis in the background.
+redis-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p {{redis_data}}
+    if [ -f {{redis_pid}} ] && kill -0 "$(cat {{redis_pid}})" 2>/dev/null; then
+        echo "redis already running, pid $(cat {{redis_pid}})"
+    else
+        {{redis_bin}}/redis-server \
+            --daemonize yes \
+            --dir $(pwd)/{{redis_data}} \
+            --pidfile $(pwd)/{{redis_pid}} \
+            --logfile $(pwd)/{{redis_log}} \
+            --port {{redis_port}} \
+            --appendonly yes
+        echo "redis started, port {{redis_port}}, data {{redis_data}}, log {{redis_log}}"
+    fi
+
+# Stop Redis.
+redis-down:
+    @if [ -f {{redis_pid}} ] && kill -0 "$(cat {{redis_pid}})" 2>/dev/null; then \
+        kill "$(cat {{redis_pid}})" && rm -f {{redis_pid}} && echo "stopped redis"; \
+    else \
+        echo "redis not running"; \
+    fi
+
+# Status + ping.
+redis-status:
+    @if [ -f {{redis_pid}} ] && kill -0 "$(cat {{redis_pid}})" 2>/dev/null; then \
+        echo "redis running, pid $(cat {{redis_pid}})"; \
+    else \
+        echo "redis not running"; \
+    fi
+    @{{redis_bin}}/redis-cli -p {{redis_port}} ping 2>&1 || echo "(PING unreachable)"
+
+# Echo the dev Redis URL.
+redis-url:
+    @echo "{{redis_url}}"

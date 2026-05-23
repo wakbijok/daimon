@@ -1,0 +1,12 @@
+11523:C 23 May 2026 17:31:55.859 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+11523:C 23 May 2026 17:31:55.860 * Redis version=8.6.3, bits=64, commit=00000000, modified=1, pid=11523, just started
+11523:C 23 May 2026 17:31:55.860 * Configuration loaded
+11523:M 23 May 2026 17:31:55.860 * monotonic clock: ARM CNTVCT @ 24 ticks/us
+11523:M 23 May 2026 17:31:55.861 * Running mode=standalone, port=6379.
+11523:M 23 May 2026 17:31:55.861 # WARNING: The TCP backlog setting of 511 cannot be enforced because kern.ipc.somaxconn is set to the lower value of 128.
+11523:M 23 May 2026 17:31:55.861 * Server initialized
+11523:M 23 May 2026 17:31:55.861 * BGSAVE done, 0 keys saved, 0 keys skipped, 88 bytes written.
+11523:M 23 May 2026 17:31:55.861 * Creating AOF base file appendonly.aof.1.base.rdb on server start
+11523:M 23 May 2026 17:31:55.876 * Creating AOF incr file appendonly.aof.1.incr.aof on server start
+11523:M 23 May 2026 17:31:55.876 * Ready to accept connections tcp
+11523:M 23 May 2026 17:31:55.876 # WARNING: Redis does not require authentication. Redis will accept connections from any local client.

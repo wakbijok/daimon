@@ -1194,6 +1194,7 @@ dependencies = [
  "daimon-db",
  "daimon-llm",
  "daimon-memory",
+ "daimon-orchestrator",
  "daimon-pve",
  "daimon-rag",
  "daimon-redis",
@@ -1246,6 +1247,7 @@ dependencies = [
  "daimon-audit",
  "daimon-core",
  "daimon-db",
+ "daimon-guard",
  "daimon-inventory",
  "daimon-transport",
  "daimon-vault",
@@ -1310,6 +1312,25 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "daimon-guard"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daimon-db",
+ "deadpool-postgres",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "toml 0.8.23",
+ "tracing",
  "uuid",
 ]
 
@@ -1401,6 +1422,24 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "daimon-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daimon-broker",
+ "daimon-db",
+ "deadpool-postgres",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 

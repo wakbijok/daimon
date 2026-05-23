@@ -62,6 +62,12 @@ pub struct BootConfig {
     /// Master key for the in-tree vault. Caller is responsible for loading
     /// it via `MasterKey::from_systemd_or_dev_env()` or equivalent.
     pub master_key: MasterKey,
+    /// Phase 5 — path to the KILL switch file. Operator `touch`es to
+    /// engage; `rm`s to resume. Default `<data_dir>/KILL`.
+    pub kill_path: PathBuf,
+    /// Phase 5 — path to the policy TOML. Missing file = default-deny
+    /// engine (every write rejected until a policy is written).
+    pub policy_path: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -80,6 +86,8 @@ pub enum BootError {
     Inventory(#[from] daimon_inventory::InventoryError),
     #[error("audit: {0}")]
     Audit(#[from] daimon_audit::AuditError),
+    #[error("guard: {0}")]
+    Guard(#[from] daimon_guard::Error),
 }
 
 /// Assemble the production broker. Opens a Postgres pool, resolves the
@@ -106,7 +114,25 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
     let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
     transports.insert(TransportKind::Ssh, ssh);
 
-    let broker = Broker::with_production_admin(inventory, vault, audit, transports);
+    // Phase 5 — assemble Guard.
+    let kill_switch = daimon_guard::KillSwitch::new(cfg.kill_path.clone());
+    kill_switch.spawn_watchers();
+    let policy = daimon_guard::PolicyEngine::from_toml_file(&cfg.policy_path)?;
+    let approvals = daimon_guard::ApprovalQueue::new(pool.clone());
+    let guard = Arc::new(daimon_guard::Guard::new(
+        kill_switch.state(),
+        policy,
+        approvals,
+        tenant_id,
+    ));
+    info!(
+        kill_path = %cfg.kill_path.display(),
+        policy_path = %cfg.policy_path.display(),
+        rules = guard.policy().rules().len(),
+        "guard ready"
+    );
+
+    let broker = Broker::with_production_admin(inventory, vault, audit, transports).with_guard(guard);
     Ok(Arc::new(broker))
 }
 

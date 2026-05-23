@@ -53,6 +53,7 @@ daimon-llm = { path = "../daimon-llm", optional = true }
 daimon-tool-network = { path = "../daimon-tool-network", optional = true }
 daimon-core = { path = "../daimon-core", optional = true }
 daimon-redis = { path = "../daimon-redis", optional = true }
+daimon-orchestrator = { path = "../daimon-orchestrator", optional = true }
 futures-util = { version = "0.3", optional = true }
 
 [features]
@@ -88,5 +89,6 @@ ssr = [
     "dep:daimon-tool-network",
     "dep:daimon-core",
     "dep:daimon-redis",
+    "dep:daimon-orchestrator",
     "dep:futures-util",
 ]

@@ -138,6 +138,8 @@ async fn main() -> Result<()> {
         tenant_slug: args.tenant_slug.clone(),
         known_hosts_path: args.known_hosts.clone().into(),
         master_key,
+        kill_path: std::path::PathBuf::from("./daimon-data/KILL"),
+        policy_path: std::path::PathBuf::from("./daimon-data/policy.toml"),
     })
     .await
     .context("build_production_broker")?;

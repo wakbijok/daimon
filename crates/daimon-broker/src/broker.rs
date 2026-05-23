@@ -34,6 +34,9 @@ pub struct Broker {
     pub(crate) vault_admin: Option<Arc<PostgresVaultClient>>,
     pub(crate) audit: Option<Arc<dyn AuditSink>>,
     pub(crate) transports: HashMap<TransportKind, Arc<dyn Transport>>,
+    /// Phase 5 — Guard (KILL switch + policy + approval). When `None`,
+    /// every execute proceeds as if read-only (legacy / pre-Guard tests).
+    pub(crate) guard: Option<Arc<daimon_guard::Guard>>,
 }
 
 impl Broker {
@@ -49,7 +52,15 @@ impl Broker {
             vault_admin: None,
             audit: None,
             transports,
+            guard: None,
         }
+    }
+
+    /// Attach a Guard. Builder pattern — typically called once at boot by
+    /// the production stack assembler.
+    pub fn with_guard(mut self, guard: Arc<daimon_guard::Guard>) -> Self {
+        self.guard = Some(guard);
+        self
     }
 
     /// Production constructor (D22 in-tree vault + D23 audit log + D24 admin).
@@ -71,6 +82,7 @@ impl Broker {
             vault_admin: Some(vault),
             audit: Some(audit),
             transports,
+            guard: None,
         }
     }
 
@@ -104,6 +116,28 @@ impl Broker {
     }
 
     async fn execute_inner(&self, req: &ExecRequest) -> Result<OpResult, BrokerError> {
+        // Step 0: Guard pre-flight (KILL switch + policy + approval).
+        if let Some(guard) = &self.guard {
+            let cap = req
+                .capability
+                .clone()
+                .unwrap_or_else(|| "broker.execute".to_string());
+            let params = serde_json::json!({
+                "target_ref": req.target_ref.to_string(),
+                "op_summary": op_summary_for(&req.op),
+            });
+            guard
+                .pre_flight(
+                    &req.actor_id,
+                    &cap,
+                    Some(&req.target_ref.to_string()),
+                    params,
+                    req.capability.is_none() || req.is_read_only,
+                )
+                .await
+                .map_err(BrokerError::from)?;
+        }
+
         // Step 1: inventory lookup (broker-only view).
         let managed = self
             .inventory
@@ -219,6 +253,8 @@ pub enum BrokerError {
     Vault(#[from] VaultError),
     #[error("transport: {0}")]
     Transport(#[from] TransportError),
+    #[error("guard: {0}")]
+    Guard(#[from] daimon_guard::Error),
     #[error("invalid credential_ref in inventory entry: {0}")]
     CredentialRefParse(CredRefParseError),
     #[error("no transport registered for kind `{0:?}`")]

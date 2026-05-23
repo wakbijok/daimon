@@ -139,6 +139,11 @@ async fn main() {
         },
     };
 
+    let orchestrator = Arc::new(daimon_orchestrator::OrchestratorService::new(
+        pool.clone(),
+        broker.clone(),
+    ));
+
     let app_state = AppState {
         db: pool,
         tenant_id,
@@ -149,6 +154,7 @@ async fn main() {
         broker,
         network_agent,
         working_memory,
+        orchestrator,
     };
 
     // Spawn background PVE polling task (30s interval)
@@ -242,12 +248,16 @@ async fn boot_broker(tenant_slug: &str) -> anyhow::Result<std::sync::Arc<daimon_
 
     let pg_url = resolve_pg_url();
 
+    let data_dir = std::env::var("DAIMON_DATA_DIR").unwrap_or_else(|_| "daimon-data".to_string());
     let known_hosts_path = PathBuf::from(
-        std::env::var("DAIMON_KNOWN_HOSTS_PATH").unwrap_or_else(|_| {
-            std::env::var("DAIMON_DATA_DIR")
-                .map(|d| format!("{d}/known_hosts"))
-                .unwrap_or_else(|_| "daimon-data/known_hosts".to_string())
-        }),
+        std::env::var("DAIMON_KNOWN_HOSTS_PATH")
+            .unwrap_or_else(|_| format!("{data_dir}/known_hosts")),
+    );
+    let kill_path = PathBuf::from(
+        std::env::var("DAIMON_KILL_PATH").unwrap_or_else(|_| format!("{data_dir}/KILL")),
+    );
+    let policy_path = PathBuf::from(
+        std::env::var("DAIMON_POLICY_PATH").unwrap_or_else(|_| format!("{data_dir}/policy.toml")),
     );
 
     let master_key = MasterKeyHandle::from_systemd_or_dev_env().context(
@@ -259,6 +269,8 @@ async fn boot_broker(tenant_slug: &str) -> anyhow::Result<std::sync::Arc<daimon_
         tenant_slug: tenant_slug.to_string(),
         known_hosts_path,
         master_key,
+        kill_path,
+        policy_path,
     })
     .await
     .context("build_production_broker")?;
