@@ -15,6 +15,7 @@ pub enum Auth {
 }
 
 /// Proxmox VE API client.
+#[derive(Clone)]
 pub struct Client {
     base_url: String,
     http: reqwest::Client,

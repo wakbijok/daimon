@@ -157,44 +157,129 @@ async fn main() {
         orchestrator,
     };
 
-    // Spawn background PVE polling task (30s interval)
+    // Phase 7 — PlatformPoller per cluster + push metrics to observer.metrics.
+    // The poller calls Platform::list_workloads on a fixed interval and
+    // broadcasts the snapshot back through ws_broadcast in the existing
+    // WsServerMsg::Update shape. Metric points (cpu/mem/disk per workload)
+    // land in observer.metrics for the time-series tier.
     {
         let state = app_state.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let pollers_handle = tokio::spawn(async move {
+            use std::time::Duration;
+            use daimon_observer::{MetricPoint, MetricSink, PostgresMetricSink};
+
+            let clients = state.pve_clients.read().await.clone();
+            let drivers: Vec<(String, std::sync::Arc<daimon_tool_platform::PveDriver>)> = clients
+                .into_iter()
+                .map(|(id, c)| (id.clone(), std::sync::Arc::new(daimon_tool_platform::PveDriver::new(id, c))))
+                .collect();
+            let metric_sink = std::sync::Arc::new(PostgresMetricSink::new(state.db.clone()));
+
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let clients = state.pve_clients.read().await;
-                let mut cache = state.pve_cache.write().await;
-                for (cluster_id, client) in clients.iter() {
-                    if let Ok(resources) = client.cluster_resources(None).await {
-                        let old = cache.resources.get(cluster_id);
-                        let new_json = serde_json::to_string(&resources).unwrap_or_default();
-                        let changed = match old {
-                            Some(old_res) => {
-                                serde_json::to_string(old_res).unwrap_or_default() != new_json
-                            }
-                            None => true,
-                        };
+                for (cluster_id, driver) in &drivers {
+                    let now = chrono::Utc::now();
+                    let driver_dyn: std::sync::Arc<dyn daimon_tool_platform::Platform> = driver.clone();
+                    let workloads = match driver_dyn.list_workloads().await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            tracing::warn!(cluster = %cluster_id, error = %e, "platform list_workloads failed");
+                            continue;
+                        }
+                    };
+
+                    // Convert to legacy PveResource for the existing pve_cache +
+                    // WsServerMsg::Update path (no UI changes needed).
+                    if let Ok(resources) = driver.client().cluster_resources(None).await {
+                        let mut cache = state.pve_cache.write().await;
+                        let changed = cache
+                            .resources
+                            .get(cluster_id)
+                            .map(|prev| serde_json::to_string(prev).unwrap_or_default()
+                                != serde_json::to_string(&resources).unwrap_or_default())
+                            .unwrap_or(true);
                         if changed {
                             cache.resources.insert(cluster_id.clone(), resources.clone());
                             let msg = WsServerMsg::Update {
-                                scope: WsScope::ClusterResources {
-                                    cluster_id: cluster_id.clone(),
-                                },
+                                scope: WsScope::ClusterResources { cluster_id: cluster_id.clone() },
                                 data: serde_json::to_value(&resources).unwrap_or_default(),
                             };
-                            let _ = state.ws_broadcast.send(
-                                serde_json::to_string(&msg).unwrap_or_default(),
-                            );
+                            let _ = state.ws_broadcast.send(serde_json::to_string(&msg).unwrap_or_default());
                         }
-                        cache
-                            .last_poll
-                            .insert(cluster_id.clone(), std::time::Instant::now());
+                        cache.last_poll.insert(cluster_id.clone(), std::time::Instant::now());
+                    }
+
+                    // Push per-workload metric points into observer.metrics.
+                    let points: Vec<MetricPoint> = workloads
+                        .iter()
+                        .flat_map(|w| {
+                            let labels = serde_json::json!({
+                                "workload_id": w.id,
+                                "workload_name": w.name,
+                                "node": w.node,
+                                "kind": w.kind,
+                                "status": w.status,
+                            });
+                            vec![
+                                MetricPoint {
+                                    ts: now,
+                                    source: "pve".into(),
+                                    source_id: cluster_id.clone(),
+                                    name: "pve.workload.cpu_pct".into(),
+                                    value: w.cpu_pct as f64,
+                                    labels: labels.clone(),
+                                },
+                                MetricPoint {
+                                    ts: now,
+                                    source: "pve".into(),
+                                    source_id: cluster_id.clone(),
+                                    name: "pve.workload.mem_used_bytes".into(),
+                                    value: w.mem_used as f64,
+                                    labels: labels.clone(),
+                                },
+                                MetricPoint {
+                                    ts: now,
+                                    source: "pve".into(),
+                                    source_id: cluster_id.clone(),
+                                    name: "pve.workload.disk_used_bytes".into(),
+                                    value: w.disk_used as f64,
+                                    labels,
+                                },
+                            ]
+                        })
+                        .collect();
+                    if let Err(e) = metric_sink.push_batch(state.tenant_id, points).await {
+                        tracing::warn!(error = %e, "observer metrics push failed");
                     }
                 }
             }
         });
+        let _ = pollers_handle; // we don't await the loop — it owns its own runtime
+    }
+
+    // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
+    if let Ok(prom_url) = std::env::var("DAIMON_PROM_URL") {
+        use daimon_observer::{NamedQueryLibrary, ObserverIngest, ObserverIngestConfig};
+        match ObserverIngest::new(
+            ObserverIngestConfig {
+                tenant_id: app_state.tenant_id,
+                prom_url: prom_url.clone(),
+                interval: std::time::Duration::from_secs(30),
+            },
+            app_state.db.clone(),
+            NamedQueryLibrary::default_library(),
+        ) {
+            Ok(ingest) => {
+                log!("observer ingest spawned against {}", prom_url);
+                ingest.spawn();
+            }
+            Err(e) => {
+                log!("observer ingest init failed ({}) — skipping", e);
+            }
+        }
+    } else {
+        log!("DAIMON_PROM_URL not set — observer Prometheus ingest disabled");
     }
 
     // Build router: WS route first (needs Extension), then Leptos routes

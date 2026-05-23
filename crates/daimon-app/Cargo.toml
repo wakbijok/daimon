@@ -54,6 +54,8 @@ daimon-tool-network = { path = "../daimon-tool-network", optional = true }
 daimon-core = { path = "../daimon-core", optional = true }
 daimon-redis = { path = "../daimon-redis", optional = true }
 daimon-orchestrator = { path = "../daimon-orchestrator", optional = true }
+daimon-tool-platform = { path = "../daimon-tool-platform", optional = true }
+daimon-observer = { path = "../daimon-observer", optional = true }
 futures-util = { version = "0.3", optional = true }
 
 [features]
@@ -90,5 +92,7 @@ ssr = [
     "dep:daimon-core",
     "dep:daimon-redis",
     "dep:daimon-orchestrator",
+    "dep:daimon-tool-platform",
+    "dep:daimon-observer",
     "dep:futures-util",
 ]
