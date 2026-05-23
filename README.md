@@ -1,5 +1,9 @@
 # daimon
 
+![status](https://img.shields.io/badge/status-in%20active%20development-orange)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![rust](https://img.shields.io/badge/rust-2024%20edition-dea584)
+
 Multi-agent system for managing infrastructure.
 
 daimon is a Rust workspace that runs an orchestrator + worker agents over a
@@ -9,8 +13,8 @@ REST, and SNMP. Memory is hybrid-RAG (dense + sparse + cross-encoder
 rerank). Observability comes from a Prometheus ingestor that writes
 normalised metrics + anomalies into long-term storage.
 
-> **Status: pre-production.** Early development. APIs and storage shapes
-> are still moving.
+> **In active development.** APIs and storage shapes are still moving. Not
+> ready for production use.
 
 ## What it does
 
