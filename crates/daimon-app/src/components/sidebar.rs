@@ -188,6 +188,7 @@ pub fn Sidebar() -> impl IntoView {
                                     ("/admin/credentials", "Credentials"),
                                     ("/admin/targets", "Endpoints"),
                                     ("/admin/plans", "Plans"),
+                                    ("/admin/approvals", "Approvals"),
                                     ("/admin/observer", "Observer"),
                                     ("/admin/audit", "Audit Log"),
                                     ("/admin/memory", "Memory"),

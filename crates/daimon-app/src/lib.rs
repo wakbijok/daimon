@@ -8,6 +8,7 @@ pub mod auth;
 pub mod auth_guard;
 pub mod state;
 pub mod ws;
+pub mod admin_approvals;
 pub mod admin_audit;
 pub mod admin_broker;
 pub mod admin_chat_sessions;

@@ -30,7 +30,10 @@ use crate::pages::{
         agent_placeholder::AgentPlaceholder,
     },
     settings::Settings,
-    admin::{AdminAudit, AdminCredentials, AdminMemory, AdminObserver, AdminPlans, AdminTargets},
+    admin::{
+        AdminApprovals, AdminAudit, AdminCredentials, AdminMemory, AdminObserver, AdminPlans,
+        AdminTargets,
+    },
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -146,6 +149,12 @@ pub fn App() -> impl IntoView {
                     <Route
                         path=(StaticSegment("admin"), StaticSegment("observer"))
                         view=AdminObserver
+                    />
+
+                    // Phase 8 — operator approval inbox + blast-radius
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("approvals"))
+                        view=AdminApprovals
                     />
                 </ParentRoute>
             </Routes>

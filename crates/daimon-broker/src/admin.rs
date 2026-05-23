@@ -325,6 +325,38 @@ impl Broker {
             .map_err(|e| BrokerError::Audit(format!("{e}")))
     }
 
+    // -------- Approval inbox proxy (Phase 8) -----------------------------
+
+    /// List pending approval-inbox rows for a tenant, newest first. Errors
+    /// if no Guard is attached.
+    pub async fn approvals_pending(
+        &self,
+        tenant_id: uuid::Uuid,
+        limit: u32,
+    ) -> Result<Vec<daimon_guard::ApprovalRecord>, BrokerError> {
+        let guard = self.require_guard()?;
+        guard
+            .approvals()
+            .list_pending(tenant_id, limit)
+            .await
+            .map_err(|e| BrokerError::Audit(format!("{e}")))
+    }
+
+    /// Operator approves or denies a pending row. Returns the updated record.
+    pub async fn approvals_decide(
+        &self,
+        approval_id: uuid::Uuid,
+        decided_by: uuid::Uuid,
+        status: daimon_guard::ApprovalStatus,
+    ) -> Result<daimon_guard::ApprovalRecord, BrokerError> {
+        let guard = self.require_guard()?;
+        guard
+            .approvals()
+            .decide(approval_id, decided_by, status)
+            .await
+            .map_err(|e| BrokerError::Audit(format!("{e}")))
+    }
+
     // -------- Internal helpers --------------------------------------------
 
     fn require_vault_admin(&self) -> Result<&Arc<daimon_vault::PostgresVaultClient>, BrokerError> {
@@ -335,6 +367,10 @@ impl Broker {
 
     fn require_audit_sink(&self) -> Result<&Arc<dyn daimon_audit::AuditSink>, BrokerError> {
         self.audit.as_ref().ok_or(BrokerError::AdminBackendNotAvailable("audit"))
+    }
+
+    fn require_guard(&self) -> Result<&Arc<daimon_guard::Guard>, BrokerError> {
+        self.guard.as_ref().ok_or(BrokerError::AdminBackendNotAvailable("guard"))
     }
 
     async fn audit_action<T, E: std::fmt::Display>(

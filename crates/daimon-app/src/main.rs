@@ -154,20 +154,20 @@ async fn main() {
         {
             Ok(client) => {
                 if let Err(e) = daimon_graph::ensure_schema(&client).await {
-                    tracing::warn!(error = %e, "graph schema bootstrap failed; continuing without graph tier");
+                    log!("graph schema bootstrap failed ({e}) — graph tier disabled");
                     None
                 } else {
-                    tracing::info!(uri = %uri, "connected to NornicDB graph tier");
+                    log!("connected to NornicDB graph tier at {uri}");
                     Some(Arc::new(client) as Arc<dyn daimon_graph::GraphClient>)
                 }
             }
             Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "graph connect failed; continuing without graph tier");
+                log!("graph connect to {uri} failed ({e}) — graph tier disabled");
                 None
             }
         },
         _ => {
-            tracing::info!("DAIMON_GRAPH_URL not set — graph tier disabled");
+            log!("DAIMON_GRAPH_URL not set — graph tier disabled");
             None
         }
     };
