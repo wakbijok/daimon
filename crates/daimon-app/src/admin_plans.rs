@@ -148,3 +148,41 @@ pub async fn run_plan(plan_id: String) -> Result<String, ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("run_plan: {e}")))?;
     Ok(format!("{:?}", final_status).to_lowercase())
 }
+
+#[server]
+pub async fn plan_from_intent(intent: String) -> Result<String, ServerFnError> {
+    use crate::auth_guard::require_admin;
+    use crate::state::AppState;
+    use daimon_llm::AnthropicClient;
+
+    let claims = require_admin().await?;
+    let state = expect_context::<AppState>();
+    let llm = AnthropicClient::from_env()
+        .map_err(|e| ServerFnError::new(format!("llm init: {e}")))?;
+    let catalog = capability_catalog();
+    let plan = state
+        .orchestrator
+        .plan_from_intent(state.tenant_id, Some(claims.user_id), &intent, &catalog, &llm)
+        .await
+        .map_err(|e| ServerFnError::new(format!("plan_from_intent: {e}")))?;
+    Ok(plan.id.to_string())
+}
+
+#[cfg(feature = "ssr")]
+fn capability_catalog() -> String {
+    // Phase 6 D2 hardcoded catalog; Phase 6.1 reads from broker registry.
+    r#"
+network.routeros.system_info v1.0.0 — RouterOS device identity.
+  command: `/system identity print`
+network.routeros.interface_list v1.0.0 — List all interfaces.
+  command: `/interface print`
+network.routeros.ip_addresses v1.0.0 — List configured IPs.
+  command: `/ip address print`
+network.routeros.firewall_filter_list v1.0.0 — List firewall filter rules.
+  command: `/ip firewall filter print`
+
+Available targets (target_ref):
+  target://mikrotik-edge (or any registered RouterOS target)
+"#
+    .to_string()
+}

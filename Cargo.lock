@@ -1433,6 +1433,7 @@ dependencies = [
  "chrono",
  "daimon-broker",
  "daimon-db",
+ "daimon-llm",
  "deadpool-postgres",
  "serde",
  "serde_json",

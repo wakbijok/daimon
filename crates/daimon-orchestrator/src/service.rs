@@ -7,12 +7,34 @@ use std::sync::Arc;
 use chrono::Utc;
 use daimon_broker::{Broker, ExecRequest, Op, TargetRef};
 use daimon_db::Pool;
+use daimon_llm::{ChatMessage, CompletionRequest, LlmClient};
 use serde_json::{Value as Json, json};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::plan::{Plan, PlanStatus, Step, StepDef, StepStatus};
+
+const PLANNER_SYSTEM_PROMPT: &str = "\
+You are dAImon's plan-emitter. Given an operator intent and the capability \
+catalog, return a JSON object with shape:
+{
+  \"steps\": [
+    {
+      \"capability_name\": \"network.routeros.system_info\",
+      \"capability_version\": \"1.0.0\",
+      \"target_ref\": \"target://mikrotik-edge\",
+      \"params\": {\"command\": \"/system identity print\", \"is_read_only\": true},
+      \"depends_on_index\": []
+    }
+  ]
+}
+
+Return JSON only, no prose. Use capability_name from the catalog exactly. \
+For RouterOS read capabilities, fill `params.command` with the matching CLI \
+string and `params.is_read_only=true`. Step `depends_on_index` is a list of \
+0-based indices of earlier steps that must complete before this one runs. \
+Use the minimum number of steps that satisfies the intent.";
 
 #[derive(Clone)]
 pub struct OrchestratorService {
@@ -79,6 +101,90 @@ impl OrchestratorService {
         }
         txn.commit().await?;
         info!(plan_id = %plan.id, steps = steps.len(), "plan persisted");
+        Ok(plan)
+    }
+
+    /// Phase 6 D2 — LLM-emitted DAG. Builds a planner prompt with the
+    /// supplied capability catalog + intent, asks the LLM for a JSON plan,
+    /// parses + persists via create_plan. Caller is responsible for picking
+    /// the LLM client (typically Anthropic from $ANTHROPIC_API_KEY).
+    #[instrument(skip(self, llm, catalog))]
+    pub async fn plan_from_intent(
+        &self,
+        tenant_id: Uuid,
+        created_by: Option<Uuid>,
+        intent: &str,
+        catalog: &str,
+        llm: &dyn LlmClient,
+    ) -> Result<Plan> {
+        let prompt = format!(
+            "CAPABILITY CATALOG\n{catalog}\n\nINTENT\n{intent}\n\nReturn the JSON plan."
+        );
+        let req = CompletionRequest {
+            model: String::new(),
+            messages: vec![ChatMessage::user(prompt)],
+            system: Some(PLANNER_SYSTEM_PROMPT.to_string()),
+            max_tokens: 2048,
+            temperature: Some(0.0),
+            tools: Vec::new(),
+            request_id: None,
+        };
+        let resp = llm
+            .complete(req)
+            .await
+            .map_err(|e| Error::Dispatch(format!("llm: {e}")))?;
+        let text = resp
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                daimon_llm::AssistantContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        // Strip code fences if the model wrapped the JSON.
+        let cleaned = text
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+
+        #[derive(serde::Deserialize)]
+        struct PlanShape {
+            steps: Vec<StepDefShape>,
+        }
+        #[derive(serde::Deserialize)]
+        struct StepDefShape {
+            capability_name: String,
+            capability_version: String,
+            #[serde(default)]
+            target_ref: Option<String>,
+            #[serde(default)]
+            credential_ref: Option<String>,
+            #[serde(default)]
+            params: Json,
+            #[serde(default)]
+            depends_on_index: Vec<usize>,
+        }
+
+        let parsed: PlanShape = serde_json::from_str(cleaned)
+            .map_err(|e| Error::Decode(format!("LLM plan JSON: {e} (body: {cleaned})")))?;
+        let steps = parsed
+            .steps
+            .into_iter()
+            .map(|s| StepDef {
+                capability_name: s.capability_name,
+                capability_version: s.capability_version,
+                target_ref: s.target_ref,
+                credential_ref: s.credential_ref,
+                params: s.params,
+                depends_on_index: s.depends_on_index,
+            })
+            .collect();
+
+        let plan = self.create_plan(tenant_id, created_by, intent, steps).await?;
+        info!(plan_id = %plan.id, "LLM-emitted plan persisted");
         Ok(plan)
     }
 
