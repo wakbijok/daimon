@@ -290,6 +290,9 @@ pub async fn handle_chat_send(
                 capability: tc.name.clone(),
                 target_ref: target_ref.clone(),
                 timeout_secs: Some(30),
+                // Chat-tool invocations pass tool args under params for
+                // write capabilities; read capabilities ignore them.
+                params: Some(tc.arguments.clone()),
             };
             let result = network_agent.run(net_req).await;
             let (output, is_error) = match result {
