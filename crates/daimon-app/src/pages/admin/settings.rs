@@ -445,7 +445,10 @@ fn UpdateView(
     #[prop(into)] on_cancel: Callback<()>,
     #[prop(into)] on_channel: Callback<String>,
 ) -> impl IntoView {
-    let channels = ["stable", "beta", "main"];
+    // Two channels mirror the dev/staging/prod git workflow we locked:
+    //   stable → GitHub releases (production-promoted via `just promote`)
+    //   beta   → GitLab releases (staging, default `git push` target)
+    let channels = ["stable", "beta"];
     let current_channel = state.channel.clone();
     let update_available = state
         .latest_tag
@@ -501,7 +504,7 @@ fn UpdateView(
                     }).collect_view()}
                 </div>
                 <p class="text-[10px] text-text-muted mt-2">
-                    "stable: latest GitHub release (no prerelease). beta: latest including prereleases. main: HEAD of main (rolling)."
+                    "stable → GitHub releases (production-promoted). beta → GitLab releases (staging — default push target)."
                 </p>
             </div>
 

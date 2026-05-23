@@ -364,7 +364,7 @@ pub async fn get_update_state() -> Result<UpdateState, ServerFnError> {
         .await
         .map_err(|e| ServerFnError::new(format!("query: {e}")))?;
 
-    let mut channel = "stable".to_string();
+    let mut channel: Option<String> = None;
     let mut latest_tag: Option<String> = None;
     let mut last_check_at: Option<String> = None;
     for r in rows {
@@ -372,9 +372,7 @@ pub async fn get_update_state() -> Result<UpdateState, ServerFnError> {
         let value: serde_json::Value = r.get(1);
         match key.as_str() {
             "update.channel" => {
-                if let Some(s) = value.as_str() {
-                    channel = s.to_string();
-                }
+                channel = value.as_str().map(String::from);
             }
             "update.last_check_latest" => {
                 latest_tag = value.as_str().map(String::from);
@@ -385,6 +383,25 @@ pub async fn get_update_state() -> Result<UpdateState, ServerFnError> {
             _ => {}
         }
     }
+
+    // First-read seed: default to `stable` on a fresh tenant. Banking
+    // posture — we want a known default written so the audit log shows
+    // "explicit stable on tenant boot" rather than "implicit on every
+    // read." The write is idempotent (ON CONFLICT DO UPDATE in
+    // set_setting); the audit row is one-time on fresh tenants because
+    // the value matches itself after the first save.
+    let channel = match channel {
+        Some(c) => c,
+        None => {
+            let _ = set_setting(
+                "update.channel".into(),
+                serde_json::Value::String("stable".into()),
+                false,
+            )
+            .await;
+            "stable".to_string()
+        }
+    };
 
     // Check pending state via the flag file the systemd path-unit watches.
     let flag_path = std::env::var("DAIMON_UPDATE_FLAG")
@@ -421,44 +438,13 @@ pub async fn check_for_update() -> Result<UpdateState, ServerFnError> {
         .build()
         .map_err(|e| ServerFnError::new(format!("http build: {e}")))?;
 
+    // Channel-to-source mapping locks the dev/staging/prod workflow:
+    //   stable  → GitHub releases  = production-promoted (`just promote` target)
+    //   beta    → GitLab releases  = staging (default `git push` target)
+    // Anything else falls back to stable for safety.
     let tag = match state.channel.as_str() {
-        "main" => {
-            let body: serde_json::Value = http
-                .get("https://api.github.com/repos/wakbijok/daimon/commits/main")
-                .send()
-                .await
-                .map_err(|e| ServerFnError::new(format!("commits api: {e}")))?
-                .error_for_status()
-                .map_err(|e| ServerFnError::new(format!("commits status: {e}")))?
-                .json()
-                .await
-                .map_err(|e| ServerFnError::new(format!("commits json: {e}")))?;
-            body.get("sha")
-                .and_then(|v| v.as_str())
-                .map(|s| format!("main-{}", &s[..7.min(s.len())]))
-        }
-        channel => {
-            let body: serde_json::Value = http
-                .get("https://api.github.com/repos/wakbijok/daimon/releases")
-                .send()
-                .await
-                .map_err(|e| ServerFnError::new(format!("releases api: {e}")))?
-                .error_for_status()
-                .map_err(|e| ServerFnError::new(format!("releases status: {e}")))?
-                .json()
-                .await
-                .map_err(|e| ServerFnError::new(format!("releases json: {e}")))?;
-            let releases = body.as_array().cloned().unwrap_or_default();
-            releases.into_iter().find_map(|r| {
-                let prerelease = r.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false);
-                let want_pre = channel == "beta";
-                if want_pre || !prerelease {
-                    r.get("tag_name").and_then(|v| v.as_str()).map(String::from)
-                } else {
-                    None
-                }
-            })
-        }
+        "beta" => latest_gitlab_release(&http).await?,
+        _ => latest_github_release(&http).await?,
     };
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -500,11 +486,18 @@ pub async fn apply_update() -> Result<UpdateState, ServerFnError> {
     // triggers update.service which does the privileged binary swap +
     // restart. Dev (macOS) just leaves the flag; the operator picks it
     // up by hand or via a local equivalent of the update hook.
+    //
+    // Flag format (two-line plaintext, simple for the bash hook to
+    // parse without jq):
+    //   <channel>
+    //   <tag>
+    // The hook picks the download source based on channel:
+    //   stable → GitHub  beta → GitLab.
     let flag = us.update_flag_path.clone();
     if let Some(parent) = std::path::Path::new(&flag).parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    tokio::fs::write(&flag, format!("{}\n", target))
+    tokio::fs::write(&flag, format!("{}\n{}\n", us.channel, target))
         .await
         .map_err(|e| ServerFnError::new(format!("write flag: {e}")))?;
 
@@ -539,4 +532,62 @@ pub async fn cancel_update() -> Result<UpdateState, ServerFnError> {
     let mut us = us;
     us.update_pending = false;
     Ok(us)
+}
+
+#[cfg(feature = "ssr")]
+async fn latest_github_release(http: &reqwest::Client) -> Result<Option<String>, ServerFnError> {
+    // Stable = GitHub Releases, latest non-prerelease tag.
+    // Repo URL is overridable via DAIMON_GITHUB_REPO (defaults to
+    // wakbijok/daimon — production remote in our workflow).
+    let repo = std::env::var("DAIMON_GITHUB_REPO")
+        .unwrap_or_else(|_| "wakbijok/daimon".to_string());
+    let body: serde_json::Value = http
+        .get(format!("https://api.github.com/repos/{repo}/releases"))
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("github releases: {e}")))?
+        .error_for_status()
+        .map_err(|e| ServerFnError::new(format!("github releases status: {e}")))?
+        .json()
+        .await
+        .map_err(|e| ServerFnError::new(format!("github releases json: {e}")))?;
+    let releases = body.as_array().cloned().unwrap_or_default();
+    Ok(releases.into_iter().find_map(|r| {
+        let prerelease = r.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false);
+        let draft = r.get("draft").and_then(|v| v.as_bool()).unwrap_or(false);
+        if prerelease || draft {
+            None
+        } else {
+            r.get("tag_name").and_then(|v| v.as_str()).map(String::from)
+        }
+    }))
+}
+
+#[cfg(feature = "ssr")]
+async fn latest_gitlab_release(http: &reqwest::Client) -> Result<Option<String>, ServerFnError> {
+    // Beta = GitLab Releases on the staging remote. The project path is
+    // URL-encoded — `daimon/daimon` becomes `daimon%2Fdaimon`. Overridable
+    // via DAIMON_GITLAB_HOST + DAIMON_GITLAB_PROJECT.
+    let host = std::env::var("DAIMON_GITLAB_HOST")
+        .unwrap_or_else(|_| "git.wakbijok.uk".to_string());
+    let project = std::env::var("DAIMON_GITLAB_PROJECT")
+        .unwrap_or_else(|_| "daimon/daimon".to_string());
+    let encoded = project.replace('/', "%2F");
+    let url = format!("https://{host}/api/v4/projects/{encoded}/releases");
+    let body: serde_json::Value = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("gitlab releases: {e}")))?
+        .error_for_status()
+        .map_err(|e| ServerFnError::new(format!("gitlab releases status ({url}): {e}")))?
+        .json()
+        .await
+        .map_err(|e| ServerFnError::new(format!("gitlab releases json: {e}")))?;
+    let releases = body.as_array().cloned().unwrap_or_default();
+    // GitLab returns newest first by default. tag_name is the same field
+    // shape as GitHub.
+    Ok(releases.into_iter().next().and_then(|r| {
+        r.get("tag_name").and_then(|v| v.as_str()).map(String::from)
+    }))
 }

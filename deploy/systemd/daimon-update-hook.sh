@@ -18,8 +18,15 @@ TARGET_BIN=/usr/local/bin/daimon-app
 BACKUP_BIN=/usr/local/lib/daimon/daimon-app.bak
 STAGE_DIR=/var/lib/daimon/update-staging
 SITE_TARGET=/var/lib/daimon/site
-REPO=wakbijok/daimon
 HOST_TRIPLE=x86_64-unknown-linux-musl
+
+# Source endpoints follow the workflow locked 2026-05-23:
+#   stable → GitHub releases (production-promoted)
+#   beta   → GitLab releases (staging — default push target)
+# Override via env on the systemd unit if your remotes differ.
+GITHUB_REPO="${DAIMON_GITHUB_REPO:-wakbijok/daimon}"
+GITLAB_HOST="${DAIMON_GITLAB_HOST:-git.wakbijok.uk}"
+GITLAB_PROJECT="${DAIMON_GITLAB_PROJECT:-daimon/daimon}"
 
 log() { printf '[update %s] %s\n' "$(date -Is)" "$*" >&2; }
 
@@ -28,18 +35,36 @@ if [ ! -f "$FLAG" ]; then
     exit 0
 fi
 
-TAG=$(head -n1 "$FLAG" | tr -d '[:space:]')
-if [ -z "$TAG" ]; then
-    log "flag file is empty — refusing to apply"
+# Flag format: two plaintext lines —
+#   line 1: channel (stable | beta)
+#   line 2: target tag (e.g. v1.0.0)
+CHANNEL=$(sed -n 1p "$FLAG" | tr -d '[:space:]')
+TAG=$(sed -n 2p "$FLAG" | tr -d '[:space:]')
+if [ -z "$CHANNEL" ] || [ -z "$TAG" ]; then
+    log "flag malformed — expected two lines (channel, tag); got '$(tr '\n' '|' < "$FLAG")'"
     exit 1
 fi
-log "applying update to tag '$TAG'"
+log "applying update channel=$CHANNEL tag=$TAG"
 
 mkdir -p "$STAGE_DIR" "$(dirname "$BACKUP_BIN")"
 rm -rf "${STAGE_DIR:?}"/*
 
 ASSET_NAME="daimon-app-${HOST_TRIPLE}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+case "$CHANNEL" in
+    stable)
+        DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${TAG}/${ASSET_NAME}"
+        ;;
+    beta)
+        # GitLab releases serve assets via /-/releases/<tag>/downloads/<filename>
+        ENC_PROJECT="${GITLAB_PROJECT//\//%2F}"
+        DOWNLOAD_URL="https://${GITLAB_HOST}/${GITLAB_PROJECT}/-/releases/${TAG}/downloads/${ASSET_NAME}"
+        _=$ENC_PROJECT
+        ;;
+    *)
+        log "unknown channel '$CHANNEL' — refusing to apply"
+        exit 1
+        ;;
+esac
 log "downloading $DOWNLOAD_URL"
 if ! curl -sSL -f -o "${STAGE_DIR}/${ASSET_NAME}" "$DOWNLOAD_URL"; then
     log "download failed; aborting"
