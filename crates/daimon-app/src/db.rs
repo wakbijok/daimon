@@ -35,7 +35,9 @@ pub struct UserRow {
     pub id: Uuid,
     pub username: String,
     pub password_hash: String,
-    pub tenant_id: Uuid,
+    /// Account lifecycle status: 'active' | 'disabled' | 'locked'. Login
+    /// rejects any non-'active' account (FR-IAM-07).
+    pub status: String,
     pub roles: Vec<String>,
 }
 
@@ -44,7 +46,7 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
     let client = pool.get().await.context("pg client")?;
     let row = client
         .query_opt(
-            "SELECT u.id, u.username, u.password_hash,
+            "SELECT u.id, u.username, u.password_hash, u.status,
                     COALESCE(
                         ARRAY(
                             SELECT r.slug
@@ -66,18 +68,21 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
         id: r.get(0),
         username: r.get(1),
         password_hash: r.get(2),
-        // users.tenant_id was dropped (single-org). Synthetic placeholder
-        // so create_jwt / login keep compiling with no signature change.
-        tenant_id: Uuid::nil(),
-        roles: r.get(3),
+        status: r.get(3),
+        roles: r.get(4),
     }))
 }
 
+/// Create a user with an explicit role set (single-org; no tenant scope).
+/// Each slug is granted via an INSERT..SELECT so an unknown slug is silently
+/// skipped rather than erroring — the caller (IAM surface / boot seed) is the
+/// authority on which slugs are valid.
 #[cfg(feature = "ssr")]
 pub async fn create_user(
     pool: &Pool,
     username: &str,
     password_hash: &str,
+    roles: &[String],
 ) -> Result<Uuid> {
     let client = pool.get().await.context("pg client")?;
     let row = client
@@ -91,25 +96,147 @@ pub async fn create_user(
         .with_context(|| format!("create user {username}"))?;
     let user_id: Uuid = row.get(0);
 
-    // P1: remap tenant_admin -> admin
-    let role_row = client
-        .query_one(
-            "SELECT id FROM public.roles WHERE slug = 'tenant_admin'",
+    for slug in roles {
+        client
+            .execute(
+                "INSERT INTO public.role_grants (user_id, role_id)
+                 SELECT $1, id FROM public.roles WHERE slug = $2
+                 ON CONFLICT (user_id, role_id) DO NOTHING",
+                &[&user_id, slug],
+            )
+            .await
+            .with_context(|| format!("grant {slug} to {username}"))?;
+    }
+    Ok(user_id)
+}
+
+/// A user summary row for the admin IAM surface (list view). `last_login_at`
+/// is projected as an RFC3339 string so the DTO is feature-agnostic (the
+/// `chrono` dep is ssr-only).
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone)]
+pub struct UserListRow {
+    pub id: Uuid,
+    pub username: String,
+    pub email: Option<String>,
+    pub status: String,
+    pub roles: Vec<String>,
+    pub last_login_at: Option<String>,
+}
+
+/// List all users with their granted role slugs (admin IAM surface).
+#[cfg(feature = "ssr")]
+pub async fn list_users(pool: &Pool) -> Result<Vec<UserListRow>> {
+    let client = pool.get().await.context("pg client")?;
+    let rows = client
+        .query(
+            "SELECT u.id, u.username, u.email, u.status, u.last_login_at,
+                    COALESCE(
+                        ARRAY(
+                            SELECT r.slug
+                            FROM public.role_grants rg
+                            JOIN public.roles r ON r.id = rg.role_id
+                            WHERE rg.user_id = u.id
+                            ORDER BY r.is_system DESC, r.slug
+                        ),
+                        ARRAY[]::TEXT[]
+                    ) AS roles
+             FROM public.users u
+             ORDER BY u.username",
             &[],
         )
         .await
-        .context("tenant_admin role lookup")?;
-    let role_id: Uuid = role_row.get(0);
+        .context("list_users")?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let last_login: Option<DateTime<Utc>> = r.get(4);
+            UserListRow {
+                id: r.get(0),
+                username: r.get(1),
+                email: r.get(2),
+                status: r.get(3),
+                last_login_at: last_login.map(|t| t.to_rfc3339()),
+                roles: r.get(5),
+            }
+        })
+        .collect())
+}
+
+/// Set a user's status AND, in the same transaction, delete all their live
+/// sessions. Disabling a user must both bar future logins (via find_user's
+/// status gate) and immediately revoke in-flight sessions (FR-IAM-13) — the
+/// two writes must be atomic so no window exists where the account is disabled
+/// but a session survives.
+#[cfg(feature = "ssr")]
+pub async fn set_user_status(pool: &Pool, user_id: Uuid, status: &str) -> Result<()> {
+    let mut client = pool.get().await.context("pg client")?;
+    let tx = client.transaction().await.context("begin tx")?;
+    tx.execute(
+        "UPDATE public.users SET status = $2 WHERE id = $1",
+        &[&user_id, &status],
+    )
+    .await
+    .context("update status")?;
+    tx.execute(
+        "DELETE FROM public.sessions WHERE user_id = $1",
+        &[&user_id],
+    )
+    .await
+    .context("revoke sessions")?;
+    tx.commit().await.context("commit set_user_status")?;
+    Ok(())
+}
+
+/// Grant a role slug to a user (idempotent).
+#[cfg(feature = "ssr")]
+pub async fn assign_role(pool: &Pool, user_id: Uuid, slug: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
     client
         .execute(
             "INSERT INTO public.role_grants (user_id, role_id)
-             VALUES ($1, $2)
+             SELECT $1, id FROM public.roles WHERE slug = $2
              ON CONFLICT (user_id, role_id) DO NOTHING",
-            &[&user_id, &role_id],
+            &[&user_id, &slug],
         )
         .await
-        .context("grant tenant_admin")?;
-    Ok(user_id)
+        .with_context(|| format!("assign_role {slug}"))?;
+    Ok(())
+}
+
+/// Revoke a role slug from a user.
+#[cfg(feature = "ssr")]
+pub async fn revoke_role(pool: &Pool, user_id: Uuid, slug: &str) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute(
+            "DELETE FROM public.role_grants rg
+             USING public.roles r
+             WHERE rg.role_id = r.id AND rg.user_id = $1 AND r.slug = $2",
+            &[&user_id, &slug],
+        )
+        .await
+        .with_context(|| format!("revoke_role {slug}"))?;
+    Ok(())
+}
+
+/// Count active users holding the `admin` role, EXCLUDING the given user id.
+/// Backs the last-admin guard (FR-IAM-14): disabling an admin or revoking the
+/// admin role must refuse if it would drop the enabled-admin count to zero.
+#[cfg(feature = "ssr")]
+pub async fn enabled_admin_count_excluding(pool: &Pool, user_id: Uuid) -> Result<i64> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one(
+            "SELECT count(*) FROM public.users u
+               JOIN public.role_grants rg ON rg.user_id = u.id
+               JOIN public.roles r        ON r.id = rg.role_id
+              WHERE r.slug = 'admin' AND u.status = 'active' AND u.id <> $1",
+            &[&user_id],
+        )
+        .await
+        .context("enabled_admin_count_excluding")?;
+    Ok(row.get(0))
 }
 
 // ---- sessions ---------------------------------------------------------------

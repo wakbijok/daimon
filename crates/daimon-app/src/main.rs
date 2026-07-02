@@ -68,7 +68,9 @@ async fn main() {
                 short.to_string()
             });
         let hash = auth::hash_password(&password);
-        db::create_user(&pool, "admin", &hash).await.unwrap();
+        db::create_user(&pool, "admin", &hash, &["admin".to_string()])
+            .await
+            .unwrap();
         log!("Admin user created");
     }
 

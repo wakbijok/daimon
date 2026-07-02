@@ -15,6 +15,13 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
         .map_err(|e| ServerFnError::new(format!("find_user: {e}")))?
         .ok_or_else(|| ServerFnError::new("Invalid credentials"))?;
 
+    // FR-IAM-07: disabled/locked accounts are rejected with the SAME error as a
+    // bad password — no status oracle, no user-enumeration signal. This check
+    // must run BEFORE password verification.
+    if user.status != "active" {
+        return Err(ServerFnError::new("Invalid credentials"));
+    }
+
     if !auth::verify_password(&password, &user.password_hash) {
         return Err(ServerFnError::new("Invalid credentials"));
     }
@@ -30,13 +37,15 @@ async fn login_action(username: String, password: String) -> Result<bool, Server
         &state.jwt_secret,
         &username,
         user.id,
-        user.tenant_id,
         &user.roles,
         &session_id,
     );
 
+    // FR-IAM-20 / NFR-SEC-04: `Secure` is unconditional — TLS terminates at the
+    // console or the operator's reverse proxy, so the cookie must never traverse
+    // plaintext.
     let cookie = format!(
-        "daimon_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",
+        "daimon_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
         token
     );
     let response_options = expect_context::<leptos_axum::ResponseOptions>();

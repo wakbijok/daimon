@@ -85,14 +85,17 @@ pub async fn metric_summary(limit: u32) -> Result<Vec<MetricSummaryRow>, ServerF
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
     let _ = state;
 
     // Phase 8: metric streams live in VictoriaMetrics now. Query VM's
-    // /api/v1/series for active series (last 24h window), filtered by
-    // tenant label, then for each unique (source, source_id, __name__)
-    // tuple shoot a follow-up instant query for the last value.
+    // /api/v1/series for active series (last 24h window), then for each
+    // unique (source, source_id, __name__) tuple shoot a follow-up instant
+    // query for the last value.
+    //
+    // Single-org: metrics are no longer tenant-tagged, so the catalogue
+    // matcher selects every source-tagged series.
     //
     // VM URL is the same env daimon-app's main.rs reads at boot for the
     // VictoriaMetricsSink; default to localhost:8428 when unset.
@@ -101,8 +104,8 @@ pub async fn metric_summary(limit: u32) -> Result<Vec<MetricSummaryRow>, ServerF
     let vm_url = vm_url.trim_end_matches('/').to_string();
     let http = reqwest::Client::new();
 
-    // Series catalogue. Match anything tagged with the tenant label.
-    let matcher = format!("{{tenant=\"{}\"}}", claims.tenant_id);
+    // Series catalogue. Match anything carrying a `source` label.
+    let matcher = "{source!=\"\"}".to_string();
     let series_resp = http
         .get(format!("{vm_url}/api/v1/series"))
         .query(&[("match[]", matcher.as_str())])
@@ -152,9 +155,8 @@ pub async fn metric_summary(limit: u32) -> Result<Vec<MetricSummaryRow>, ServerF
     let mut out = Vec::with_capacity(keys.len());
     for (name, source, source_id) in keys {
         let filter = format!(
-            "{name}{{tenant=\"{tenant}\",source=\"{source}\",source_id=\"{sid}\"}}[1h]",
+            "{name}{{source=\"{source}\",source_id=\"{sid}\"}}[1h]",
             name = name,
-            tenant = claims.tenant_id,
             source = source,
             sid = source_id,
         );

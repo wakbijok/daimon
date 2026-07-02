@@ -27,7 +27,6 @@ pub struct SystemInfo {
     pub commit_sha: String,
     pub build_profile: String,
     pub host_triple: String,
-    pub tenant_id: String,
     pub tenant_name: String,
     pub kill_switch_engaged: bool,
     pub kill_switch_reason: Option<String>,
@@ -287,9 +286,6 @@ pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
             .to_string(),
         build_profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
         host_triple: option_env!("TARGET").unwrap_or("native").to_string(),
-        // Single-org: no tenant id. Kept as an empty string to preserve the
-        // SystemInfo shape (the settings UI still renders the field).
-        tenant_id: String::new(),
         tenant_name,
         kill_switch_engaged: false, // wired when Guard is attached to AppState (Phase 8.1)
         kill_switch_reason: None,

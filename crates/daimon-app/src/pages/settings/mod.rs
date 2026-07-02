@@ -303,7 +303,6 @@ fn SystemInfoView(info: SystemInfo) -> impl IntoView {
                 <Field label="Profile" value=info.build_profile />
                 <Field label="Host triple" value=info.host_triple />
                 <Field label="Tenant name" value=info.tenant_name />
-                <Field label="Tenant id" value=info.tenant_id />
                 <Field
                     label="Kill switch"
                     value=if info.kill_switch_engaged {
