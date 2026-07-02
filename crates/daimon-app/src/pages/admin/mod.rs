@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod audit;
 pub mod credentials;
+pub mod iam;
 pub mod memory;
 pub mod observer;
 pub mod placeholder;
@@ -10,6 +11,7 @@ pub mod targets;
 pub use approvals::AdminApprovals;
 pub use audit::AdminAudit;
 pub use credentials::AdminCredentials;
+pub use iam::AdminIam;
 pub use memory::AdminMemory;
 pub use observer::AdminObserver;
 pub use placeholder::AdminPlaceholder;

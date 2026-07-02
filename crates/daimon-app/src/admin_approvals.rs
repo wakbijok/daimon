@@ -96,11 +96,11 @@ pub async fn decide_approval(
     id: String,
     approved: bool,
 ) -> Result<String, ServerFnError> {
-    use crate::auth_guard::require_admin;
+    use crate::auth_guard::require_approver;
     use crate::state::AppState;
     use daimon_guard::ApprovalStatus;
 
-    let claims = require_admin().await?;
+    let claims = require_approver().await?;
     let state = expect_context::<AppState>();
     let approval_id = uuid::Uuid::parse_str(&id)
         .map_err(|e| ServerFnError::new(format!("parse id: {e}")))?;

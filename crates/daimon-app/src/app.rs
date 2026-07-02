@@ -13,8 +13,8 @@ use crate::pages::{
     incident_detail::IncidentDetail,
     settings::Settings,
     admin::{
-        AdminApprovals, AdminAudit, AdminCredentials, AdminMemory, AdminObserver, AdminPlans,
-        AdminTargets,
+        AdminApprovals, AdminAudit, AdminCredentials, AdminIam, AdminMemory, AdminObserver,
+        AdminPlans, AdminTargets,
     },
 };
 
@@ -90,6 +90,12 @@ pub fn App() -> impl IntoView {
                     <Route
                         path=(StaticSegment("admin"), StaticSegment("approvals"))
                         view=AdminApprovals
+                    />
+
+                    // P1 — admin-gated user + role management
+                    <Route
+                        path=(StaticSegment("admin"), StaticSegment("iam"))
+                        view=AdminIam
                     />
                 </ParentRoute>
             </Routes>

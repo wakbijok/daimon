@@ -19,6 +19,7 @@ pub mod admin_observer;
 pub mod admin_plans;
 pub mod admin_settings;
 pub mod admin_targets;
+pub mod iam;
 #[cfg(feature = "ssr")]
 pub mod chat;
 

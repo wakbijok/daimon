@@ -10,6 +10,18 @@ pub fn UserMenu(username: String, role: String) -> impl IntoView {
     let dropdown_username = username.clone();
     let dropdown_role = role.clone();
 
+    // FR-IAM-19 / NFR-SEC-03: logout deletes the server session (not just the
+    // cookie). Redirect to /login only after the server-fn resolves.
+    let logout = ServerAction::<crate::iam::Logout>::new();
+    Effect::new(move || {
+        if logout.value().get().is_some() {
+            #[cfg(feature = "hydrate")]
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().set_href("/login");
+            }
+        }
+    });
+
     view! {
         <div class="relative">
             <button
@@ -50,21 +62,7 @@ pub fn UserMenu(username: String, role: String) -> impl IntoView {
                                 "Settings"
                             </A>
                             <button
-                                on:click=move |_| {
-                                    // Clear cookie on client side
-                                    #[cfg(feature = "hydrate")]
-                                    {
-                                        use wasm_bindgen::JsCast;
-                                        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                                            if let Some(html_doc) = doc.dyn_ref::<web_sys::HtmlDocument>() {
-                                                let _ = html_doc.set_cookie("daimon_token=; Path=/; Max-Age=0");
-                                            }
-                                        }
-                                        if let Some(window) = web_sys::window() {
-                                            let _ = window.location().set_href("/login");
-                                        }
-                                    }
-                                }
+                                on:click=move |_| { logout.dispatch(crate::iam::Logout {}); }
                                 class="w-full text-left px-3 py-2 text-sm text-accent-danger hover:bg-surface-tertiary transition-colors"
                             >
                                 "Logout"
