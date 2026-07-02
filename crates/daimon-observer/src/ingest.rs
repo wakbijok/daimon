@@ -1,6 +1,7 @@
 //! Observer ingest loop — runs the named-query library against a
 //! Prometheus endpoint on a cadence, writes metrics, raises anomalies.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +45,24 @@ pub struct ObserverIngest {
     /// abstract `Arc<dyn BusHandle>` — the observer never holds the concrete
     /// `InProcBus`, so it never depends on `daimon-runtime` (D21).
     bus: Option<Arc<dyn BusHandle>>,
+    /// P3 commit 11 (AC-P3-06): optional shared self-metric counters. The app
+    /// hands these in via [`ObserverIngest::with_metrics`] so `/metrics` can
+    /// expose observer activity. They are bare `Arc<AtomicU64>` — the observer
+    /// increments them through `std::sync::atomic` alone, so it takes NO
+    /// dependency on the app's `SelfMetrics` type. `None` (the `new()` default)
+    /// keeps the pre-P3 behaviour: no counting.
+    metrics: Option<ObserverMetrics>,
+}
+
+/// The three self-metric counter handles the app shares with the observer.
+/// Cloned from the app's `SelfMetrics` `Arc<AtomicU64>` fields, so incrementing
+/// them here is immediately visible on the app's `/metrics` surface — a single
+/// source of truth with no cross-crate type coupling.
+#[derive(Clone)]
+struct ObserverMetrics {
+    ingest_cycles: Arc<AtomicU64>,
+    anomalies_raised: Arc<AtomicU64>,
+    sink_push_failures: Arc<AtomicU64>,
 }
 
 impl ObserverIngest {
@@ -61,6 +80,7 @@ impl ObserverIngest {
             pool,
             library,
             bus: None,
+            metrics: None,
         })
     }
 
@@ -69,6 +89,25 @@ impl ObserverIngest {
     /// `.with_bus(bus.handle()).spawn()`.
     pub fn with_bus(mut self, bus: Arc<dyn BusHandle>) -> Self {
         self.bus = Some(bus);
+        self
+    }
+
+    /// P3 commit 11 (AC-P3-06): wire the app's self-metric counters so observer
+    /// activity (ingest cycles, anomalies raised, sink push failures) shows up
+    /// on daimon's `/metrics`. These are bare `Arc<AtomicU64>` — passing them
+    /// this way avoids making `daimon-observer` depend on the app's `SelfMetrics`
+    /// type. Fluent so boot can chain `.with_metrics(..).spawn()`.
+    pub fn with_metrics(
+        mut self,
+        ingest_cycles: Arc<AtomicU64>,
+        anomalies_raised: Arc<AtomicU64>,
+        sink_push_failures: Arc<AtomicU64>,
+    ) -> Self {
+        self.metrics = Some(ObserverMetrics {
+            ingest_cycles,
+            anomalies_raised,
+            sink_push_failures,
+        });
         self
     }
 
@@ -137,10 +176,27 @@ impl ObserverIngest {
         }
 
         if !points.is_empty() {
-            self.sink.push_batch(points).await?;
+            if let Err(e) = self.sink.push_batch(points).await {
+                // P3 commit 11 — count the sink failure before propagating so
+                // /metrics reflects it even though the cycle errors out.
+                if let Some(m) = &self.metrics {
+                    m.sink_push_failures.fetch_add(1, Ordering::Relaxed);
+                }
+                return Err(e);
+            }
         }
         if anomalies_raised > 0 {
             info!(raised = anomalies_raised, "anomalies emitted");
+        }
+
+        // P3 commit 11 (AC-P3-06) — a cycle completed. Bump the shared counters
+        // so daimon's own /metrics surfaces observer activity.
+        if let Some(m) = &self.metrics {
+            m.ingest_cycles.fetch_add(1, Ordering::Relaxed);
+            if anomalies_raised > 0 {
+                m.anomalies_raised
+                    .fetch_add(anomalies_raised as u64, Ordering::Relaxed);
+            }
         }
         Ok(())
     }

@@ -13,6 +13,24 @@ async fn main() {
     use daimon_app::state::AppState;
     use std::sync::Arc;
 
+    // ---- P3 commit 11 (AC-P3-06): install the tracing subscriber ONCE --------
+    //
+    // This is the FIRST thing main does — before any leptos `log!` — so every
+    // broker/guard/transport/observer `#[instrument]`/`info!`/`warn!` span
+    // (silently dropped today for lack of any subscriber) surfaces. JSON output
+    // for machine ingestion; `RUST_LOG` overrides the default filter. Exactly
+    // one `.init()` — a second global-default install would panic.
+    {
+        use tracing_subscriber::EnvFilter;
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info,daimon=debug".into()),
+            )
+            .json()
+            .init();
+    }
+
     // ---- Phase 2b #19 + Phase 2c D3b: assemble the broker stack ----------
     //
     // The broker is the single integration point between daimon-app
@@ -303,6 +321,14 @@ async fn main() {
         log!("triage agent spawned under supervision (harness.triage.anomaly)");
     }
 
+    // P3 commit 11 (AC-P3-06) — daimon's OWN self-metrics. Hand-rolled AtomicU64
+    // counters rendered as Prometheus text by /metrics (no prometheus/protobuf
+    // dep — musl-size). The three observer-owned counters are shared
+    // Arc<AtomicU64> handles passed into ObserverIngest below, so /metrics reads
+    // the SAME atomics the observer increments — one source of truth, no
+    // observer→app dependency.
+    let self_metrics = Arc::new(daimon_app::observability::SelfMetrics::new());
+
     let app_state = AppState {
         db: pool,
         jwt_secret,
@@ -313,6 +339,7 @@ async fn main() {
         orchestrator,
         graph,
         memory,
+        self_metrics: self_metrics.clone(),
     };
 
     // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
@@ -342,8 +369,19 @@ async fn main() {
                 // an `AnomalyDetected` envelope for the TriageAgent
                 // (fire-and-forget; zero-subscriber send is a no-op, so
                 // persistence is never blocked).
-                log!("observer ingest spawned against {} (bus-wired for triage)", prom_url);
-                ingest.with_bus(bus_handle.clone()).spawn();
+                //
+                // P3 commit 11 — also hand the observer the three shared
+                // self-metric counter handles (ingest cycles / anomalies raised
+                // / sink push failures). It increments them via std::sync::atomic
+                // alone, so daimon-observer gains NO dependency on the app's
+                // SelfMetrics type; /metrics still renders from these same
+                // atomics.
+                let (m_ingest, m_anomalies, m_failures) = self_metrics.observer_handles();
+                log!("observer ingest spawned against {} (bus-wired for triage, self-metrics wired)", prom_url);
+                ingest
+                    .with_bus(bus_handle.clone())
+                    .with_metrics(m_ingest, m_anomalies, m_failures)
+                    .spawn();
             }
             Err(e) => {
                 log!("observer ingest init failed ({}) — skipping", e);
@@ -353,11 +391,26 @@ async fn main() {
         log!("DAIMON_PROM_URL not set — observer Prometheus ingest disabled");
     }
 
-    // Build router: WS route first (needs Extension), then Leptos routes
+    // Build router: WS route first (needs Extension), then Leptos routes.
+    //
+    // P3 commit 11 (AC-P3-06) — the self-observability routes mount here too,
+    // BEFORE `.leptos_routes_with_context`, exactly like `/api/v1/ws`. They are
+    // UNAUTHENTICATED on purpose: `/healthz` + `/metrics` are an infra surface
+    // meant to sit behind the reverse proxy / systemd probe, distinct from the
+    // authed `/api/v1/ws` (which reaches the LLM + SSH dispatch). Both read from
+    // the same `AppState` Extension applied by the `.layer` below.
     let app = Router::new()
         .route(
             "/api/v1/ws",
             axum::routing::get(daimon_app::ws::ws_handler),
+        )
+        .route(
+            "/healthz",
+            axum::routing::get(daimon_app::observability::healthz),
+        )
+        .route(
+            "/metrics",
+            axum::routing::get(daimon_app::observability::metrics),
         )
         .layer(axum::Extension(app_state.clone()))
         .leptos_routes_with_context(

@@ -40,4 +40,10 @@ pub struct AppState {
     /// through this. Falls back to `NullMemory` (degrades, never fails boot)
     /// when the sidecar is unconfigured or unreachable at boot.
     pub memory: Arc<dyn daimon_memory::MemoryService>,
+    /// P3 commit 11 — daimon's OWN self-metrics (AC-P3-06). Hand-rolled
+    /// `AtomicU64` counters (no `prometheus`/protobuf dep — musl-size), rendered
+    /// as Prometheus text by `/metrics`. The three observer-owned counters are
+    /// shared `Arc<AtomicU64>` handles the `ObserverIngest` increments directly,
+    /// so `/metrics` is a single source of truth without an observer→app dep.
+    pub self_metrics: Arc<crate::observability::SelfMetrics>,
 }

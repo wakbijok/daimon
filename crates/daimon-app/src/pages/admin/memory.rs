@@ -28,7 +28,7 @@ pub fn AdminMemory() -> impl IntoView {
             <div>
                 <h1 class="text-2xl font-semibold">Memory</h1>
                 <p class="text-sm text-gray-500 mt-1">
-                    "Long-term memory tier (Qdrant). Tenant = "
+                    "Long-term memory (dmem). Tenant = "
                     <code class="font-mono text-xs px-1 py-0.5 bg-gray-100 rounded">"default"</code>
                     " — per-tenant scope lands in Phase 2c."
                 </p>

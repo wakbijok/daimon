@@ -234,6 +234,11 @@ pub async fn handle_chat_send(
         SYSTEM_PROMPT.to_string()
     };
     if recall.degraded {
+        // P3 commit 11 (AC-P3-06) — count the degraded recall for /metrics. A
+        // rising `daimon_memory_recall_degraded_total` is the operator signal
+        // that the dmem sidecar is unreachable/slow (chat still proceeds — recall
+        // is an aid, never a hard dependency).
+        state.self_metrics.inc_recall_degraded();
         debug!(session = %session_id, "pre-turn recall degraded — proceeding without recalled context");
     } else {
         debug!(session = %session_id, hits = recall.hits, "pre-turn recall attached");

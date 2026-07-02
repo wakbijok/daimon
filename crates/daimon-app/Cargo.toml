@@ -35,6 +35,11 @@ bcrypt = { version = "0.17", optional = true }
 rand = { version = "0.9", optional = true }
 futures = { version = "0.3", optional = true }
 tracing = { version = "0.1", optional = true }
+# P3 commit 11 (AC-P3-06) — install ONE tracing subscriber at boot so the
+# broker/guard/transport/observer #[instrument]/info!/warn! spans (dropped today
+# for lack of any subscriber) surface. json+env-filter, ssr-only. No heavy
+# metrics dep: /metrics is hand-rolled (see observability.rs).
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
 
 # Phase 2b #19: in-process broker stack. daimon-app is a permitted wrapper
 # per `deny.toml` (same rationale as daimon-cli). `for-broker` opens the
@@ -94,6 +99,7 @@ ssr = [
     "dep:rand",
     "dep:futures",
     "dep:tracing",
+    "dep:tracing-subscriber",
     "dep:daimon-broker",
     "dep:anyhow",
     "dep:chrono",

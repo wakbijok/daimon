@@ -230,12 +230,9 @@ pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
         reachable: true,
         detail: None,
     });
-    // Qdrant / VM / NornicDB / Redis / NATS / Prometheus — probe via HTTP healthcheck.
-    backends.push(probe_http(
-        "Qdrant",
-        std::env::var("DAIMON_QDRANT_URL").unwrap_or_else(|_| "http://localhost:6333".into()),
-        "/healthz",
-    ).await);
+    // VM / NornicDB / Redis / NATS / Prometheus — probe via HTTP healthcheck.
+    // (Qdrant retired in P3 — long-term memory is now the dmem sidecar behind
+    // MemoryService; probed via /healthz's `memory` field, not here.)
     backends.push(probe_http(
         "VictoriaMetrics",
         std::env::var("DAIMON_VM_URL").unwrap_or_else(|_| "http://localhost:8428".into()),

@@ -10,6 +10,8 @@ pub mod state;
 #[cfg(feature = "ssr")]
 pub mod harness;
 pub mod ws;
+#[cfg(feature = "ssr")]
+pub mod observability;
 pub mod admin_approvals;
 pub mod admin_audit;
 pub mod admin_broker;
