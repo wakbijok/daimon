@@ -81,6 +81,10 @@ pub enum BootError {
     Audit(#[from] daimon_audit::AuditError),
     #[error("guard: {0}")]
     Guard(#[from] daimon_guard::Error),
+    /// Retained for the boot policy-coherence failure mode. The check itself
+    /// moved to `Broker::lint_write_capabilities` (P2 commit 8) and runs in
+    /// `daimon-app` after the registry is populated; this variant lets a caller
+    /// that assembles the broker AND runs the lint surface the same typed error.
     #[error("policy incoherent: {0}")]
     PolicyIncoherent(String),
 }
@@ -106,7 +110,7 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
         Arc::new(SshTransport::with_known_hosts_path(cfg.known_hosts_path));
     // REST transport: rustls, certificate validation ON by default (no
     // danger_accept_invalid_certs). Three of the four reference target classes
-    // (Proxmox / K8s / vCenter) speak pure REST (FR-CON-15).
+    // (Kubernetes / vCenter / cloud APIs) speak pure REST (FR-CON-15).
     let rest: Arc<dyn Transport> = Arc::new(RestTransport::new());
     let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
     transports.insert(TransportKind::Ssh, ssh);
@@ -117,23 +121,12 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
     kill_switch.spawn_watchers();
     let policy = daimon_guard::PolicyEngine::from_toml_file(&cfg.policy_path)?;
 
-    // Boot-time policy-coherence check (bounded P1 version; P2 generalizes it
-    // over the CapabilityRegistry). A WRITE capability must never resolve to
-    // Allow — that would let an agent mutate infrastructure with no approval
-    // (the RouterOS shadowing class). Keyed on the live driver's write caps.
-    const KNOWN_WRITE_CAPS: &[&str] = &[
-        "network.routeros.firewall_add_drop_rule",
-        "network.routeros.firewall_remove_rule",
-        "network.routeros.user_ssh_key_import",
-        "network.routeros.user_ssh_key_remove",
-    ];
-    for cap in KNOWN_WRITE_CAPS {
-        if policy.evaluate(cap).decision == daimon_guard::Decision::Allow {
-            return Err(BootError::PolicyIncoherent(format!(
-                "write capability `{cap}` resolves to Allow — must be deny or require_approval"
-            )));
-        }
-    }
+    // NOTE (P2 commit 8): the boot policy-coherence check moved OUT of this
+    // function. The P1 version hardcoded four RouterOS write caps and ran here,
+    // BEFORE any capability was registered — so it could never see the live
+    // fleet. The real boot gate is now `Broker::lint_write_capabilities`, called
+    // by `daimon-app` AFTER the supervisor has spawned every driver and the
+    // CapabilityRegistry is populated. See `broker.rs`.
 
     let approvals = daimon_guard::ApprovalQueue::new(pool.clone());
     let guard = Arc::new(daimon_guard::Guard::new(

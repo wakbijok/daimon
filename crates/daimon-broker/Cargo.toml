@@ -28,3 +28,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+# P2 commit 8 — the lint_write_capabilities tests build synthetic Capabilities
+# (need semver::Version). Test-only; not linked into the broker binary.
+semver = "1"
