@@ -90,6 +90,13 @@ async fn main() {
     let bus = daimon_runtime::InProcBus::new();
     let registry = daimon_runtime::CapabilityRegistry::new();
     let supervisor = Arc::new(daimon_runtime::Supervisor::new(bus.clone(), registry.clone()));
+    // P3 commit 9 — capture a BusHandle for the observer BEFORE `bus` is moved
+    // into `Harness::new` below. The observer emits `AnomalyDetected` onto this
+    // handle (fire-and-forget); it holds only the abstract `Arc<dyn BusHandle>`,
+    // never the concrete `InProcBus` (D21). InProcBus is Clone/broadcast-backed,
+    // so this handle publishes to the SAME channel the supervised TriageAgent
+    // subscribes on.
+    let bus_handle = bus.handle();
     let routeros_driver = Arc::new(daimon_driver_firewall_routeros::RouterOsDriver::new(
         daimon_core::AgentId::new("agent:routeros"),
         broker.clone(),
@@ -146,7 +153,7 @@ async fn main() {
         }
     }
 
-    let harness = daimon_app::harness::Harness::new(bus, registry, supervisor);
+    let harness = daimon_app::harness::Harness::new(bus, registry, supervisor.clone());
     log!("harness ready — drivers spawned under supervision");
 
     // P2 commit 8 — the REAL boot policy-coherence gate. Runs AFTER every driver
@@ -257,14 +264,44 @@ async fn main() {
     // as the Harness (via a shared `Dispatcher`), NOT the broker directly. This
     // preserves D21 (the orchestrator never imports vault/transport) and routes
     // plan writes through the identical driver → broker → Guard path as chat.
+    //
+    // P3 commit 10 — `.with_memory(memory.clone())` so a terminal plan state
+    // (Succeeded → Decision, Failed → Incident) captures a typed record AFTER
+    // the status/audit write (fail-soft). `memory` was built above.
     let orchestrator_service = daimon_orchestrator::OrchestratorService::new(
         pool.clone(),
         harness.dispatcher().clone(),
-    );
+    )
+    .with_memory(memory.clone());
     let orchestrator = Arc::new(match graph.clone() {
         Some(g) => orchestrator_service.with_graph(g),
         None => orchestrator_service,
     });
+
+    // P3 commits 8+9 — spawn the TriageAgent under the SAME Supervisor as the
+    // drivers. This is the LOAD-BEARING routing fact: the observer emits an
+    // `AnomalyDetected` envelope `ByCapability` `"harness.triage.anomaly"`, and
+    // a ByCapability envelope reaches an agent ONLY if it is registered under
+    // the Supervisor advertising that capability. The TriageAgent advertises
+    // exactly that one capability, so the anomaly routes to it, where it opens a
+    // PERSISTED-but-NOT-RUN triage plan (remediation stays behind run_plan's
+    // guard+approval — triage never calls run_plan). It holds the orchestrator +
+    // a Dispatcher (the same bus+registry as the Harness) + memory.
+    {
+        let triage = daimon_triage::TriageAgent::new(
+            orchestrator.clone(),
+            harness.dispatcher().clone(),
+            memory.clone(),
+        );
+        if let Err(e) = supervisor
+            .spawn(Arc::new(triage) as Arc<dyn daimon_core::Agent>)
+            .await
+        {
+            eprintln!("daimon-app: failed to spawn TriageAgent: {e:#}");
+            std::process::exit(1);
+        }
+        log!("triage agent spawned under supervision (harness.triage.anomaly)");
+    }
 
     let app_state = AppState {
         db: pool,
@@ -301,8 +338,12 @@ async fn main() {
             NamedQueryLibrary::default_library(),
         ) {
             Ok(ingest) => {
-                log!("observer ingest spawned against {}", prom_url);
-                ingest.spawn();
+                // P3 commit 9 — wire the bus so a persisted anomaly also emits
+                // an `AnomalyDetected` envelope for the TriageAgent
+                // (fire-and-forget; zero-subscriber send is a no-op, so
+                // persistence is never blocked).
+                log!("observer ingest spawned against {} (bus-wired for triage)", prom_url);
+                ingest.with_bus(bus_handle.clone()).spawn();
             }
             Err(e) => {
                 log!("observer ingest init failed ({}) — skipping", e);

@@ -900,6 +900,7 @@ dependencies = [
  "daimon-orchestrator",
  "daimon-redis",
  "daimon-runtime",
+ "daimon-triage",
  "futures",
  "futures-util",
  "gloo-timers",
@@ -1195,9 +1196,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "daimon-core",
  "daimon-db",
  "deadpool-postgres",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1219,6 +1222,7 @@ dependencies = [
  "daimon-graph",
  "daimon-inventory",
  "daimon-llm",
+ "daimon-memory",
  "daimon-runtime",
  "daimon-transport",
  "daimon-vault",
@@ -1286,6 +1290,28 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "daimon-triage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daimon-core",
+ "daimon-db",
+ "daimon-memory",
+ "daimon-observer",
+ "daimon-orchestrator",
+ "daimon-runtime",
+ "deadpool-postgres",
+ "semver",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

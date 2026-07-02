@@ -16,6 +16,11 @@ daimon-graph = { path = "../daimon-graph" }
 # daimon-runtime + semver (VersionReq) — NOT on daimon-app (D21).
 daimon-core = { path = "../daimon-core" }
 daimon-runtime = { path = "../daimon-runtime" }
+# P3 commit 10: on a terminal plan state the orchestrator captures a typed
+# record (Succeeded → Decision, Failed → Incident) into long-term memory. This
+# is the AID, written AFTER the status UPDATE + audit (the TRUTH); every capture
+# is fail-soft. Optional Arc<dyn MemoryService>, wired from main.rs.
+daimon-memory = { path = "../daimon-memory" }
 semver = { version = "1", features = ["serde"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

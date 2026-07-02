@@ -1,0 +1,34 @@
+[package]
+name = "daimon-triage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TriageAgent — the detect→triage hop of daimon's AIOps loop. A supervised Agent that consumes observer AnomalyDetected events (ByCapability harness.triage.anomaly), loop-guards them, and opens a PERSISTED-but-NOT-RUN triage plan + captures an Incident. Remediation stays behind run_plan's guard+approval."
+
+[dependencies]
+# App-side coordinator crate (NOT a D21-gated worker): it may hold the
+# orchestrator + dispatcher + memory. It does NOT import vault/inventory/transport.
+daimon-core = { path = "../daimon-core" }
+daimon-orchestrator = { path = "../daimon-orchestrator" }
+daimon-runtime = { path = "../daimon-runtime" }
+daimon-memory = { path = "../daimon-memory" }
+daimon-observer = { path = "../daimon-observer" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = { version = "1", features = ["serde"] }
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+# Tests build a pool-free placeholder OrchestratorService (build_pool parses the
+# DSN but never connects — deadpool connects lazily on first get()).
+daimon-db = { path = "../daimon-db" }
+# tests/e2e.rs (#[ignore], DB-gated) spawns a real TriageAgent over InProcBus.
+deadpool-postgres = "0.14"
+tokio-postgres = "0.7"

@@ -62,6 +62,10 @@ thiserror = { version = "1", optional = true }
 daimon-redis = { path = "../daimon-redis", optional = true }
 daimon-orchestrator = { path = "../daimon-orchestrator", optional = true }
 daimon-observer = { path = "../daimon-observer", optional = true }
+# P3 commits 8+9: the supervised TriageAgent (detect→triage hop). Consumes the
+# observer's AnomalyDetected envelope (ByCapability harness.triage.anomaly),
+# opens a persisted-not-run triage plan. ssr-only (app-side coordinator).
+daimon-triage = { path = "../daimon-triage", optional = true }
 daimon-graph = { path = "../daimon-graph", optional = true }
 daimon-guard = { path = "../daimon-guard", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
@@ -105,6 +109,7 @@ ssr = [
     "dep:daimon-redis",
     "dep:daimon-orchestrator",
     "dep:daimon-observer",
+    "dep:daimon-triage",
     "dep:daimon-graph",
     "dep:daimon-guard",
     "dep:reqwest",

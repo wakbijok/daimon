@@ -10,6 +10,7 @@ use daimon_graph::{
     GraphClient, GraphPlan, GraphPlanStep, TargetRef as GraphTargetRef,
 };
 use daimon_llm::{ChatMessage, CompletionRequest, LlmClient};
+use daimon_memory::{MemoryService, TypedBody, TypedRecord};
 use daimon_runtime::Dispatcher;
 use semver::VersionReq;
 use serde_json::{Value as Json, json};
@@ -64,16 +65,30 @@ pub struct OrchestratorService {
     /// are best-effort — a graph-side failure logs a warning but doesn't
     /// fail the plan creation.
     graph: Option<Arc<dyn GraphClient>>,
+    /// P3 commit 10 — long-term memory. On a TERMINAL plan state,
+    /// `finish_plan` captures a typed record (Succeeded → Decision,
+    /// Failed → Incident) AFTER the status UPDATE + audit. Optional: `None`
+    /// (the default) skips capture entirely. Every capture is fail-soft — a
+    /// memory fault logs and is swallowed, never failing the plan transition
+    /// (audit is truth, memory is the aid).
+    memory: Option<Arc<dyn MemoryService>>,
 }
 
 impl OrchestratorService {
     pub fn new(pool: Pool, dispatcher: Dispatcher) -> Self {
-        Self { pool, dispatcher, graph: None }
+        Self { pool, dispatcher, graph: None, memory: None }
     }
 
     /// Attach a graph client for plan-DAG mirroring. See struct comment.
     pub fn with_graph(mut self, graph: Arc<dyn GraphClient>) -> Self {
         self.graph = Some(graph);
+        self
+    }
+
+    /// Attach a memory service for terminal-state typed-record capture. See
+    /// the `memory` field comment. Mirrors `with_graph`.
+    pub fn with_memory(mut self, memory: Arc<dyn MemoryService>) -> Self {
+        self.memory = Some(memory);
         self
     }
 
@@ -509,17 +524,68 @@ impl OrchestratorService {
     }
 
     async fn finish_plan(&self, plan_id: Uuid, status: PlanStatus) -> Result<()> {
+        // The status UPDATE is the terminal chokepoint + the TRUTH — it must
+        // land (and the audit trail elsewhere is truth too). `RETURNING intent`
+        // gives us the plan intent for the memory capture without a second
+        // round-trip.
         let client = self.pool.get().await?;
-        client
-            .execute(
+        let row = client
+            .query_one(
                 "UPDATE public.plans
                  SET status = $1, finished_at = now(), updated_at = now()
-                 WHERE id = $2",
+                 WHERE id = $2
+                 RETURNING intent",
                 &[&status.as_str(), &plan_id],
             )
             .await?;
+        let intent: String = row.get(0);
+
+        // P3 commit 10 — capture a typed record on a terminal state. AFTER the
+        // status write (audit is truth, memory is the aid). Fail-soft: any
+        // capture error logs and is swallowed — a memory fault must NEVER fail
+        // the plan transition. Only Succeeded/Failed carry a record; other
+        // terminal-ish states (Cancelled/RolledBack) are not captured here.
+        if let Some(memory) = &self.memory {
+            if let Some(record) = terminal_record(status, plan_id, &intent) {
+                match memory.capture(record).await {
+                    Ok(uri) => {
+                        info!(plan_id = %plan_id, uri = %uri, "terminal plan record captured")
+                    }
+                    Err(e) => warn!(
+                        plan_id = %plan_id,
+                        error = %e,
+                        "terminal plan record capture failed (fail-soft — ignored)"
+                    ),
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// The typed record a terminal plan state captures (P3 commit 10). Pure (no
+/// I/O) so the Succeeded→Decision / Failed→Incident mapping is unit-testable
+/// without a live pool or memory backend. `None` for any non-Succeeded/Failed
+/// status (Cancelled/RolledBack/etc. are not captured here).
+fn terminal_record(status: PlanStatus, plan_id: Uuid, intent: &str) -> Option<TypedRecord> {
+    let body = match status {
+        PlanStatus::Succeeded => TypedBody::Decision {
+            title: format!("plan completed: {intent}"),
+            context: intent.to_string(),
+            decision: "plan completed".to_string(),
+            rationale: format!("plan {plan_id} reached terminal state Succeeded"),
+        },
+        PlanStatus::Failed => TypedBody::Incident {
+            title: format!("plan failed: {intent}"),
+            impact: intent.to_string(),
+            resolution: format!(
+                "plan {plan_id} failed / rolled back (compensation pass ran for \
+                 succeeded write steps)"
+            ),
+        },
+        _ => return None,
+    };
+    Some(TypedRecord { body, namespace: None })
 }
 
 /// Resolve a step's compensator from the registry and dispatch it over the bus
@@ -854,5 +920,135 @@ mod saga_tests {
         assert_eq!(body["target_ref"], "target://edge");
         assert_eq!(body["timeout_secs"], 30);
         assert_eq!(body["params"]["a"], 1);
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    //! P3 commit 10 — terminal-state typed-record capture.
+    //!
+    //! `finish_plan` needs a live pool, so these pool-free units cover the
+    //! LOAD-BEARING logic directly: the Succeeded→Decision / Failed→Incident /
+    //! other→None mapping (`terminal_record`) and the fail-soft capture contract
+    //! (a memory backend that errors must NOT propagate). The full
+    //! finish_plan-persists-then-captures path is exercised by the DB-gated
+    //! integration coverage.
+
+    use super::*;
+    use async_trait::async_trait;
+    use daimon_memory::{
+        IngestDoc, IngestStats, MemoryHealth, PreTurnContext, RecallBudget, RecordKind,
+        RetrieveQuery, RetrievedChunk, ScoredRecord,
+    };
+    use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn succeeded_maps_to_decision() {
+        let id = Uuid::new_v4();
+        let rec = terminal_record(PlanStatus::Succeeded, id, "block 1.2.3.4")
+            .expect("Succeeded captures a record");
+        assert_eq!(rec.body.kind(), RecordKind::Decision);
+        match rec.body {
+            TypedBody::Decision { context, decision, rationale, .. } => {
+                assert_eq!(context, "block 1.2.3.4");
+                assert_eq!(decision, "plan completed");
+                assert!(rationale.contains(&id.to_string()));
+            }
+            other => panic!("expected Decision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_maps_to_incident() {
+        let id = Uuid::new_v4();
+        let rec = terminal_record(PlanStatus::Failed, id, "block 1.2.3.4")
+            .expect("Failed captures a record");
+        assert_eq!(rec.body.kind(), RecordKind::Incident);
+        match rec.body {
+            TypedBody::Incident { impact, resolution, .. } => {
+                assert_eq!(impact, "block 1.2.3.4");
+                assert!(resolution.contains("failed"));
+                assert!(resolution.contains(&id.to_string()));
+            }
+            other => panic!("expected Incident, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_terminal_statuses_capture_nothing() {
+        let id = Uuid::new_v4();
+        for st in [
+            PlanStatus::Planning,
+            PlanStatus::AwaitingApproval,
+            PlanStatus::Executing,
+            PlanStatus::Cancelled,
+            PlanStatus::RolledBack,
+        ] {
+            assert!(terminal_record(st, id, "x").is_none(), "{st:?} → no record");
+        }
+    }
+
+    /// A memory stub that records captures and can be forced to fail.
+    struct StubMemory {
+        captured: StdMutex<Vec<RecordKind>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl MemoryService for StubMemory {
+        async fn ingest(&self, doc: IngestDoc) -> daimon_memory::Result<IngestStats> {
+            Ok(IngestStats { source_id: doc.source_id, chunks: 1, collection: "t".into() })
+        }
+        async fn delete(&self, _uri: &str) -> daimon_memory::Result<()> {
+            Ok(())
+        }
+        async fn retrieve(&self, _q: &RetrieveQuery) -> daimon_memory::Result<Vec<RetrievedChunk>> {
+            Ok(vec![])
+        }
+        async fn capture(&self, rec: TypedRecord) -> daimon_memory::Result<String> {
+            self.captured.lock().unwrap().push(rec.body.kind());
+            if self.fail {
+                Err(daimon_memory::Error::Unreachable("forced".into()))
+            } else {
+                Ok("daimon://plan/stub".into())
+            }
+        }
+        async fn recall(&self, _q: &str, _b: RecallBudget) -> daimon_memory::Result<Vec<ScoredRecord>> {
+            Ok(vec![])
+        }
+        async fn pre_turn_recall(&self, _m: &str, _b: RecallBudget) -> PreTurnContext {
+            PreTurnContext::degraded()
+        }
+        async fn health(&self) -> MemoryHealth {
+            MemoryHealth::default()
+        }
+    }
+
+    /// Mirrors finish_plan's capture branch: build the terminal record and
+    /// capture it fail-soft. Proves a capture error is swallowed (returns Ok).
+    async fn capture_fail_soft(memory: &dyn MemoryService, status: PlanStatus) -> Result<()> {
+        if let Some(record) = terminal_record(status, Uuid::new_v4(), "intent") {
+            if let Err(e) = memory.capture(record).await {
+                // swallow — exactly what finish_plan does.
+                tracing::warn!(error = %e, "capture failed (fail-soft)");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capture_is_attempted_on_success() {
+        let mem = StubMemory { captured: StdMutex::new(vec![]), fail: false };
+        capture_fail_soft(&mem, PlanStatus::Succeeded).await.unwrap();
+        assert_eq!(mem.captured.lock().unwrap().as_slice(), &[RecordKind::Decision]);
+    }
+
+    #[tokio::test]
+    async fn capture_error_is_swallowed_fail_soft() {
+        let mem = StubMemory { captured: StdMutex::new(vec![]), fail: true };
+        // Despite the forced capture error, this returns Ok (never propagates).
+        let out = capture_fail_soft(&mem, PlanStatus::Failed).await;
+        assert!(out.is_ok(), "a memory fault must not fail the plan transition");
+        assert_eq!(mem.captured.lock().unwrap().as_slice(), &[RecordKind::Incident]);
     }
 }
