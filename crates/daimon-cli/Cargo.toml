@@ -10,13 +10,10 @@ description = "Operator CLI for dAImon. Phase 2b ships the `daimon-demo` binary 
 name = "daimon-demo"
 path = "src/demo.rs"
 
-[[bin]]
-name = "daimon-ingest"
-path = "src/ingest.rs"
-
-[[bin]]
-name = "daimon-retrieve"
-path = "src/retrieve.rs"
+# NOTE: the `daimon-ingest` / `daimon-retrieve` binaries were retired in P3 —
+# they were the operator-side Qdrant + daimon-rag ingest/retrieve tooling, both
+# deleted with the memory tier's move to the dmem sidecar. Corpus re-ingest is
+# now `dmem import` against the running sidecar.
 
 [dependencies]
 daimon-broker = { path = "../daimon-broker" }
@@ -26,10 +23,6 @@ daimon-vault = { path = "../daimon-vault", features = ["for-broker"] }
 daimon-inventory = { path = "../daimon-inventory", features = ["for-broker"] }
 daimon-transport = { path = "../daimon-transport", features = ["for-broker"] }
 daimon-audit = { path = "../daimon-audit" }
-daimon-memory = { path = "../daimon-memory" }
-daimon-rag = { path = "../daimon-rag" }
-daimon-db = { path = "../daimon-db" }
-tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
