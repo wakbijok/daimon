@@ -1,7 +1,7 @@
 [Unit]
-Description=daimon — AI-driven system engineer for Proxmox
+Description=daimon — self-hosted platform-agnostic AIOps
 Documentation=https://github.com/wakbijok/daimon
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
@@ -18,8 +18,22 @@ Environment=LEPTOS_SITE_ADDR=0.0.0.0:3000
 Environment=LEPTOS_ENV=PROD
 Environment=RUST_LOG=info
 
-# First-boot admin password. Remove after first login + DB persistence.
-Environment=DAIMON_ADMIN_PASSWORD=admin
+# Storage + data dir. The app runs migrations on boot against DAIMON_PG_URL,
+# and keeps known_hosts / policy.toml / the KILL flag under DAIMON_DATA_DIR.
+Environment=DAIMON_PG_URL=postgres:///daimon
+Environment=DAIMON_DATA_DIR=/var/lib/daimon
+
+# Vault master key — systemd decrypts the envelope on start and exposes it at
+# $CREDENTIALS_DIRECTORY/vault-master, which daimon-vault's
+# MasterKey::from_systemd_credential() reads. The credential NAME must be
+# `vault-master` to match that loader. Provision the envelope with
+# install-daimon.sh (systemd-creds encrypt --name=vault-master ...).
+LoadCredentialEncrypted=vault-master:/etc/credstore.encrypted/daimon-vault-master
+
+# First admin password: on first boot, if no admin user exists and
+# DAIMON_ADMIN_PASSWORD is unset, daimon generates a random one and logs it
+# ("Generated admin password: ...") to the journal. Set it here only if you
+# want a known bootstrap password; leave unset for a generated one.
 
 ExecStart=/opt/daimon/daimon-app
 

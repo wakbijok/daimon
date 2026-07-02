@@ -1,94 +1,76 @@
-# daimon systemd units (Phase 8)
+# daimon systemd deployment
 
-Per-agent process packaging for production deployments. Pairs with the
-in-process `InProcBus` dev model from Phases 0–7.
+Single-organization, self-hosted deployment. daimon runs as one service
+(`daimon.service`) — the in-process runtime (`InProcBus`) hosts the agents;
+there is no per-agent process fan-out. (The multi-agent bus is wired up in a
+later revival phase; a `daimon-nats.service` sidecar unit is provided for that
+future path but is not required today.)
 
 ## Layout
 
 | File | Purpose |
 | --- | --- |
-| `daimon-nats.service` | NATS sidecar — the inter-agent bus |
-| `daimon-agent@.service` | Per-agent template — instance name = agent kind |
+| `daimon.service` | The daimon application (web console + in-process runtime) |
+| `install-daimon.sh` | One-shot installer — user, layout, PostgreSQL, master key, unit |
+| `daimon-nats.service` | Optional NATS sidecar for the future multi-agent bus |
 
 ## Install (one-time)
 
-```sh
-sudo cp deploy/systemd/daimon-nats.service \
-        deploy/systemd/daimon-agent@.service \
-        /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin daimon
-sudo install -d -o daimon -g daimon -m 0750 /var/lib/daimon
-```
-
-## Boot order
+Prerequisites on the box: PostgreSQL server running, and systemd with
+`systemd-creds`.
 
 ```sh
-sudo systemctl enable --now daimon-nats.service
-sudo systemctl enable --now daimon-agent@orchestrator.service
-sudo systemctl enable --now daimon-agent@tool-network.service
-sudo systemctl enable --now daimon-agent@tool-platform.service
-sudo systemctl enable --now daimon-agent@observer.service
+# From a directory containing ./daimon-app, ./site/, and ./daimon.service:
+sudo ./install-daimon.sh
 ```
 
-Each `daimon-agent@<kind>` loads the same binary with
-`DAIMON_AGENT_KIND=<kind>` and connects to the local NATS sidecar.
+The installer creates the `daimon` system user + `/var/lib/daimon`, provisions
+the PostgreSQL `daimon` role + database, generates and encrypts the vault
+master key (credential name `vault-master`), installs + starts the unit, and
+verifies the service is actually active (it fails loudly instead of printing a
+false success). Migrations run automatically on first boot. The first-boot
+admin password is generated and logged — the installer surfaces it, or:
+
+```sh
+journalctl -u daimon.service | grep 'Generated admin password'
+```
 
 ## Kill switch
 
-Operator-only halt (per masterplan §2.4 / D13):
+Operator-only halt (per masterplan §2.4 / D13). daimon watches
+`$DAIMON_DATA_DIR/KILL`; the unit sets `DAIMON_DATA_DIR=/var/lib/daimon`, so:
 
 ```sh
-# Halt everything for this LXC
+# Halt everything
 sudo touch /var/lib/daimon/KILL
-
-# Halt one tenant
-sudo touch /var/lib/daimon/tenants/<tenant_id>/KILL
 
 # Resume (no auto-resume by design)
 sudo rm /var/lib/daimon/KILL
 ```
 
-`SIGUSR1` to any daimon-agent process is the redundant second path.
+`SIGUSR1` to the daimon process is the redundant second path. (There is one
+global kill switch — single-org has no per-tenant scope.)
 
 ## Credentials
 
 The vault master key envelope lives at
-`/etc/credstore.encrypted/daimon-vault-master`. systemd decrypts on
-service start and exposes via `%d/daimon-vault-master`. The
-`daimon-vault` crate reads from `$DAIMON_MASTER_KEY_FILE`.
+`/etc/credstore.encrypted/daimon-vault-master`, encrypted with
+`systemd-creds encrypt --name=vault-master`. systemd decrypts it on service
+start and exposes it at `$CREDENTIALS_DIRECTORY/vault-master`, which
+`daimon-vault`'s `MasterKey::from_systemd_credential()` reads. The credential
+**name** must be `vault-master` to match that loader — the unit's
+`LoadCredentialEncrypted=vault-master:...` line and the installer's
+`--name=vault-master` both honor this.
 
-Cloud / banking deploys swap the local-file envelope for an
-HSM / Cloud KMS envelope (Phase 2c.1 carry-forward).
+For local development (no systemd), set `DAIMON_MASTER_KEY_FILE` to a 32-byte
+key file instead; the loader logs a loud WARN in that mode.
 
-## Update mechanism (Phase 8 — `/admin/settings` → Update tab)
+## Self-update
 
-The Update tab in the operator UI writes a tag string to
-`/var/lib/daimon/UPDATE_REQUESTED`. The `daimon-update.path` unit
-watches that path and triggers `daimon-update.service` (oneshot), which
-runs `daimon-update-hook.sh`. The hook:
+> **Status: under rework (revival P5).** The release-artifact pipeline and the
+> update hook's unit/path references are being reconciled; the self-update flow
+> is not functional yet and this section will be rewritten when it lands. Until
+> then, update by re-running `install-daimon.sh` with a new bundle.
 
-1. Reads the target tag from the flag.
-2. Downloads `daimon-app-x86_64-unknown-linux-musl.tar.gz` from the
-   matching GitHub release.
-3. Backs up the current binary to `/usr/local/lib/daimon/daimon-app.bak`.
-4. Swaps in the new binary + site bundle.
-5. Restarts `daimon-agent@*.service` + `daimon-app.service`.
-6. If the app fails to start within 30s, restores the backup and exits
-   with a failure code.
-
-Install:
-
-```sh
-sudo cp deploy/systemd/daimon-update.path \
-        deploy/systemd/daimon-update.service \
-        /etc/systemd/system/
-sudo install -m 0755 deploy/systemd/daimon-update-hook.sh \
-        /etc/systemd/system/daimon-update-hook.sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now daimon-update.path
-```
-
-Channel selection (`stable | beta | main`) is stored in
-`public.app_config` under `update.channel`. The check button on the UI
-queries the GitHub Releases API for the latest matching tag.
+Channel selection (`stable | beta`) is stored in `public.app_config` under
+`update.channel`.
