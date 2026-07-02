@@ -1,0 +1,57 @@
+# daimon Guard default policy (shipped).
+#
+# This is the version-controlled default. install-daimon.sh copies it to
+# $DAIMON_DATA_DIR/policy.toml on first install; the runtime reads it from
+# there (DAIMON_POLICY_PATH overrides). If the file is absent at boot the
+# PolicyEngine is fail-closed (default: deny every write).
+#
+# First-matching rule wins. The broker only consults this engine for WRITES
+# — read-only capabilities are derived server-side (Capability::is_read) and
+# short-circuit in the guard before policy.
+#
+# Format:
+#   [[rule]]
+#   capability = "<glob-name>"        # trailing `*` = prefix match, else exact
+#   decision   = "allow" | "deny" | "require_approval"
+#   description = "..."               # optional, surfaced in the approval inbox
+
+# RouterOS mutations (firewall rules, SSH keys) — approval-gated. This rule
+# governs WRITES only (reads bypass policy). It previously read `allow`, which
+# auto-approved every RouterOS write; the intended `network.firewall.*` rule
+# never matched the real `network.routeros.firewall_*` cap names.
+[[rule]]
+capability = "network.routeros.*"
+decision = "require_approval"
+description = "RouterOS mutations (firewall rules, SSH keys) need operator approval."
+
+# Vault admin paths — operator UI calls through the broker admin proxy; the
+# auth gate is require_admin(), but defence-in-depth: never allow vault
+# capabilities through the orchestrator / agent paths.
+[[rule]]
+capability = "vault.*"
+decision = "deny"
+description = "Vault operations only via admin UI, never via agent paths."
+
+# Forward-looking: non-RouterOS firewall drivers (connector framework, P2)
+# land under network.firewall.* and are approval-gated by default.
+[[rule]]
+capability = "network.firewall.*"
+decision = "require_approval"
+description = "Firewall mutations need explicit operator approval."
+
+[[rule]]
+capability = "network.routing.*"
+decision = "require_approval"
+description = "Routing mutations need explicit operator approval."
+
+# Platform (compute) lifecycle writes — approval-gated (connector framework).
+[[rule]]
+capability = "platform.workload.*"
+decision = "require_approval"
+description = "VM / workload lifecycle changes need approval."
+
+# Memory ingest/retrieve — allowed via admin UI; no approval prompt.
+[[rule]]
+capability = "memory.*"
+decision = "allow"
+description = "Memory tier operations from the admin UI."

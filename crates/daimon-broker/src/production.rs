@@ -81,6 +81,8 @@ pub enum BootError {
     Audit(#[from] daimon_audit::AuditError),
     #[error("guard: {0}")]
     Guard(#[from] daimon_guard::Error),
+    #[error("policy incoherent: {0}")]
+    PolicyIncoherent(String),
 }
 
 /// Assemble the production broker. Opens a Postgres pool and wires the
@@ -109,6 +111,25 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
     let kill_switch = daimon_guard::KillSwitch::new(cfg.kill_path.clone());
     kill_switch.spawn_watchers();
     let policy = daimon_guard::PolicyEngine::from_toml_file(&cfg.policy_path)?;
+
+    // Boot-time policy-coherence check (bounded P1 version; P2 generalizes it
+    // over the CapabilityRegistry). A WRITE capability must never resolve to
+    // Allow — that would let an agent mutate infrastructure with no approval
+    // (the RouterOS shadowing class). Keyed on the live driver's write caps.
+    const KNOWN_WRITE_CAPS: &[&str] = &[
+        "network.routeros.firewall_add_drop_rule",
+        "network.routeros.firewall_remove_rule",
+        "network.routeros.user_ssh_key_import",
+        "network.routeros.user_ssh_key_remove",
+    ];
+    for cap in KNOWN_WRITE_CAPS {
+        if policy.evaluate(cap).decision == daimon_guard::Decision::Allow {
+            return Err(BootError::PolicyIncoherent(format!(
+                "write capability `{cap}` resolves to Allow — must be deny or require_approval"
+            )));
+        }
+    }
+
     let approvals = daimon_guard::ApprovalQueue::new(pool.clone());
     let guard = Arc::new(daimon_guard::Guard::new(
         kill_switch.state(),
@@ -135,4 +156,29 @@ fn scrub_pg_url(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+#[cfg(test)]
+mod policy_coherence_tests {
+    //! AC-P1-11: the shipped default policy must not leave any RouterOS write
+    //! capability implicitly allowed (the shadowing bug).
+    #[test]
+    fn shipped_policy_gates_all_routeros_writes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/policy.toml");
+        let policy = daimon_guard::PolicyEngine::from_toml_file(&path)
+            .expect("load shipped deploy/policy.toml");
+        for cap in [
+            "network.routeros.firewall_add_drop_rule",
+            "network.routeros.firewall_remove_rule",
+            "network.routeros.user_ssh_key_import",
+            "network.routeros.user_ssh_key_remove",
+        ] {
+            assert_eq!(
+                policy.evaluate(cap).decision,
+                daimon_guard::Decision::RequireApproval,
+                "{cap} must require approval, not be allowed/denied-silently"
+            );
+        }
+    }
 }

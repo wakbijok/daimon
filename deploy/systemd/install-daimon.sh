@@ -36,6 +36,14 @@ install -d -o root   -g root   -m 0755 /opt/daimon
 install -d -o root   -g root   -m 0755 /opt/daimon/site
 install -d -o daimon -g daimon -m 0750 /var/lib/daimon
 
+# 2b. Default guard policy — install to the data dir on first boot only
+#     (never clobber an operator-edited policy). The runtime reads
+#     $DAIMON_DATA_DIR/policy.toml; absent => fail-closed (deny every write).
+if [ -f ./policy.toml ] && [ ! -f /var/lib/daimon/policy.toml ]; then
+    install -m 0640 -o daimon -g daimon ./policy.toml /var/lib/daimon/policy.toml
+    echo "  default guard policy installed"
+fi
+
 # 3. Binary + assets
 install -m 0755 -o root -g root ./daimon-app /opt/daimon/daimon-app
 rm -rf /opt/daimon/site
