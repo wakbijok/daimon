@@ -61,30 +61,22 @@ pub async fn list_settings(prefix: String) -> Result<Vec<SettingRow>, ServerFnEr
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
     let client = state
         .db
         .get()
         .await
         .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
-    // RLS scoping: set the tenant guc before reading.
-    client
-        .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&claims.tenant_id.to_string()],
-        )
-        .await
-        .map_err(|e| ServerFnError::new(format!("set tenant: {e}")))?;
 
     let like = format!("{prefix}%");
     let rows = client
         .query(
             "SELECT key, value, is_secret, updated_at
              FROM public.app_config
-             WHERE tenant_id = $1 AND key LIKE $2
+             WHERE key LIKE $1
              ORDER BY key ASC",
-            &[&claims.tenant_id, &like],
+            &[&like],
         )
         .await
         .map_err(|e| ServerFnError::new(format!("query: {e}")))?;
@@ -119,13 +111,6 @@ pub async fn set_setting(
         .get()
         .await
         .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
-    client
-        .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&claims.tenant_id.to_string()],
-        )
-        .await
-        .map_err(|e| ServerFnError::new(format!("set tenant: {e}")))?;
 
     // Secrets land as vault:// refs. The current cut treats `value` as the
     // already-resolved ref string for is_secret=true; future iteration
@@ -133,15 +118,14 @@ pub async fn set_setting(
     // with the new ref.
     client
         .execute(
-            "INSERT INTO public.app_config (tenant_id, key, value, is_secret, updated_by)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (tenant_id, key) DO UPDATE
+            "INSERT INTO public.app_config (key, value, is_secret, updated_by)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (key) DO UPDATE
                SET value = EXCLUDED.value,
                    is_secret = EXCLUDED.is_secret,
                    updated_by = EXCLUDED.updated_by,
                    updated_at = now()",
             &[
-                &claims.tenant_id,
                 &key,
                 &value,
                 &is_secret,
@@ -185,15 +169,8 @@ pub async fn delete_setting(key: String) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
     client
         .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&claims.tenant_id.to_string()],
-        )
-        .await
-        .map_err(|e| ServerFnError::new(format!("set tenant: {e}")))?;
-    client
-        .execute(
-            "DELETE FROM public.app_config WHERE tenant_id = $1 AND key = $2",
-            &[&claims.tenant_id, &key],
+            "DELETE FROM public.app_config WHERE key = $1",
+            &[&key],
         )
         .await
         .map_err(|e| ServerFnError::new(format!("delete: {e}")))?;
@@ -221,10 +198,11 @@ pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
 
-    // Tenant name (from public.tenants, joined via tenant_id claim).
+    // Single-org: public.tenants was dropped. Org display name comes from
+    // an optional `identity.org_name` app_config key; default "daimon".
     let tenant_name = {
         let client = state
             .db
@@ -233,12 +211,16 @@ pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
             .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
         let row = client
             .query_opt(
-                "SELECT name FROM public.tenants WHERE id = $1",
-                &[&claims.tenant_id],
+                "SELECT value FROM public.app_config WHERE key = 'identity.org_name'",
+                &[],
             )
             .await
-            .map_err(|e| ServerFnError::new(format!("tenant query: {e}")))?;
-        row.map(|r| r.get::<_, String>(0)).unwrap_or_else(|| "(unknown)".into())
+            .map_err(|e| ServerFnError::new(format!("org_name query: {e}")))?;
+        row.and_then(|r| {
+            let v: serde_json::Value = r.get(0);
+            v.as_str().map(String::from)
+        })
+        .unwrap_or_else(|| "daimon".into())
     };
 
     let mut backends = Vec::new();
@@ -305,7 +287,9 @@ pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
             .to_string(),
         build_profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
         host_triple: option_env!("TARGET").unwrap_or("native").to_string(),
-        tenant_id: claims.tenant_id.to_string(),
+        // Single-org: no tenant id. Kept as an empty string to preserve the
+        // SystemInfo shape (the settings UI still renders the field).
+        tenant_id: String::new(),
         tenant_name,
         kill_switch_engaged: false, // wired when Guard is attached to AppState (Phase 8.1)
         kill_switch_reason: None,
@@ -341,25 +325,18 @@ pub async fn get_update_state() -> Result<UpdateState, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
     let client = state
         .db
         .get()
         .await
         .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
-    client
-        .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&claims.tenant_id.to_string()],
-        )
-        .await
-        .map_err(|e| ServerFnError::new(format!("set tenant: {e}")))?;
     let rows = client
         .query(
             "SELECT key, value FROM public.app_config
-             WHERE tenant_id = $1 AND key LIKE 'update.%'",
-            &[&claims.tenant_id],
+             WHERE key LIKE 'update.%'",
+            &[],
         )
         .await
         .map_err(|e| ServerFnError::new(format!("query: {e}")))?;

@@ -131,8 +131,6 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
         store,
         embedder,
         sparse,
-        state.tenant_id,
-        DEFAULT_TENANT,
         &doc,
         &ChunkConfig::default(),
     )
@@ -192,8 +190,6 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
         store,
         embedder,
         sparse,
-        state.tenant_id,
-        DEFAULT_TENANT,
         &req.query,
         req.top_k as u64,
     )

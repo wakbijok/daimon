@@ -10,40 +10,27 @@ async fn main() {
     use daimon_app::app::*;
     use daimon_app::db;
     use daimon_app::auth;
-    use daimon_app::state::{AppState, PveCache};
-    use daimon_app::ws::WsServerMsg;
-    use daimon_app::ws::WsScope;
+    use daimon_app::state::AppState;
     use std::sync::Arc;
-    use std::collections::HashMap;
 
     // ---- Phase 2b #19 + Phase 2c D3b: assemble the broker stack ----------
     //
     // The broker is the single integration point between daimon-app
     // server-fns and the (vault + inventory + transport + audit) layer.
-    // Phase 2c moved storage from SQLite files to PostgreSQL; the boot now
-    // needs DAIMON_PG_URL + DAIMON_TENANT_SLUG + DAIMON_KNOWN_HOSTS_PATH.
+    // Single-org: storage is PostgreSQL; boot needs DAIMON_PG_URL +
+    // DAIMON_KNOWN_HOSTS_PATH.
     //
     // Env config:
     //   DAIMON_PG_URL           — postgres://... Default
     //                             postgres://$USER@localhost:5432/daimon
-    //   DAIMON_TENANT_SLUG      — tenant scope. Default `default`.
     //   DAIMON_KNOWN_HOSTS_PATH — SSH known_hosts file. Default
     //                             ./daimon-data/known_hosts.
     //   CREDENTIALS_DIRECTORY   — set by systemd. Production master-key path.
     //   DAIMON_MASTER_KEY_FILE  — development fallback. WARNs loudly.
-    let tenant_slug = std::env::var("DAIMON_TENANT_SLUG").unwrap_or_else(|_| "default".into());
 
-    let broker = match boot_broker(&tenant_slug).await {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("daimon-app: failed to assemble broker stack: {e:#}");
-            std::process::exit(1);
-        }
-    };
-
-    // Phase 2c D3b: Postgres pool replaces SQLite. Migrations run on every
-    // boot so dev iteration is one-shot — production runs them once via
-    // `daimon-migrate`.
+    // Postgres pool + migrations first — the broker (and everything else)
+    // expects the schema to exist. Migrations run on every boot so dev
+    // iteration is one-shot — production runs them once via `daimon-migrate`.
     let pg_url = resolve_pg_url();
     let pool = match db::init_pool(&pg_url).await {
         Ok(p) => p,
@@ -52,20 +39,21 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let tenant_id = match db::resolve_tenant_id(&pool, &tenant_slug).await {
-        Ok(id) => id,
+
+    let broker = match boot_broker().await {
+        Ok(b) => b,
         Err(e) => {
-            eprintln!("daimon-app: tenant `{tenant_slug}` not found: {e:#}");
+            eprintln!("daimon-app: failed to assemble broker stack: {e:#}");
             std::process::exit(1);
         }
     };
 
     // Ensure JWT secret exists
-    let jwt_secret = match db::get_config(&pool, tenant_id, "jwt_secret").await.unwrap_or(None) {
+    let jwt_secret = match db::get_config(&pool, "jwt_secret").await.unwrap_or(None) {
         Some(secret) => secret,
         None => {
             let secret = auth::generate_secret();
-            db::set_config(&pool, tenant_id, "jwt_secret", &secret).await.unwrap();
+            db::set_config(&pool, "jwt_secret", &secret).await.unwrap();
             secret
         }
     };
@@ -80,20 +68,9 @@ async fn main() {
                 short.to_string()
             });
         let hash = auth::hash_password(&password);
-        db::create_user(&pool, tenant_id, "admin", &hash).await.unwrap();
+        db::create_user(&pool, "admin", &hash).await.unwrap();
         log!("Admin user created");
     }
-
-    // Load clusters and build PVE clients
-    let clusters = db::list_clusters(&pool, tenant_id).await.unwrap_or_default();
-    let mut pve_map = HashMap::new();
-    for (cid, _name) in &clusters {
-        if let Some(c) = db::get_cluster(&pool, tenant_id, cid).await.unwrap_or(None) {
-            let client = daimon_pve::Client::from_token_string(&c.api_url, &c.token);
-            pve_map.insert(cid.clone(), client);
-        }
-    }
-    log!("Loaded {} PVE cluster(s)", pve_map.len());
 
     // Create broadcast channel for WebSocket updates
     let (ws_tx, _) = tokio::sync::broadcast::channel::<String>(256);
@@ -183,10 +160,7 @@ async fn main() {
 
     let app_state = AppState {
         db: pool,
-        tenant_id,
         jwt_secret,
-        pve_clients: Arc::new(tokio::sync::RwLock::new(pve_map)),
-        pve_cache: Arc::new(tokio::sync::RwLock::new(PveCache::new())),
         ws_broadcast: ws_tx,
         broker,
         network_agent,
@@ -195,122 +169,25 @@ async fn main() {
         graph,
     };
 
-    // Phase 7 — PlatformPoller per cluster + push metrics to the time-series
-    // tier. The poller calls Platform::list_workloads on a fixed interval and
-    // broadcasts the snapshot back through ws_broadcast in the existing
-    // WsServerMsg::Update shape.
+    // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
     //
     // Phase 8 lock: metric streams land in VictoriaMetrics
-    // (`DAIMON_VM_URL`, default http://localhost:8428). The Postgres
-    // observer.metrics table was dropped in V015. PostgresMetricSink is
-    // retained in daimon-observer for tests only.
-    {
-        let state = app_state.clone();
-        let pollers_handle = tokio::spawn(async move {
-            use std::time::Duration;
-            use daimon_observer::{MetricPoint, MetricSink, VictoriaMetricsSink};
-
-            let clients = state.pve_clients.read().await.clone();
-            let drivers: Vec<(String, std::sync::Arc<daimon_tool_platform::PveDriver>)> = clients
-                .into_iter()
-                .map(|(id, c)| (id.clone(), std::sync::Arc::new(daimon_tool_platform::PveDriver::new(id, c))))
-                .collect();
-            let vm_url = std::env::var("DAIMON_VM_URL")
-                .unwrap_or_else(|_| "http://localhost:8428".to_string());
-            let metric_sink = std::sync::Arc::new(VictoriaMetricsSink::new(vm_url));
-
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                interval.tick().await;
-                for (cluster_id, driver) in &drivers {
-                    let now = chrono::Utc::now();
-                    let driver_dyn: std::sync::Arc<dyn daimon_tool_platform::Platform> = driver.clone();
-                    let workloads = match driver_dyn.list_workloads().await {
-                        Ok(w) => w,
-                        Err(e) => {
-                            tracing::warn!(cluster = %cluster_id, error = %e, "platform list_workloads failed");
-                            continue;
-                        }
-                    };
-
-                    // Convert to legacy PveResource for the existing pve_cache +
-                    // WsServerMsg::Update path (no UI changes needed).
-                    if let Ok(resources) = driver.client().cluster_resources(None).await {
-                        let mut cache = state.pve_cache.write().await;
-                        let changed = cache
-                            .resources
-                            .get(cluster_id)
-                            .map(|prev| serde_json::to_string(prev).unwrap_or_default()
-                                != serde_json::to_string(&resources).unwrap_or_default())
-                            .unwrap_or(true);
-                        if changed {
-                            cache.resources.insert(cluster_id.clone(), resources.clone());
-                            let msg = WsServerMsg::Update {
-                                scope: WsScope::ClusterResources { cluster_id: cluster_id.clone() },
-                                data: serde_json::to_value(&resources).unwrap_or_default(),
-                            };
-                            let _ = state.ws_broadcast.send(serde_json::to_string(&msg).unwrap_or_default());
-                        }
-                        cache.last_poll.insert(cluster_id.clone(), std::time::Instant::now());
-                    }
-
-                    // Push per-workload metric points into observer.metrics.
-                    let points: Vec<MetricPoint> = workloads
-                        .iter()
-                        .flat_map(|w| {
-                            let labels = serde_json::json!({
-                                "workload_id": w.id,
-                                "workload_name": w.name,
-                                "node": w.node,
-                                "kind": w.kind,
-                                "status": w.status,
-                            });
-                            vec![
-                                MetricPoint {
-                                    ts: now,
-                                    source: "pve".into(),
-                                    source_id: cluster_id.clone(),
-                                    name: "pve.workload.cpu_pct".into(),
-                                    value: w.cpu_pct as f64,
-                                    labels: labels.clone(),
-                                },
-                                MetricPoint {
-                                    ts: now,
-                                    source: "pve".into(),
-                                    source_id: cluster_id.clone(),
-                                    name: "pve.workload.mem_used_bytes".into(),
-                                    value: w.mem_used as f64,
-                                    labels: labels.clone(),
-                                },
-                                MetricPoint {
-                                    ts: now,
-                                    source: "pve".into(),
-                                    source_id: cluster_id.clone(),
-                                    name: "pve.workload.disk_used_bytes".into(),
-                                    value: w.disk_used as f64,
-                                    labels,
-                                },
-                            ]
-                        })
-                        .collect();
-                    if let Err(e) = metric_sink.push_batch(state.tenant_id, points).await {
-                        tracing::warn!(error = %e, "observer metrics push failed");
-                    }
-                }
-            }
-        });
-        let _ = pollers_handle; // we don't await the loop — it owns its own runtime
-    }
-
-    // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
+    // (`DAIMON_VM_URL`, default http://localhost:8428). The injected
+    // sink is a VictoriaMetricsSink; the Postgres observer.metrics table
+    // was dropped in V015.
     if let Ok(prom_url) = std::env::var("DAIMON_PROM_URL") {
-        use daimon_observer::{NamedQueryLibrary, ObserverIngest, ObserverIngestConfig};
+        use daimon_observer::{
+            NamedQueryLibrary, ObserverIngest, ObserverIngestConfig, VictoriaMetricsSink,
+        };
+        let vm_url = std::env::var("DAIMON_VM_URL")
+            .unwrap_or_else(|_| "http://localhost:8428".to_string());
+        let sink = std::sync::Arc::new(VictoriaMetricsSink::new(vm_url));
         match ObserverIngest::new(
             ObserverIngestConfig {
-                tenant_id: app_state.tenant_id,
                 prom_url: prom_url.clone(),
                 interval: std::time::Duration::from_secs(30),
             },
+            sink,
             app_state.db.clone(),
             NamedQueryLibrary::default_library(),
         ) {
@@ -369,7 +246,7 @@ async fn main() {
 /// `daimon_broker::production::build_production_broker`, which is the only
 /// path the spec permits for a long-running I/O adapter.
 #[cfg(feature = "ssr")]
-async fn boot_broker(tenant_slug: &str) -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> {
+async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> {
     use std::path::PathBuf;
 
     use anyhow::Context;
@@ -395,7 +272,6 @@ async fn boot_broker(tenant_slug: &str) -> anyhow::Result<std::sync::Arc<daimon_
 
     let broker = build_production_broker(BootConfig {
         pg_url,
-        tenant_slug: tenant_slug.to_string(),
         known_hosts_path,
         master_key,
         kill_path,

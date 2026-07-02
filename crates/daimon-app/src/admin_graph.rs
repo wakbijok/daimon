@@ -26,7 +26,7 @@ pub async fn lookup_blast_radius(
     use crate::state::AppState;
     use daimon_graph::TargetRef as GraphTargetRef;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
     let depth = max_depth.unwrap_or(daimon_guard::DEFAULT_BLAST_RADIUS_DEPTH);
 
@@ -35,7 +35,7 @@ pub async fn lookup_blast_radius(
     };
 
     let entries = graph
-        .blast_radius(claims.tenant_id, &GraphTargetRef::from(target_ref.as_str()), depth)
+        .blast_radius(&GraphTargetRef::from(target_ref.as_str()), depth)
         .await
         .map_err(|e| ServerFnError::new(format!("blast_radius: {e}")))?;
 

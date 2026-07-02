@@ -55,7 +55,7 @@ pub async fn list_plans() -> Result<Vec<PlanRow>, ServerFnError> {
     let state = expect_context::<AppState>();
     let plans = state
         .orchestrator
-        .list_plans(state.tenant_id, 100)
+        .list_plans(100)
         .await
         .map_err(|e| ServerFnError::new(format!("list_plans: {e}")))?;
     Ok(plans
@@ -126,7 +126,7 @@ pub async fn create_plan(req: CreatePlanRequest) -> Result<String, ServerFnError
         .collect();
     let plan = state
         .orchestrator
-        .create_plan(state.tenant_id, Some(claims.user_id), &req.intent, steps)
+        .create_plan(Some(claims.user_id), &req.intent, steps)
         .await
         .map_err(|e| ServerFnError::new(format!("create_plan: {e}")))?;
     Ok(plan.id.to_string())
@@ -162,7 +162,7 @@ pub async fn plan_from_intent(intent: String) -> Result<String, ServerFnError> {
     let catalog = capability_catalog();
     let plan = state
         .orchestrator
-        .plan_from_intent(state.tenant_id, Some(claims.user_id), &intent, &catalog, &llm)
+        .plan_from_intent(Some(claims.user_id), &intent, &catalog, &llm)
         .await
         .map_err(|e| ServerFnError::new(format!("plan_from_intent: {e}")))?;
     Ok(plan.id.to_string())

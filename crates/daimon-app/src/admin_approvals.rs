@@ -39,7 +39,7 @@ pub async fn list_pending_approvals_with_blast_radius(
     use crate::state::AppState;
     use daimon_graph::TargetRef as GraphTargetRef;
 
-    let claims = require_admin().await?;
+    let _claims = require_admin().await?;
     let state = expect_context::<AppState>();
     let lim = limit.unwrap_or(50);
 
@@ -47,7 +47,7 @@ pub async fn list_pending_approvals_with_blast_radius(
     // accessor. The broker holds the Guard which holds the queue.
     let approvals = state
         .broker
-        .approvals_pending(claims.tenant_id, lim)
+        .approvals_pending(lim)
         .await
         .map_err(|e| ServerFnError::new(format!("list_pending: {e}")))?;
 
@@ -57,7 +57,6 @@ pub async fn list_pending_approvals_with_blast_radius(
         let blast_radius = match (state.graph.as_ref(), a.target_ref.as_deref()) {
             (Some(g), Some(tref)) => match g
                 .blast_radius(
-                    claims.tenant_id,
                     &GraphTargetRef::from(tref),
                     daimon_guard::DEFAULT_BLAST_RADIUS_DEPTH,
                 )

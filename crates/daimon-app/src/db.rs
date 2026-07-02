@@ -1,13 +1,9 @@
 //! Postgres-backed app data layer (Phase 2c D3b).
 //!
 //! Async helpers against `daimon_db::Pool`. Replaces the prior rusqlite-on-
-//! tokio-Mutex implementation. The same set of operations the SQLite version
-//! provided (find_user, create_user, sessions, app_config, clusters, prefs).
-//!
-//! IDs are UUIDs; tenant scoping is wired through the function signature
-//! where it matters (clusters, prefs, user-create). D6 will replace the
-//! hardcoded default-tenant pattern at the call site with the JWT tenant
-//! claim.
+//! tokio-Mutex implementation. Single-org: tenant scoping is gone — the DB
+//! migrations dropped `tenant_id` columns and `public.tenants`, and
+//! `app_config` is now a key-only store.
 
 #[cfg(feature = "ssr")]
 use anyhow::{Context, Result};
@@ -31,18 +27,6 @@ pub async fn init_pool(pg_url: &str) -> Result<Pool> {
     Ok(pool)
 }
 
-/// Resolve a tenant slug to its UUID. Default-tenant default for Phase 2c
-/// single-tenant deployments; D6 plumbs per-request tenant routing.
-#[cfg(feature = "ssr")]
-pub async fn resolve_tenant_id(pool: &Pool, slug: &str) -> Result<Uuid> {
-    let client = pool.get().await.context("pg client")?;
-    let row = client
-        .query_one("SELECT id FROM public.tenants WHERE slug = $1", &[&slug])
-        .await
-        .with_context(|| format!("tenant lookup {slug}"))?;
-    Ok(row.get(0))
-}
-
 // ---- users ------------------------------------------------------------------
 
 #[cfg(feature = "ssr")]
@@ -60,7 +44,7 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
     let client = pool.get().await.context("pg client")?;
     let row = client
         .query_opt(
-            "SELECT u.id, u.username, u.password_hash, u.tenant_id,
+            "SELECT u.id, u.username, u.password_hash,
                     COALESCE(
                         ARRAY(
                             SELECT r.slug
@@ -78,37 +62,36 @@ pub async fn find_user(pool: &Pool, username: &str) -> Result<Option<UserRow>> {
         )
         .await
         .context("find_user")?;
-    Ok(row.map(|r| {
-        let tenant_opt: Option<Uuid> = r.get(3);
-        UserRow {
-            id: r.get(0),
-            username: r.get(1),
-            password_hash: r.get(2),
-            tenant_id: tenant_opt.unwrap_or_else(Uuid::nil),
-            roles: r.get(4),
-        }
+    Ok(row.map(|r| UserRow {
+        id: r.get(0),
+        username: r.get(1),
+        password_hash: r.get(2),
+        // users.tenant_id was dropped (single-org). Synthetic placeholder
+        // so create_jwt / login keep compiling with no signature change.
+        tenant_id: Uuid::nil(),
+        roles: r.get(3),
     }))
 }
 
 #[cfg(feature = "ssr")]
 pub async fn create_user(
     pool: &Pool,
-    tenant_id: Uuid,
     username: &str,
     password_hash: &str,
 ) -> Result<Uuid> {
     let client = pool.get().await.context("pg client")?;
     let row = client
         .query_one(
-            "INSERT INTO public.users (tenant_id, username, password_hash, status)
-             VALUES ($1, $2, $3, 'active')
+            "INSERT INTO public.users (username, password_hash, status)
+             VALUES ($1, $2, 'active')
              RETURNING id",
-            &[&tenant_id, &username, &password_hash],
+            &[&username, &password_hash],
         )
         .await
         .with_context(|| format!("create user {username}"))?;
     let user_id: Uuid = row.get(0);
 
+    // P1: remap tenant_admin -> admin
     let role_row = client
         .query_one(
             "SELECT id FROM public.roles WHERE slug = 'tenant_admin'",
@@ -117,13 +100,12 @@ pub async fn create_user(
         .await
         .context("tenant_admin role lookup")?;
     let role_id: Uuid = role_row.get(0);
-    let scope = format!("tenant:{tenant_id}");
     client
         .execute(
-            "INSERT INTO public.role_grants (user_id, role_id, scope)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (user_id, role_id, scope) DO NOTHING",
-            &[&user_id, &role_id, &scope],
+            "INSERT INTO public.role_grants (user_id, role_id)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id, role_id) DO NOTHING",
+            &[&user_id, &role_id],
         )
         .await
         .context("grant tenant_admin")?;
@@ -177,26 +159,17 @@ pub async fn delete_session(pool: &Pool, id: &str) -> Result<()> {
 
 // ---- app_config -------------------------------------------------------------
 //
-// V016 reshaped public.app_config to (tenant_id, key, JSONB value, is_secret,
-// updated_by). The legacy helpers below now wrap that schema, encoding string
-// values as JSONB strings and scoping every read/write by tenant_id. RLS
-// requires the `app.tenant_id` GUC to be set before SELECT/INSERT; we set it
-// inside the transaction.
+// Single-org: app_config is a key-only store — (key PK, JSONB value,
+// is_secret, updated_at, updated_by). These legacy string helpers encode the
+// value as a JSONB string.
 
 #[cfg(feature = "ssr")]
-pub async fn get_config(pool: &Pool, tenant_id: Uuid, key: &str) -> Result<Option<String>> {
+pub async fn get_config(pool: &Pool, key: &str) -> Result<Option<String>> {
     let client = pool.get().await.context("pg client")?;
-    client
-        .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&tenant_id.to_string()],
-        )
-        .await
-        .context("set tenant guc")?;
     let row = client
         .query_opt(
-            "SELECT value FROM public.app_config WHERE tenant_id = $1 AND key = $2",
-            &[&tenant_id, &key],
+            "SELECT value FROM public.app_config WHERE key = $1",
+            &[&key],
         )
         .await
         .context("get_config")?;
@@ -207,116 +180,19 @@ pub async fn get_config(pool: &Pool, tenant_id: Uuid, key: &str) -> Result<Optio
 }
 
 #[cfg(feature = "ssr")]
-pub async fn set_config(pool: &Pool, tenant_id: Uuid, key: &str, value: &str) -> Result<()> {
+pub async fn set_config(pool: &Pool, key: &str, value: &str) -> Result<()> {
     let client = pool.get().await.context("pg client")?;
-    client
-        .execute(
-            "SELECT set_config('app.tenant_id', $1::text, true)",
-            &[&tenant_id.to_string()],
-        )
-        .await
-        .context("set tenant guc")?;
     let jval = serde_json::Value::String(value.to_string());
     client
         .execute(
-            "INSERT INTO public.app_config (tenant_id, key, value)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (tenant_id, key) DO UPDATE
+            "INSERT INTO public.app_config (key, value)
+             VALUES ($1, $2)
+             ON CONFLICT (key) DO UPDATE
                SET value = EXCLUDED.value, updated_at = now()",
-            &[&tenant_id, &key, &jval],
+            &[&key, &jval],
         )
         .await
         .context("set_config")?;
-    Ok(())
-}
-
-// ---- clusters ---------------------------------------------------------------
-
-#[cfg(feature = "ssr")]
-pub async fn list_clusters(pool: &Pool, tenant_id: Uuid) -> Result<Vec<(String, String)>> {
-    let client = pool.get().await.context("pg client")?;
-    let rows = client
-        .query(
-            "SELECT id, name FROM public.clusters
-             WHERE tenant_id = $1
-             ORDER BY name",
-            &[&tenant_id],
-        )
-        .await
-        .context("list_clusters")?;
-    Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
-}
-
-#[cfg(feature = "ssr")]
-#[derive(Debug, Clone)]
-pub struct ClusterRow {
-    pub id: String,
-    pub name: String,
-    pub api_url: String,
-    pub token: String,
-    pub notes: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[cfg(feature = "ssr")]
-pub async fn get_cluster(
-    pool: &Pool,
-    tenant_id: Uuid,
-    id: &str,
-) -> Result<Option<ClusterRow>> {
-    let client = pool.get().await.context("pg client")?;
-    let row = client
-        .query_opt(
-            "SELECT id, name, api_url, token, notes, created_at
-             FROM public.clusters
-             WHERE tenant_id = $1 AND id = $2",
-            &[&tenant_id, &id],
-        )
-        .await
-        .with_context(|| format!("get_cluster {id}"))?;
-    Ok(row.map(|r| ClusterRow {
-        id: r.get(0),
-        name: r.get(1),
-        api_url: r.get(2),
-        token: r.get(3),
-        notes: r.get(4),
-        created_at: r.get(5),
-    }))
-}
-
-#[cfg(feature = "ssr")]
-pub async fn insert_cluster(
-    pool: &Pool,
-    tenant_id: Uuid,
-    id: &str,
-    name: &str,
-    api_url: &str,
-    token: &str,
-    notes: &str,
-) -> Result<()> {
-    let client = pool.get().await.context("pg client")?;
-    client
-        .execute(
-            "INSERT INTO public.clusters
-                (id, tenant_id, name, api_url, token, notes)
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            &[&id, &tenant_id, &name, &api_url, &token, &notes],
-        )
-        .await
-        .with_context(|| format!("insert cluster {id}"))?;
-    Ok(())
-}
-
-#[cfg(feature = "ssr")]
-pub async fn delete_cluster(pool: &Pool, tenant_id: Uuid, id: &str) -> Result<()> {
-    let client = pool.get().await.context("pg client")?;
-    client
-        .execute(
-            "DELETE FROM public.clusters WHERE tenant_id = $1 AND id = $2",
-            &[&tenant_id, &id],
-        )
-        .await
-        .with_context(|| format!("delete cluster {id}"))?;
     Ok(())
 }
 

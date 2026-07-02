@@ -51,10 +51,9 @@ pub async fn list_anomalies(limit: u32) -> Result<Vec<AnomalyRow>, ServerFnError
             "SELECT id, detected_at, source, source_id, severity, title,
                     description, metric_name, metric_value, threshold, resolved_at
              FROM observer.anomalies
-             WHERE tenant_id = $1
              ORDER BY detected_at DESC
-             LIMIT $2",
-            &[&state.tenant_id, &(limit as i64)],
+             LIMIT $1",
+            &[&(limit as i64)],
         )
         .await
         .map_err(|e| ServerFnError::new(format!("query: {e}")))?;
