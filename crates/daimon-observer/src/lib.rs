@@ -16,6 +16,7 @@
 //! envelope subscribed by Guard + Orchestrator.
 
 pub mod error;
+pub mod event;
 pub mod ingest;
 pub mod prometheus;
 pub mod queries;
@@ -23,6 +24,7 @@ pub mod sink;
 pub mod vm_sink;
 
 pub use error::{Error, Result};
+pub use event::AnomalyDetected;
 pub use ingest::{ObserverIngest, ObserverIngestConfig};
 pub use prometheus::PrometheusClient;
 pub use queries::{NamedQuery, NamedQueryLibrary, Threshold};

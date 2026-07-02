@@ -8,6 +8,14 @@ description = "Observer tier (#4) — Prometheus pull, named-query library, anom
 
 [dependencies]
 daimon-db = { path = "../daimon-db" }
+# P3 commit 7: the observer emits an `AnomalyDetected` envelope onto the agent
+# bus so the TriageAgent can pick it up. It needs `daimon-core` for
+# `AgentEnvelope`/`Recipient`/`BusHandle`/`AgentId` + `semver` for the
+# capability version requirement. It MUST NOT depend on `daimon-runtime` (D21):
+# the observer only holds an `Arc<dyn BusHandle>` (the abstract slice), never
+# the concrete `InProcBus`/`Supervisor`.
+daimon-core = { path = "../daimon-core" }
+semver = { version = "1", features = ["serde"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
