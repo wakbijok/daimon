@@ -1,15 +1,23 @@
-//! daimon-memory — three-tier memory for daimon agents.
+//! daimon-memory — the memory tier seam for daimon agents.
 //!
-//! Tiers:
-//! - **Conversation** — append-only timeline per session, recent-window access
-//! - **Working** — per-agent scratchpad K/V with TTL
-//! - **Long-term** — vector-backed semantic store (Qdrant) + canonical payload (Postgres in prod, SQLite in dev)
+//! P3 LOCKED decision: the long-term memory tier is a **dmem SIDECAR**, not an
+//! embedded store. A musl-static daimon binary cannot link dm-lite's native
+//! zvec `.so`, so daimon talks to a running `dmem serve` over HTTP behind the
+//! [`MemoryService`] trait. The prior Qdrant [`vector`]-store impl and the
+//! `daimon-rag` embedding pipeline are retired.
 //!
-//! Phase 3 lands the long-term tier first (Qdrant via [`VectorStore`]). Conversation + working tiers
-//! are scaffolded with Postgres-backed impls; both move to Redis in Phase 4.
+//! - [`service`] — the trait + transport-agnostic DTOs (all `serde`; the
+//!   hydrate/wasm side renders these without pulling `reqwest`).
+//! - [`dmem_http`] — the concrete sidecar client [`DmemHttpMemory`] plus the
+//!   no-op [`NullMemory`] boot fallback (ssr-only; the sole `reqwest` user).
 
+pub mod dmem_http;
 pub mod error;
-pub mod vector;
+pub mod service;
 
+pub use dmem_http::{DmemHttpMemory, NullMemory};
 pub use error::{Error, Result};
-pub use vector::{COLLECTION, Hit, HybridPoint, Point, VectorStore};
+pub use service::{
+    IngestDoc, IngestStats, MemoryHealth, MemoryService, PreTurnContext, RecallBudget, RecordKind,
+    RetrieveQuery, RetrievedChunk, ScoredRecord, TypedBody, TypedRecord,
+};

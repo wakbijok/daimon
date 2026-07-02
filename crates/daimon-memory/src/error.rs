@@ -2,14 +2,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("qdrant client error: {0}")]
-    Qdrant(#[from] qdrant_client::QdrantError),
+    /// The sidecar answered with a non-2xx status.
+    #[error("dmem http error: {0}")]
+    Http(String),
 
-    #[error("collection not found: {0}")]
-    CollectionNotFound(String),
+    /// The sidecar's response body could not be decoded into the expected shape.
+    #[error("dmem decode error: {0}")]
+    Decode(String),
 
-    #[error("invalid dimension: expected {expected}, got {got}")]
-    InvalidDimension { expected: usize, got: usize },
+    /// The sidecar could not be reached (connect refused, DNS, TLS, timeout).
+    #[error("dmem unreachable: {0}")]
+    Unreachable(String),
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),

@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Three-tier memory (conversation / working / long-term) for daimon agents. Vector tier backed by Qdrant; canonical payload backed by Postgres (SQLite dev fallback)."
+description = "Memory tier seam for daimon agents. Long-term memory is a dmem sidecar (dm-lite `dmem serve`) reached over bearer-authenticated HTTP behind the MemoryService trait."
 
 [dependencies]
 daimon-core = { path = "../daimon-core" }
-qdrant-client = "1.18"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+url = "2"
 thiserror = "2"
 async-trait = "0.1"
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
