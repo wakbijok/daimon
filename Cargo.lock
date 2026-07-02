@@ -1343,6 +1343,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "daimon-driver-firewall-routeros"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "daimon-broker",
+ "daimon-core",
+ "daimon-driver",
+ "daimon-inventory",
+ "daimon-transport",
+ "daimon-vault",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "daimon-graph"
 version = "0.1.0"
 dependencies = [
