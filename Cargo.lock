@@ -1198,11 +1198,9 @@ dependencies = [
  "daimon-memory",
  "daimon-observer",
  "daimon-orchestrator",
- "daimon-pve",
  "daimon-rag",
  "daimon-redis",
  "daimon-tool-network",
- "daimon-tool-platform",
  "futures",
  "futures-util",
  "gloo-timers",
@@ -1490,17 +1488,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daimon-pve"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "daimon-rag"
 version = "0.1.0"
 dependencies = [
@@ -1573,22 +1560,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "daimon-tool-platform"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "daimon-core",
- "daimon-pve",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

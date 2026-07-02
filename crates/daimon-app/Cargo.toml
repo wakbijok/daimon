@@ -33,7 +33,6 @@ tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4"
 jsonwebtoken = { version = "9", optional = true }
 bcrypt = { version = "0.17", optional = true }
 rand = { version = "0.9", optional = true }
-daimon-pve = { path = "../daimon-pve", optional = true }
 futures = { version = "0.3", optional = true }
 tracing = { version = "0.1", optional = true }
 
@@ -54,7 +53,6 @@ daimon-tool-network = { path = "../daimon-tool-network", optional = true }
 daimon-core = { path = "../daimon-core", optional = true }
 daimon-redis = { path = "../daimon-redis", optional = true }
 daimon-orchestrator = { path = "../daimon-orchestrator", optional = true }
-daimon-tool-platform = { path = "../daimon-tool-platform", optional = true }
 daimon-observer = { path = "../daimon-observer", optional = true }
 daimon-graph = { path = "../daimon-graph", optional = true }
 daimon-guard = { path = "../daimon-guard", optional = true }
@@ -82,7 +80,6 @@ ssr = [
     "dep:jsonwebtoken",
     "dep:bcrypt",
     "dep:rand",
-    "dep:daimon-pve",
     "dep:futures",
     "dep:tracing",
     "dep:daimon-broker",
@@ -95,7 +92,6 @@ ssr = [
     "dep:daimon-core",
     "dep:daimon-redis",
     "dep:daimon-orchestrator",
-    "dep:daimon-tool-platform",
     "dep:daimon-observer",
     "dep:daimon-graph",
     "dep:daimon-guard",
