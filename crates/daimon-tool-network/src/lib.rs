@@ -214,7 +214,6 @@ impl NetworkAgent {
         let target = InvTargetRef::parse(&req.target_ref)
             .map_err(|e| NetworkAgentError::BadTarget(format!("{e}")))?;
         let timeout_secs = req.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1);
-        let is_read_only = is_read_only_capability(&req.capability);
 
         let exec_req = ExecRequest::new(
             self.actor_id.clone(),
@@ -223,8 +222,14 @@ impl NetworkAgent {
                 command: command.clone(),
                 timeout_secs,
             },
-        )
-        .with_capability(&req.capability, is_read_only);
+        );
+        // Attach the resolved capability descriptor so the broker derives the
+        // read-only disposition server-side (H6/H7). An unknown capability
+        // name carries no descriptor -> the broker treats it as a write.
+        let exec_req = match self.capabilities.iter().find(|c| c.name == req.capability) {
+            Some(cap) => exec_req.with_capability_meta(cap.clone()),
+            None => exec_req.with_capability(&req.capability, false),
+        };
 
         let op_result = self
             .broker
@@ -256,16 +261,6 @@ impl NetworkAgent {
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
-}
-
-fn is_read_only_capability(capability: &str) -> bool {
-    matches!(
-        capability,
-        "network.routeros.system_info"
-            | "network.routeros.interface_list"
-            | "network.routeros.ip_addresses"
-            | "network.routeros.firewall_filter_list"
-    )
 }
 
 /// Build the RouterOS CLI command for a capability. Read capabilities take

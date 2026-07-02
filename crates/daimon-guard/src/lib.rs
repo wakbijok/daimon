@@ -76,8 +76,11 @@ impl Guard {
     /// Pre-flight a capability invocation. Returns Ok(()) if the broker may
     /// proceed; Err with a specific variant otherwise.
     ///
-    /// `is_read_only` short-circuits to allow — read capabilities (per
-    /// the Capability struct metadata) skip policy + approval.
+    /// `is_read_only` short-circuits to allow — read capabilities skip
+    /// policy + approval. This bit MUST be derived server-side by the caller
+    /// (the broker derives it from the registered `Capability::is_read()`,
+    /// never from a caller/LLM-supplied flag — H6/H7). The kill-switch check
+    /// stays FIRST, so a read can never bypass a KILL.
     pub async fn pre_flight(
         &self,
         actor_id: &str,

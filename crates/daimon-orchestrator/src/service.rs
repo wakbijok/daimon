@@ -27,7 +27,7 @@ catalog, return a JSON object with shape:
       \"capability_name\": \"network.routeros.system_info\",
       \"capability_version\": \"1.0.0\",
       \"target_ref\": \"target://mikrotik-edge\",
-      \"params\": {\"command\": \"/system identity print\", \"is_read_only\": true},
+      \"params\": {\"command\": \"/system identity print\"},
       \"depends_on_index\": []
     }
   ]
@@ -35,7 +35,8 @@ catalog, return a JSON object with shape:
 
 Return JSON only, no prose. Use capability_name from the catalog exactly. \
 For RouterOS read capabilities, fill `params.command` with the matching CLI \
-string and `params.is_read_only=true`. Step `depends_on_index` is a list of \
+string. (Do NOT emit is_read_only — the platform derives read/write \
+disposition from the capability itself.) Step `depends_on_index` is a list of \
 0-based indices of earlier steps that must complete before this one runs. \
 Use the minimum number of steps that satisfies the intent.";
 
@@ -396,13 +397,12 @@ impl OrchestratorService {
             target,
             op,
         )
-        .with_capability(
-            &step.capability_name,
-            step.params
-                .get("is_read_only")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        );
+        // The read-only disposition is derived server-side by the broker from
+        // the registered capability (H6/H7) — the LLM-emitted `is_read_only`
+        // is IGNORED. Without a CapabilityRegistry (P2), the orchestrator
+        // attaches only the name, so the broker treats the step as a write and
+        // routes it through policy + approval (fail-closed).
+        .with_capability(&step.capability_name, false);
         let _ = actor_id; // Phase 6 D1 ties actor to the orchestrator id above.
 
         let result = self

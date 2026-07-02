@@ -115,6 +115,17 @@ impl Broker {
         result
     }
 
+    /// Server-side read-only derivation (H6/H7). The guard's read-only bit is
+    /// the sole property of the resolved capability — NEVER a caller/LLM flag.
+    /// A request with no `capability_meta` is treated as a WRITE (fail-closed),
+    /// so a capability-less call cannot skip policy + approval.
+    fn derive_read_only(req: &ExecRequest) -> bool {
+        req.capability_meta
+            .as_ref()
+            .map(|c| c.is_read())
+            .unwrap_or(false)
+    }
+
     async fn execute_inner(&self, req: &ExecRequest) -> Result<OpResult, BrokerError> {
         // Step 0: Guard pre-flight (KILL switch + policy + approval).
         if let Some(guard) = &self.guard {
@@ -132,7 +143,7 @@ impl Broker {
                     &cap,
                     Some(&req.target_ref.to_string()),
                     params,
-                    req.capability.is_none() || req.is_read_only,
+                    Self::derive_read_only(req),
                 )
                 .await
                 .map_err(BrokerError::from)?;
@@ -290,5 +301,62 @@ pub mod test_helpers {
 
         let broker = Broker::new(inv.clone(), vault.clone(), transports);
         (broker, inv, vault, ssh)
+    }
+}
+
+#[cfg(test)]
+mod read_only_derivation_tests {
+    //! AC-P1-10 keystone: the guard's read-only bit is derived SERVER-SIDE
+    //! from the capability, never from the caller/LLM-supplied `is_read_only`
+    //! flag (H6/H7). A capability-less request is a write (fail-closed).
+    use super::*;
+    use daimon_inventory::TargetRef;
+    use daimon_transport::Op;
+
+    fn cap(json: serde_json::Value) -> daimon_core::Capability {
+        serde_json::from_value(json).unwrap()
+    }
+    fn req() -> ExecRequest {
+        ExecRequest::new(
+            "actor:test",
+            TargetRef::parse("target://x").unwrap(),
+            Op::ShellCommand { command: "noop".into(), timeout_secs: 5 },
+        )
+    }
+
+    #[test]
+    fn caller_flag_cannot_make_a_write_read_only() {
+        // A write capability, but the caller LIES that it is read-only.
+        let write = cap(serde_json::json!({
+            "name": "network.routeros.firewall_add_drop_rule",
+            "version": "1.0.0",
+            "compensating": { "name": "network.routeros.firewall_remove_rule" }
+        }));
+        let mut r = req().with_capability_meta(write);
+        r.is_read_only = true; // the H6/H7 lie
+        assert!(
+            !Broker::derive_read_only(&r),
+            "a write capability must derive read_only=false regardless of the caller flag"
+        );
+    }
+
+    #[test]
+    fn read_capability_derives_read_only() {
+        let read = cap(serde_json::json!({
+            "name": "network.routeros.system_info", "version": "1.0.0"
+        }));
+        let r = req().with_capability_meta(read);
+        assert!(Broker::derive_read_only(&r));
+    }
+
+    #[test]
+    fn capability_less_request_is_write_fail_closed() {
+        // No capability_meta + caller claims read-only -> still a write.
+        let mut r = req();
+        r.is_read_only = true;
+        assert!(
+            !Broker::derive_read_only(&r),
+            "a request with no capability descriptor must be treated as a write"
+        );
     }
 }

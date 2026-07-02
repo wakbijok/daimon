@@ -41,6 +41,34 @@ impl Capability {
             irreversible: false,
         }
     }
+
+    /// SERVER-SIDE read-only disposition — the sole authority for whether a
+    /// capability skips policy + approval (NFR-SAF-02). The broker derives the
+    /// guard's read-only bit from THIS, never from a caller/LLM-supplied flag
+    /// (which closes the H6/H7 bypass). A capability is read-only iff it has no
+    /// compensating action, is not irreversible, AND its name carries a read
+    /// verb. The name check is a fail-closed backstop: a write capability
+    /// authored without a compensator and not marked irreversible (the same
+    /// shape `read_only()` produces) would otherwise misclassify as read; the
+    /// verb allowlist forces anything not clearly a read to be treated as a
+    /// write. P2's typed connector verbs (describe/read_state/diagnose vs
+    /// remediate) supersede the name heuristic.
+    pub fn is_read(&self) -> bool {
+        self.compensating.is_none() && !self.irreversible && Self::name_is_read(&self.name)
+    }
+
+    /// Read-verb allowlist over the dotted capability name. Anything not
+    /// matched is treated as a write (fail-closed). Covers the RouterOS reads
+    /// (`system_info`, `interface_list`, `ip_addresses`, `firewall_filter_list`)
+    /// and the forthcoming connector read verbs.
+    fn name_is_read(name: &str) -> bool {
+        const READ_MARKERS: &[&str] = &[
+            "_info", "_list", "list_", ".list", "_addresses", "ip_addresses",
+            "_status", ".read", "_read", "read_state", "describe", "diagnose",
+            ".get", "_get", "_show", "_print",
+        ];
+        READ_MARKERS.iter().any(|m| name.contains(m))
+    }
 }
 
 /// Reference to the compensating capability for a write capability (D18).
@@ -66,6 +94,47 @@ mod tests {
         let cap = Capability::read_only("platform.workload.list", Version::new(1, 0, 0));
         assert!(cap.compensating.is_none());
         assert!(!cap.irreversible);
+    }
+
+    #[test]
+    fn is_read_classifies_the_routeros_capabilities() {
+        let v = Version::new(1, 0, 0);
+        // The four reads (built via read_only) — must classify as read.
+        for name in [
+            "network.routeros.system_info",
+            "network.routeros.interface_list",
+            "network.routeros.ip_addresses",
+            "network.routeros.firewall_filter_list",
+        ] {
+            assert!(Capability::read_only(name, v.clone()).is_read(), "{name} should be read");
+        }
+        // Write with a compensator — not read.
+        let add = Capability {
+            name: "network.routeros.firewall_add_drop_rule".into(),
+            version: v.clone(),
+            description: None,
+            schema: None,
+            compensating: Some(CompensatingCapability {
+                name: "network.routeros.firewall_remove_rule".into(),
+                version_req: None,
+            }),
+            irreversible: false,
+        };
+        assert!(!add.is_read(), "add_drop_rule is a write");
+        // Irreversible write — not read.
+        let remove = Capability {
+            name: "network.routeros.firewall_remove_rule".into(),
+            version: v.clone(),
+            description: None,
+            schema: None,
+            compensating: None,
+            irreversible: true,
+        };
+        assert!(!remove.is_read(), "remove_rule is an irreversible write");
+        // Fail-closed: a write-shaped cap with no compensator/irreversible but a
+        // non-read name is still treated as a write.
+        let sneaky = Capability::read_only("network.routeros.reboot", v);
+        assert!(!sneaky.is_read(), "reboot has no read verb -> treated as write");
     }
 
     #[test]

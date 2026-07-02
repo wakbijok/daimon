@@ -27,11 +27,19 @@ pub struct ExecRequest {
     /// orchestrator-trusted path); KILL switch still fires unconditionally.
     #[serde(default)]
     pub capability: Option<String>,
-    /// Read-only capabilities skip policy + approval (kill switch still
-    /// applies). Set to `true` for read paths so the operator doesn't see
-    /// approval prompts for harmless queries.
+    /// NON-AUTHORITATIVE UX hint only. The broker no longer trusts this for
+    /// the guard decision — it derives read-only server-side from
+    /// `capability_meta` (the H6/H7 fix). Kept for callers that carry only a
+    /// name and for display.
     #[serde(default)]
     pub is_read_only: bool,
+    /// The resolved capability descriptor. When present, the broker derives
+    /// the guard's read-only disposition from `Capability::is_read()` — the
+    /// server-side authority. `None` is treated as a WRITE (fail-closed), so a
+    /// capability-less request cannot skip policy. P2 will populate this from
+    /// the CapabilityRegistry; today workers attach their own catalog entry.
+    #[serde(default)]
+    pub capability_meta: Option<daimon_core::Capability>,
 }
 
 impl ExecRequest {
@@ -42,12 +50,25 @@ impl ExecRequest {
             actor_id: actor_id.into(),
             capability: None,
             is_read_only: false,
+            capability_meta: None,
         }
     }
 
+    /// Attach a capability by NAME only (no server-side disposition). The
+    /// broker treats this as a write unless `capability_meta` is also set.
+    /// `is_read_only` here is a non-authoritative hint.
     pub fn with_capability(mut self, capability: impl Into<String>, is_read_only: bool) -> Self {
         self.capability = Some(capability.into());
         self.is_read_only = is_read_only;
+        self
+    }
+
+    /// Attach the resolved `Capability` descriptor — the authoritative source
+    /// for the broker's read-only derivation. Sets the capability name too.
+    pub fn with_capability_meta(mut self, capability: daimon_core::Capability) -> Self {
+        self.is_read_only = capability.is_read();
+        self.capability = Some(capability.name.clone());
+        self.capability_meta = Some(capability);
         self
     }
 }
