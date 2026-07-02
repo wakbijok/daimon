@@ -3,8 +3,8 @@
 //!
 //! Phase 2c update: vault/inventory/audit are Postgres-backed via the
 //! production stack assembler (`daimon-broker::production`). The demo
-//! therefore needs a running Postgres + a known tenant. Default
-//! configuration points at the dev `daimon` database with tenant `default`.
+//! therefore needs a running Postgres. Default configuration points at
+//! the dev `daimon` database.
 //!
 //! Usage:
 //!   daimon-demo \
@@ -77,10 +77,6 @@ struct Args {
     #[arg(long, default_value = "./daimon-data/known_hosts")]
     known_hosts: String,
 
-    /// Tenant slug (must exist in public.tenants). Default `default`.
-    #[arg(long, default_value = "default", env = "DAIMON_TENANT_SLUG")]
-    tenant_slug: String,
-
     /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
     /// postgres://$USER@localhost:5432/daimon.
     #[arg(long, env = "DAIMON_PG_URL")]
@@ -135,7 +131,6 @@ async fn main() -> Result<()> {
         .context("load master key (set DAIMON_MASTER_KEY_FILE for dev)")?;
     let broker = build_production_broker(BootConfig {
         pg_url,
-        tenant_slug: args.tenant_slug.clone(),
         known_hosts_path: args.known_hosts.clone().into(),
         master_key,
         kill_path: std::path::PathBuf::from("./daimon-data/KILL"),

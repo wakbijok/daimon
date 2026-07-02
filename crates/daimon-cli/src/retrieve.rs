@@ -1,7 +1,7 @@
-//! `daimon-retrieve` — operator CLI for querying a tenant's long-term memory.
+//! `daimon-retrieve` — operator CLI for querying long-term memory.
 //!
 //! Usage:
-//!   daimon-retrieve --tenant <slug> --query "..." [--top-k 5] [--qdrant <url>]
+//!   daimon-retrieve --query "..." [--top-k 5] [--qdrant <url>]
 //!
 //! Phase 3 D5: chunk text comes from Postgres canonical tier (memory.document_chunks)
 //! via JOIN against Qdrant's returned point ids. Print top-K hits with score + snippet.
@@ -12,12 +12,8 @@ use daimon_memory::VectorStore;
 use daimon_rag::{Embedder, SparseEmbedder, retrieve};
 
 #[derive(Parser, Debug)]
-#[command(name = "daimon-retrieve", about = "Retrieve from a tenant's long-term memory")]
+#[command(name = "daimon-retrieve", about = "Retrieve from long-term memory")]
 struct Args {
-    /// Tenant slug (must exist in public.tenants).
-    #[arg(long, default_value = "default")]
-    tenant: String,
-
     /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
     /// postgres://$USER@localhost:5432/daimon.
     #[arg(long, env = "DAIMON_PG_URL")]
@@ -61,38 +57,18 @@ async fn main() -> Result<()> {
     });
     let pool = daimon_db::build_pool(&pg_url).context("pg pool")?;
 
-    let client = pool.get().await.context("pg client")?;
-    let row = client
-        .query_one(
-            "SELECT id FROM public.tenants WHERE slug = $1",
-            &[&args.tenant],
-        )
-        .await
-        .with_context(|| format!("tenant `{}` not found", args.tenant))?;
-    let tenant_uuid: uuid::Uuid = row.get(0);
-    drop(client);
-
     eprintln!("loading dense embedder...");
     let embedder = Embedder::new_default().context("embedder init")?;
     eprintln!("loading sparse embedder...");
     let sparse = SparseEmbedder::new_default().context("sparse init")?;
 
     eprintln!("retrieving top {} (hybrid dense+sparse) for: {}", args.top_k, args.query);
-    let hits = retrieve(
-        &pool,
-        &store,
-        &embedder,
-        &sparse,
-        tenant_uuid,
-        &args.tenant,
-        &args.query,
-        args.top_k,
-    )
-    .await
-    .context("retrieve")?;
+    let hits = retrieve(&pool, &store, &embedder, &sparse, &args.query, args.top_k)
+        .await
+        .context("retrieve")?;
 
     if hits.is_empty() {
-        eprintln!("(no hits — tenant collection empty or unknown)");
+        eprintln!("(no hits — collection empty or unknown)");
         return Ok(());
     }
 

@@ -1,4 +1,4 @@
-//! Walk a tenant's audit chain oldest-first, recompute each row's hash from
+//! Walk the global audit chain oldest-first, recompute each row's hash from
 //! the canonical payload, and report any divergence from the stored row_hash.
 
 use anyhow::{Context, Result};
@@ -18,32 +18,20 @@ pub struct ChainBreak {
 
 #[derive(Debug)]
 pub struct VerifyReport {
-    pub tenant_slug: String,
-    pub tenant_id: Uuid,
     pub rows_checked: usize,
     pub breaks: Vec<ChainBreak>,
 }
 
-pub async fn verify_tenant(pool: &Pool, tenant_slug: &str) -> Result<VerifyReport> {
+pub async fn verify(pool: &Pool) -> Result<VerifyReport> {
     let client = pool.get().await.context("get pg client")?;
-
-    let row = client
-        .query_one(
-            "SELECT id FROM public.tenants WHERE slug = $1",
-            &[&tenant_slug],
-        )
-        .await
-        .context("tenant lookup")?;
-    let tenant_id: Uuid = row.get(0);
 
     let rows = client
         .query(
             "SELECT id, ts, actor_id, action, target_ref, credential_ref,
                     op_summary, result, latency_ms, metadata::TEXT, prev_hash, row_hash
              FROM audit.events
-             WHERE tenant_id = $1
              ORDER BY ts ASC, id ASC",
-            &[&tenant_id],
+            &[],
         )
         .await
         .context("audit scan")?;
@@ -94,8 +82,6 @@ pub async fn verify_tenant(pool: &Pool, tenant_slug: &str) -> Result<VerifyRepor
     }
 
     Ok(VerifyReport {
-        tenant_slug: tenant_slug.to_string(),
-        tenant_id,
         rows_checked,
         breaks,
     })

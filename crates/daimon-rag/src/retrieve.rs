@@ -31,19 +31,17 @@ pub struct RetrievedChunk {
     pub score: f32,
 }
 
-/// Retrieve `top_k` chunks for a `query` against tenant's long-term collection.
+/// Retrieve `top_k` chunks for a `query` against the long-term collection.
 /// Returns hits with content joined in from `memory.document_chunks`.
 pub async fn retrieve(
     pool: &Pool,
     store: &VectorStore,
     embedder: &Embedder,
     sparse: &SparseEmbedder,
-    tenant_id: Uuid,
-    tenant_slug: &str,
     query: &str,
     top_k: u64,
 ) -> Result<Vec<RetrievedChunk>> {
-    let collection = long_term_collection(tenant_slug);
+    let collection = long_term_collection();
     let dense_vec = embedder
         .embed(&[query])?
         .into_iter()
@@ -89,8 +87,8 @@ pub async fn retrieve(
                     dc.chunk_index, dc.content, dc.token_estimate
              FROM memory.document_chunks dc
              JOIN memory.documents d ON d.id = dc.document_id
-             WHERE dc.tenant_id = $1 AND dc.id = ANY($2::BIGINT[])",
-            &[&tenant_id, &chunk_ids_i64],
+             WHERE dc.id = ANY($1::BIGINT[])",
+            &[&chunk_ids_i64],
         )
         .await
         .map_err(|e| Error::Other(format!("chunk join: {e}")))?;
@@ -131,16 +129,11 @@ pub async fn retrieve_with_rerank(
     embedder: &Embedder,
     sparse: &SparseEmbedder,
     reranker: &Reranker,
-    tenant_id: Uuid,
-    tenant_slug: &str,
     query: &str,
     top_k: u64,
     prefetch_k: u64,
 ) -> Result<Vec<RetrievedChunk>> {
-    let candidates = retrieve(
-        pool, store, embedder, sparse, tenant_id, tenant_slug, query, prefetch_k,
-    )
-    .await?;
+    let candidates = retrieve(pool, store, embedder, sparse, query, prefetch_k).await?;
     if candidates.is_empty() {
         return Ok(Vec::new());
     }

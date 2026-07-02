@@ -1,10 +1,10 @@
-//! `daimon-ingest` — operator CLI for ingesting a file into a tenant's long-term memory.
+//! `daimon-ingest` — operator CLI for ingesting a file into long-term memory.
 //!
 //! Usage:
-//!   daimon-ingest --tenant <id> --source <path> [--source-id <id>] [--kind <kind>] [--qdrant <url>]
+//!   daimon-ingest --source <path> [--source-id <id>] [--kind <kind>] [--qdrant <url>]
 //!
 //! Reads the file, chunks via daimon-rag default config, embeds via fastembed (bge-small-en-v1.5
-//! by default — downloads on first run), upserts into `tenant_<id>_long_term` Qdrant collection.
+//! by default — downloads on first run), upserts into the long-term Qdrant collection.
 
 use std::fs;
 use std::path::PathBuf;
@@ -15,13 +15,8 @@ use daimon_memory::VectorStore;
 use daimon_rag::{ChunkConfig, Document, Embedder, SparseEmbedder, ingest_document};
 
 #[derive(Parser, Debug)]
-#[command(name = "daimon-ingest", about = "Ingest a file into a tenant's long-term memory")]
+#[command(name = "daimon-ingest", about = "Ingest a file into long-term memory")]
 struct Args {
-    /// Tenant identifier — controls Qdrant collection scope. Resolved against
-    /// public.tenants (slug column) for the Postgres canonical-content tier.
-    #[arg(long, default_value = "default")]
-    tenant: String,
-
     /// Postgres connection URL. Defaults to $DAIMON_PG_URL or
     /// postgres://$USER@localhost:5432/daimon.
     #[arg(long, env = "DAIMON_PG_URL")]
@@ -83,8 +78,7 @@ async fn main() -> Result<()> {
     };
 
     eprintln!(
-        "tenant={} source={} ({} bytes) kind={} qdrant={}",
-        args.tenant,
+        "source={} ({} bytes) kind={} qdrant={}",
         source_id,
         content.len(),
         args.kind,
@@ -101,18 +95,6 @@ async fn main() -> Result<()> {
     });
     let pool = daimon_db::build_pool(&pg_url).context("pg pool")?;
 
-    eprintln!("resolving tenant `{}`...", args.tenant);
-    let client = pool.get().await.context("pg client")?;
-    let row = client
-        .query_one(
-            "SELECT id FROM public.tenants WHERE slug = $1",
-            &[&args.tenant],
-        )
-        .await
-        .with_context(|| format!("tenant `{}` not found", args.tenant))?;
-    let tenant_uuid: uuid::Uuid = row.get(0);
-    drop(client);
-
     eprintln!("loading dense embedder (first run downloads model, ~33MB)...");
     let embedder = Embedder::new_default().context("embedder init")?;
     eprintln!("dense embedder ready, dim={}", embedder.dim());
@@ -127,22 +109,12 @@ async fn main() -> Result<()> {
     };
 
     eprintln!("ingesting (dense + sparse)...");
-    let stats = ingest_document(
-        &pool,
-        &store,
-        &embedder,
-        &sparse,
-        tenant_uuid,
-        &args.tenant,
-        &doc,
-        &chunk_cfg,
-    )
-    .await
-    .context("ingest")?;
+    let stats = ingest_document(&pool, &store, &embedder, &sparse, &doc, &chunk_cfg)
+        .await
+        .context("ingest")?;
 
     println!(
-        "ok: tenant={} source_id={} document_id={} chunks={} collection={} skipped={}",
-        args.tenant,
+        "ok: source_id={} document_id={} chunks={} collection={} skipped={}",
         stats.source_id,
         stats.document_id,
         stats.chunks,

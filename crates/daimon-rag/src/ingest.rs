@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::sparse::SparseEmbedder;
 
 /// A unit of content to ingest. Caller supplies a stable `source_id` so re-ingesting
-/// the same source overwrites by `(tenant_id, source_id)`.
+/// the same source overwrites by `source_id`.
 #[derive(Debug, Clone)]
 pub struct Document {
     pub source_id: String,
@@ -38,19 +38,15 @@ pub struct IngestStats {
     pub skipped_unchanged: bool,
 }
 
-/// Standard collection naming for a tenant's long-term memory. Qdrant's collection
-/// name is the slug-form tenant id (string); Postgres tenant_id is a UUID.
-pub fn long_term_collection(tenant_slug: &str) -> String {
-    format!("tenant_{}_long_term", tenant_slug)
+/// The single long-term memory collection (single-org). Returns the fixed
+/// Qdrant collection name.
+pub fn long_term_collection() -> String {
+    daimon_memory::COLLECTION.to_string()
 }
 
-/// Stable u64 ID for a chunk: hash of `(tenant_id || ':' || source_id || ':' || chunk_index)`.
-/// Tenant-prefixed so two tenants ingesting under the same source_id never collide
-/// on the Qdrant point id (collection separation also enforces this, defence-in-depth).
-pub fn chunk_point_id(tenant_id: Uuid, source_id: &str, chunk_index: usize) -> u64 {
+/// Stable u64 ID for a chunk: hash of `(source_id || ':' || chunk_index)`.
+pub fn chunk_point_id(source_id: &str, chunk_index: usize) -> u64 {
     let mut h = DefaultHasher::new();
-    tenant_id.hash(&mut h);
-    ':'.hash(&mut h);
     source_id.hash(&mut h);
     ':'.hash(&mut h);
     chunk_index.hash(&mut h);
@@ -76,8 +72,6 @@ pub async fn ingest_document(
     store: &VectorStore,
     embedder: &Embedder,
     sparse: &SparseEmbedder,
-    tenant_id: Uuid,
-    tenant_slug: &str,
     doc: &Document,
     chunk_cfg: &ChunkConfig,
 ) -> Result<IngestStats> {
@@ -93,13 +87,13 @@ pub async fn ingest_document(
     let existing = client
         .query_opt(
             "SELECT id, content_hash FROM memory.documents
-             WHERE tenant_id = $1 AND source_id = $2",
-            &[&tenant_id, &doc.source_id],
+             WHERE source_id = $1",
+            &[&doc.source_id],
         )
         .await
         .map_err(|e| Error::Other(format!("documents lookup: {e}")))?;
 
-    let collection = long_term_collection(tenant_slug);
+    let collection = long_term_collection();
 
     if let Some(ref row) = existing {
         let existing_hash: Vec<u8> = row.get(1);
@@ -124,7 +118,7 @@ pub async fn ingest_document(
     let chunks: Vec<Chunk> = chunk(&doc.content, chunk_cfg);
     if chunks.is_empty() {
         // Empty doc — still record a header, no chunks.
-        let doc_id = upsert_document(&mut client, tenant_id, doc, &content_hash).await?;
+        let doc_id = upsert_document(&mut client, doc, &content_hash).await?;
         return Ok(IngestStats {
             source_id: doc.source_id.clone(),
             document_id: doc_id,
@@ -140,7 +134,7 @@ pub async fn ingest_document(
         .await
         .map_err(|e| Error::Other(format!("begin txn: {e}")))?;
 
-    let doc_id = upsert_document_txn(&txn, tenant_id, doc, &content_hash).await?;
+    let doc_id = upsert_document_txn(&txn, doc, &content_hash).await?;
     txn.execute(
         "DELETE FROM memory.document_chunks WHERE document_id = $1",
         &[&doc_id],
@@ -149,18 +143,17 @@ pub async fn ingest_document(
     .map_err(|e| Error::Other(format!("delete old chunks: {e}")))?;
 
     for c in &chunks {
-        let point_id = chunk_point_id(tenant_id, &doc.source_id, c.index);
+        let point_id = chunk_point_id(&doc.source_id, c.index);
         // Cast u64 → i64 (Postgres BIGINT). Upper bit becomes sign — that's fine,
         // equality is preserved.
         let point_id_i64 = point_id as i64;
         txn.execute(
             "INSERT INTO memory.document_chunks
-                (id, document_id, tenant_id, chunk_index, content, word_start, word_end, token_estimate)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                (id, document_id, chunk_index, content, word_start, word_end, token_estimate)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
             &[
                 &point_id_i64,
                 &doc_id,
-                &tenant_id,
                 &(c.index as i32),
                 &c.text,
                 &(c.word_start as i32),
@@ -189,9 +182,8 @@ pub async fn ingest_document(
         .zip(dense_vectors.into_iter())
         .zip(sparse_vectors.into_iter())
         .map(|((c, d), s)| {
-            let id = chunk_point_id(tenant_id, &doc.source_id, c.index);
+            let id = chunk_point_id(&doc.source_id, c.index);
             let payload = json!({
-                "tenant_id": tenant_id.to_string(),
                 "document_id": doc_id.to_string(),
                 "source_id": doc.source_id,
                 "source_kind": doc.source_kind,
@@ -223,8 +215,6 @@ pub async fn ingest_document(
 pub async fn delete_document(
     pool: &Pool,
     store: &VectorStore,
-    tenant_id: Uuid,
-    tenant_slug: &str,
     source_id: &str,
 ) -> Result<usize> {
     let client = pool.get().await.map_err(|e| Error::Other(format!("pg pool: {e}")))?;
@@ -233,8 +223,8 @@ pub async fn delete_document(
         .query(
             "SELECT dc.id FROM memory.document_chunks dc
              JOIN memory.documents d ON d.id = dc.document_id
-             WHERE d.tenant_id = $1 AND d.source_id = $2",
-            &[&tenant_id, &source_id],
+             WHERE d.source_id = $1",
+            &[&source_id],
         )
         .await
         .map_err(|e| {
@@ -255,8 +245,8 @@ pub async fn delete_document(
     // Postgres delete cascades to chunks via FK.
     client
         .execute(
-            "DELETE FROM memory.documents WHERE tenant_id = $1 AND source_id = $2",
-            &[&tenant_id, &source_id],
+            "DELETE FROM memory.documents WHERE source_id = $1",
+            &[&source_id],
         )
         .await
         .map_err(|e| Error::Other(format!("delete document: {e}")))?;
@@ -264,7 +254,7 @@ pub async fn delete_document(
     // Qdrant — best effort. Errors logged but not propagated; the source of truth
     // is Postgres, so a leaked Qdrant point is auditable and harmless (no canonical text).
     if !chunk_ids.is_empty() {
-        let collection = long_term_collection(tenant_slug);
+        let collection = long_term_collection();
         if let Err(e) = store.delete_points(&collection, &chunk_ids).await {
             tracing::warn!(
                 target: "rag.delete",
@@ -280,20 +270,19 @@ pub async fn delete_document(
 
 async fn upsert_document(
     client: &mut deadpool_postgres::Client,
-    tenant_id: Uuid,
     doc: &Document,
     content_hash: &[u8],
 ) -> Result<Uuid> {
     let row = client
         .query_one(
-            "INSERT INTO memory.documents (tenant_id, source_id, source_kind, content_hash)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (tenant_id, source_id) DO UPDATE
+            "INSERT INTO memory.documents (source_id, source_kind, content_hash)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (source_id) DO UPDATE
                 SET source_kind = EXCLUDED.source_kind,
                     content_hash = EXCLUDED.content_hash,
                     updated_at = now()
              RETURNING id",
-            &[&tenant_id, &doc.source_id, &doc.source_kind, &content_hash],
+            &[&doc.source_id, &doc.source_kind, &content_hash],
         )
         .await
         .map_err(|e| Error::Other(format!("upsert document: {e}")))?;
@@ -302,20 +291,19 @@ async fn upsert_document(
 
 async fn upsert_document_txn(
     txn: &deadpool_postgres::Transaction<'_>,
-    tenant_id: Uuid,
     doc: &Document,
     content_hash: &[u8],
 ) -> Result<Uuid> {
     let row = txn
         .query_one(
-            "INSERT INTO memory.documents (tenant_id, source_id, source_kind, content_hash)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (tenant_id, source_id) DO UPDATE
+            "INSERT INTO memory.documents (source_id, source_kind, content_hash)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (source_id) DO UPDATE
                 SET source_kind = EXCLUDED.source_kind,
                     content_hash = EXCLUDED.content_hash,
                     updated_at = now()
              RETURNING id",
-            &[&tenant_id, &doc.source_id, &doc.source_kind, &content_hash],
+            &[&doc.source_id, &doc.source_kind, &content_hash],
         )
         .await
         .map_err(|e| Error::Other(format!("upsert document: {e}")))?;

@@ -2,10 +2,14 @@
 //!
 //! Thin wrapper around `qdrant_client::Qdrant` exposing the subset of operations
 //! daimon needs: ensure a collection exists, upsert points, search nearest neighbours.
-//! Multi-tenant isolation is enforced at the caller level by collection naming
-//! (`tenant_<id>_<purpose>`) and payload filtering.
+//! Single-org: there is one fixed long-term memory collection ([`COLLECTION`]);
+//! callers pass point ids + payloads, no tenant scoping.
 
 use std::collections::HashMap;
+
+/// The single fixed Qdrant collection for daimon's long-term memory.
+/// (Single-org: no per-tenant collection naming.)
+pub const COLLECTION: &str = "daimon_memory_long_term";
 
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
@@ -70,7 +74,7 @@ impl VectorStore {
     }
 
     /// Upsert a batch of points into the collection. Caller's responsibility to choose
-    /// stable IDs and to encode tenant_id in payload + collection name.
+    /// stable IDs.
     pub async fn upsert(&self, collection: &str, points: Vec<Point>) -> Result<()> {
         let qdrant_points: Vec<PointStruct> = points
             .into_iter()

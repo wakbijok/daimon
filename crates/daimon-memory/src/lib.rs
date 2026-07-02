@@ -12,4 +12,4 @@ pub mod error;
 pub mod vector;
 
 pub use error::{Error, Result};
-pub use vector::{Hit, HybridPoint, Point, VectorStore};
+pub use vector::{COLLECTION, Hit, HybridPoint, Point, VectorStore};
