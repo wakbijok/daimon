@@ -1,0 +1,21 @@
+[package]
+name = "daimon-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Driver trait spine (D11 generalized) — the platform-agnostic target-connector seam. Depends ONLY on daimon-core + daimon-broker (D21): a driver structurally cannot resolve a credential, read the vault, or open a transport."
+
+# D21 boundary: this crate MUST NOT depend on daimon-vault, daimon-inventory,
+# or daimon-transport directly. It reaches infrastructure exclusively through
+# daimon-broker (which re-exports Op / OpResult / TargetRef / HttpMethod).
+# A CI grep gate on this manifest enforces the invariant.
+[dependencies]
+daimon-core = { path = "../daimon-core" }
+daimon-broker = { path = "../daimon-broker" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
