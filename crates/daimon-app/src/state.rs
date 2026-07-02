@@ -33,4 +33,11 @@ pub struct AppState {
     /// Used by /admin/approvals to render blast-radius summaries and by
     /// the orchestrator to mirror plan DAGs.
     pub graph: Option<Arc<dyn daimon_graph::GraphClient>>,
+    /// P3 — long-term memory tier. A dmem SIDECAR (dm-lite `dmem serve`)
+    /// reached over bearer-authenticated HTTP behind the `MemoryService`
+    /// trait (LOCKED: musl-static cannot embed zvec's native lib). Chat
+    /// pre-turn recall, chat memory-tool captures, and /admin/memory route
+    /// through this. Falls back to `NullMemory` (degrades, never fails boot)
+    /// when the sidecar is unconfigured or unreachable at boot.
+    pub memory: Arc<dyn daimon_memory::MemoryService>,
 }

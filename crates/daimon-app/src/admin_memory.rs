@@ -1,21 +1,16 @@
-//! Phase 3 #9 — server-fns backing `/admin/memory`.
+//! `/admin/memory` — server-fns backing the memory admin UI.
 //!
-//! Two operations:
-//! - `admin_memory_ingest` — chunk + embed + upsert text into the tenant's long-term collection
-//! - `admin_memory_search` — embed query + vector search + return scored hits
+//! Two operations, both routed through the `MemoryService` trait held in
+//! `AppState` (P3 — long-term memory is the dmem SIDECAR, not an embedded
+//! Qdrant store):
+//! - `admin_memory_ingest` — ingest text into long-term memory.
+//! - `admin_memory_search` — retrieve scored hits for a query.
 //!
-//! Both gated by `require_admin()` (D24). Tenant is currently fixed to `"default"`
-//! since multi-tenant primitives land in Phase 2c.
+//! Both gated by `require_admin()` (D24). Every call still emits a memory-tier
+//! audit event via the broker (`MemoryIngest` / `MemoryRetrieve`).
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "ssr")]
-const DEFAULT_TENANT: &str = "default";
-#[cfg(feature = "ssr")]
-const QDRANT_URL_ENV: &str = "DAIMON_QDRANT_URL";
-#[cfg(feature = "ssr")]
-const QDRANT_URL_DEFAULT: &str = "http://localhost:6334";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngestRequest {
@@ -47,94 +42,26 @@ pub struct SearchHit {
     pub text: String,
 }
 
-#[cfg(feature = "ssr")]
-mod ssr_state {
-    use daimon_memory::VectorStore;
-    use daimon_rag::{Embedder, Reranker, SparseEmbedder};
-    use std::sync::OnceLock;
-    use tokio::sync::OnceCell;
-
-    static EMBEDDER: OnceLock<Embedder> = OnceLock::new();
-    static SPARSE: OnceLock<SparseEmbedder> = OnceLock::new();
-    static RERANKER: OnceLock<Reranker> = OnceLock::new();
-    static STORE: OnceCell<VectorStore> = OnceCell::const_new();
-
-    pub fn embedder() -> Result<&'static Embedder, String> {
-        if let Some(e) = EMBEDDER.get() {
-            return Ok(e);
-        }
-        let e = Embedder::new_default().map_err(|err| format!("embedder init: {}", err))?;
-        let _ = EMBEDDER.set(e);
-        EMBEDDER
-            .get()
-            .ok_or_else(|| "embedder OnceLock empty after set".to_string())
-    }
-
-    pub fn sparse() -> Result<&'static SparseEmbedder, String> {
-        if let Some(s) = SPARSE.get() {
-            return Ok(s);
-        }
-        let s = SparseEmbedder::new_default().map_err(|err| format!("sparse init: {}", err))?;
-        let _ = SPARSE.set(s);
-        SPARSE
-            .get()
-            .ok_or_else(|| "sparse OnceLock empty after set".to_string())
-    }
-
-    pub fn reranker() -> Result<&'static Reranker, String> {
-        if let Some(r) = RERANKER.get() {
-            return Ok(r);
-        }
-        let r = Reranker::new_default().map_err(|err| format!("reranker init: {}", err))?;
-        let _ = RERANKER.set(r);
-        RERANKER
-            .get()
-            .ok_or_else(|| "reranker OnceLock empty after set".to_string())
-    }
-
-    pub async fn store() -> Result<&'static VectorStore, String> {
-        STORE
-            .get_or_try_init(|| async {
-                let url = std::env::var(super::QDRANT_URL_ENV)
-                    .unwrap_or_else(|_| super::QDRANT_URL_DEFAULT.to_string());
-                VectorStore::connect(&url).map_err(|e| format!("qdrant connect: {}", e))
-            })
-            .await
-    }
-}
-
 #[server]
 pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, ServerFnError> {
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
     use daimon_broker::ActionKind;
-    use daimon_rag::{ChunkConfig, Document, ingest_document};
+    use daimon_memory::IngestDoc;
     use std::time::Instant;
 
     let claims = require_admin().await?;
     let state = expect_context::<AppState>();
 
-    let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
-    let sparse = ssr_state::sparse().map_err(ServerFnError::new)?;
-    let store = ssr_state::store().await.map_err(ServerFnError::new)?;
-
-    let doc = Document {
+    let doc = IngestDoc {
         source_id: req.source_id.clone(),
         source_kind: req.source_kind.clone(),
         content: req.content,
     };
 
-    let collection_target = format!("memory://{}/{}", DEFAULT_TENANT, doc.source_id);
+    let target = format!("memory://{}", doc.source_id);
     let start = Instant::now();
-    let result = ingest_document(
-        &state.db,
-        store,
-        embedder,
-        sparse,
-        &doc,
-        &ChunkConfig::default(),
-    )
-    .await;
+    let result = state.memory.ingest(doc).await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let (success, summary, chunks_meta) = match &result {
@@ -147,7 +74,7 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
         .audit_memory_op(
             &claims.sub,
             ActionKind::MemoryIngest,
-            Some(&collection_target),
+            Some(&target),
             Some(&summary),
             latency_ms,
             success,
@@ -155,7 +82,6 @@ pub async fn admin_memory_ingest(req: IngestRequest) -> Result<IngestResult, Ser
                 ("source_id".to_string(), req.source_id.clone()),
                 ("source_kind".to_string(), req.source_kind.clone()),
                 ("chunks".to_string(), chunks_meta),
-                ("tenant".to_string(), DEFAULT_TENANT.to_string()),
             ],
         )
         .await;
@@ -173,27 +99,21 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
     use crate::auth_guard::require_admin;
     use crate::state::AppState;
     use daimon_broker::ActionKind;
-    use daimon_rag::retrieve;
+    use daimon_memory::RetrieveQuery;
     use std::time::Instant;
 
     let claims = require_admin().await?;
     let state = expect_context::<AppState>();
 
-    let embedder = ssr_state::embedder().map_err(ServerFnError::new)?;
-    let sparse = ssr_state::sparse().map_err(ServerFnError::new)?;
-    let store = ssr_state::store().await.map_err(ServerFnError::new)?;
-
-    let target = format!("memory://{}/_search", DEFAULT_TENANT);
+    let target = "memory://_search".to_string();
     let start = Instant::now();
-    let hits_res = retrieve(
-        &state.db,
-        store,
-        embedder,
-        sparse,
-        &req.query,
-        req.top_k as u64,
-    )
-    .await;
+    let hits_res = state
+        .memory
+        .retrieve(&RetrieveQuery {
+            query: req.query.clone(),
+            top_k: req.top_k,
+        })
+        .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let (success, summary, returned_count) = match &hits_res {
@@ -214,21 +134,24 @@ pub async fn admin_memory_search(req: SearchRequest) -> Result<Vec<SearchHit>, S
                 ("query_hash".to_string(), format!("{:x}", hash_query(&req.query))),
                 ("top_k".to_string(), req.top_k.to_string()),
                 ("returned".to_string(), returned_count),
-                ("tenant".to_string(), DEFAULT_TENANT.to_string()),
             ],
         )
         .await;
 
     let hits = hits_res.map_err(|e| ServerFnError::new(format!("retrieve: {}", e)))?;
 
+    // Map RetrievedChunk → SearchHit. The sidecar has no numeric chunk id or
+    // chunk index (records are whole), so `id`/`chunk_index` are 0; `source_id`
+    // + `source_kind` carry the record's namespace + kind, `text` the body, and
+    // `score` the rank-derived synthesized score.
     let out: Vec<SearchHit> = hits
         .into_iter()
         .map(|h| SearchHit {
-            id: h.chunk_id,
+            id: 0,
             score: h.score,
             source_id: h.source_id,
             source_kind: h.source_kind,
-            chunk_index: h.chunk_index as u64,
+            chunk_index: 0,
             text: h.content,
         })
         .collect();

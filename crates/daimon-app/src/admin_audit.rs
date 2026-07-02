@@ -36,6 +36,7 @@ pub enum ActionKindDto {
     GuardDeny,
     MemoryIngest,
     MemoryRetrieve,
+    MemoryWrite,
     Other,
 }
 
@@ -57,11 +58,12 @@ impl ActionKindDto {
             Self::GuardDeny => "guard.deny",
             Self::MemoryIngest => "memory.ingest",
             Self::MemoryRetrieve => "memory.retrieve",
+            Self::MemoryWrite => "memory.write",
             Self::Other => "other",
         }
     }
 
-    pub fn all() -> [Self; 16] {
+    pub fn all() -> [Self; 17] {
         [
             Self::BrokerExecute,
             Self::VaultResolve,
@@ -78,6 +80,7 @@ impl ActionKindDto {
             Self::GuardDeny,
             Self::MemoryIngest,
             Self::MemoryRetrieve,
+            Self::MemoryWrite,
             Self::Other,
         ]
     }
@@ -153,6 +156,7 @@ mod bridge {
                 ActionKind::GuardDeny => Self::GuardDeny,
                 ActionKind::MemoryIngest => Self::MemoryIngest,
                 ActionKind::MemoryRetrieve => Self::MemoryRetrieve,
+                ActionKind::MemoryWrite => Self::MemoryWrite,
                 ActionKind::Other => Self::Other,
             }
         }
@@ -176,6 +180,7 @@ mod bridge {
                 ActionKindDto::GuardDeny => Self::GuardDeny,
                 ActionKindDto::MemoryIngest => Self::MemoryIngest,
                 ActionKindDto::MemoryRetrieve => Self::MemoryRetrieve,
+                ActionKindDto::MemoryWrite => Self::MemoryWrite,
                 ActionKindDto::Other => Self::Other,
             }
         }

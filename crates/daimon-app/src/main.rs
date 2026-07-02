@@ -221,6 +221,38 @@ async fn main() {
         }
     };
 
+    // P3 — long-term memory tier: the dmem SIDECAR client. Resolve the bearer
+    // token from daimon's OWN vault (broker.vault_list_metadata → vault_reveal,
+    // both audited), with a loud env fallback. Build the HTTP client against
+    // DAIMON_DMEM_URL (default http://localhost:7071). On any init failure use
+    // NullMemory — a missing/misconfigured sidecar degrades chat recall + admin
+    // memory, it never fails boot.
+    let memory: Arc<dyn daimon_memory::MemoryService> = {
+        let dmem_url = std::env::var("DAIMON_DMEM_URL")
+            .unwrap_or_else(|_| "http://localhost:7071".to_string());
+        match resolve_dmem_token(&broker).await {
+            Some(token) => match daimon_memory::DmemHttpMemory::new(&dmem_url, token) {
+                Ok(client) => {
+                    log!("memory tier: dmem sidecar client at {}", dmem_url);
+                    Arc::new(client) as Arc<dyn daimon_memory::MemoryService>
+                }
+                Err(e) => {
+                    log!(
+                        "memory tier: dmem client init failed ({e}) — using NullMemory (recall degrades)"
+                    );
+                    Arc::new(daimon_memory::NullMemory)
+                }
+            },
+            None => {
+                log!(
+                    "memory tier: no dmem bearer token resolved (vault entry 'dmem-bearer' \
+                     missing and DAIMON_DMEM_TOKEN unset) — using NullMemory (recall degrades)"
+                );
+                Arc::new(daimon_memory::NullMemory)
+            }
+        }
+    };
+
     // P2 commit 6 — the orchestrator dispatches steps over the SAME bus+registry
     // as the Harness (via a shared `Dispatcher`), NOT the broker directly. This
     // preserves D21 (the orchestrator never imports vault/transport) and routes
@@ -243,6 +275,7 @@ async fn main() {
         working_memory,
         orchestrator,
         graph,
+        memory,
     };
 
     // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
@@ -357,6 +390,66 @@ async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> 
     .context("build_production_broker")?;
 
     Ok(broker)
+}
+
+/// Resolve the dmem sidecar bearer token from daimon's OWN vault.
+///
+/// Preferred path: `broker.vault_list_metadata` (audited) → find the credential
+/// named `dmem-bearer` → `broker.vault_reveal` (audited) → its `ApiToken.token`.
+/// Both broker calls emit audit events, so the token resolution is attributable.
+/// The synthetic actor `"system:boot"` marks these as boot-time reads.
+///
+/// Fallback: the `DAIMON_DMEM_TOKEN` env var, with a loud WARN — an env token is
+/// not audited the way a vault reveal is, so it is a dev/bootstrap convenience,
+/// not the production path.
+///
+/// Returns `None` when neither source yields a token; the caller then uses
+/// `NullMemory` (memory degrades, boot proceeds).
+#[cfg(feature = "ssr")]
+async fn resolve_dmem_token(broker: &std::sync::Arc<daimon_broker::Broker>) -> Option<String> {
+    use daimon_broker::Credential;
+    use leptos::logging::log;
+
+    const ACTOR: &str = "system:boot";
+    const CRED_NAME: &str = "dmem-bearer";
+
+    match broker.vault_list_metadata(ACTOR).await {
+        Ok(metas) => {
+            if let Some(meta) = metas.into_iter().find(|m| m.name == CRED_NAME) {
+                match broker.vault_reveal(ACTOR, meta.id).await {
+                    // `Credential` is ZeroizeOnDrop (implements Drop) so we can't
+                    // move `token` out — match by ref and clone the secret.
+                    Ok(cred) => match &cred {
+                        Credential::ApiToken { token } => return Some(token.clone()),
+                        other => {
+                            log!(
+                                "resolve_dmem_token: vault entry '{CRED_NAME}' is not an ApiToken \
+                                 (kind={:?}) — ignoring; falling back to env",
+                                other.kind()
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        log!("resolve_dmem_token: vault_reveal('{CRED_NAME}') failed ({e}) — falling back to env");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            log!("resolve_dmem_token: vault_list_metadata failed ({e}) — falling back to env");
+        }
+    }
+
+    match std::env::var("DAIMON_DMEM_TOKEN") {
+        Ok(t) if !t.is_empty() => {
+            log!(
+                "resolve_dmem_token: WARNING using DAIMON_DMEM_TOKEN env fallback — the dmem \
+                 bearer should live in daimon's vault as credential '{CRED_NAME}' (audited reveal)"
+            );
+            Some(t)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(feature = "ssr")]

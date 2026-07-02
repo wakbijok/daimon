@@ -43,9 +43,10 @@ daimon-broker = { path = "../daimon-broker", optional = true }
 anyhow = { version = "1", optional = true }
 chrono = { version = "0.4", optional = true }
 
-# Phase 3 #9: memory + RAG for /admin/memory admin UI.
+# Phase 3 #9 / P3: memory tier for /admin/memory admin UI + chat pre-turn
+# recall. Long-term memory is now the dmem sidecar behind MemoryService
+# (daimon-rag + Qdrant retired in P3).
 daimon-memory = { path = "../daimon-memory", optional = true }
-daimon-rag = { path = "../daimon-rag", optional = true }
 
 # Phase 4: LLM + first worker agent for /chat.
 daimon-llm = { path = "../daimon-llm", optional = true }
@@ -93,7 +94,6 @@ ssr = [
     "dep:anyhow",
     "dep:chrono",
     "dep:daimon-memory",
-    "dep:daimon-rag",
     "dep:daimon-llm",
     "dep:daimon-core",
     "dep:daimon-runtime",

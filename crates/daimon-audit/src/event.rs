@@ -39,6 +39,9 @@ pub enum ActionKind {
     MemoryIngest,
     /// Memory tier — long-term retrieval performed (Phase 3).
     MemoryRetrieve,
+    /// Memory tier — a typed record (decision/incident/lesson) captured via a
+    /// chat memory tool or a terminal plan state (P3).
+    MemoryWrite,
     /// Generic — for cases not covered above.
     Other,
 }
@@ -61,6 +64,7 @@ impl ActionKind {
             ActionKind::GuardDeny => "guard.deny",
             ActionKind::MemoryIngest => "memory.ingest",
             ActionKind::MemoryRetrieve => "memory.retrieve",
+            ActionKind::MemoryWrite => "memory.write",
             ActionKind::Other => "other",
         }
     }
@@ -82,6 +86,7 @@ impl ActionKind {
             "guard.deny" => ActionKind::GuardDeny,
             "memory.ingest" => ActionKind::MemoryIngest,
             "memory.retrieve" => ActionKind::MemoryRetrieve,
+            "memory.write" => ActionKind::MemoryWrite,
             _ => ActionKind::Other,
         }
     }
