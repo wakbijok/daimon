@@ -29,3 +29,5 @@ csnmp = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+# Async HTTP mock server for the RestTransport integration test.
+wiremock = "0.6"

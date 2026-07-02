@@ -78,6 +78,11 @@ pub enum OpResult {
     Snmp { values: BTreeMap<String, SnmpValue> },
     /// SNMP SET acknowledgement.
     SnmpSetAck,
+    /// A driver-parsed typed document (FR-CON-16). Lets `read_state`/`diagnose`
+    /// return a typed `StateDoc`/`Finding` without regexing stdout — a transport
+    /// (or a driver post-processing a raw result) can hand back structure
+    /// directly.
+    Structured { doc: serde_json::Value },
 }
 
 #[derive(Debug, Error)]

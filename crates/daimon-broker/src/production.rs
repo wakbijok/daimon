@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use daimon_audit::{AuditSink, PostgresAuditSink};
 use daimon_inventory::{Inventory, PostgresRegistry};
-use daimon_transport::{SshTransport, Transport};
+use daimon_transport::{RestTransport, SshTransport, Transport};
 use daimon_vault::{MasterKey, PostgresVaultClient};
 use thiserror::Error;
 use tracing::info;
@@ -104,8 +104,13 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
 
     let ssh: Arc<dyn Transport> =
         Arc::new(SshTransport::with_known_hosts_path(cfg.known_hosts_path));
+    // REST transport: rustls, certificate validation ON by default (no
+    // danger_accept_invalid_certs). Three of the four reference target classes
+    // (Proxmox / K8s / vCenter) speak pure REST (FR-CON-15).
+    let rest: Arc<dyn Transport> = Arc::new(RestTransport::new());
     let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
     transports.insert(TransportKind::Ssh, ssh);
+    transports.insert(TransportKind::Rest, rest);
 
     // Phase 5 — assemble Guard.
     let kill_switch = daimon_guard::KillSwitch::new(cfg.kill_path.clone());

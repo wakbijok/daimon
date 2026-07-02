@@ -16,6 +16,8 @@
 #[cfg(feature = "for-broker")]
 pub mod op;
 #[cfg(feature = "for-broker")]
+pub mod rest;
+#[cfg(feature = "for-broker")]
 pub mod ssh;
 #[cfg(feature = "for-broker")]
 pub mod stub;
@@ -25,6 +27,8 @@ pub mod transport;
 #[cfg(feature = "for-broker")]
 pub use op::{HttpMethod, Op, OpResult, SnmpValue, TransportError};
 #[cfg(feature = "for-broker")]
+pub use rest::RestTransport;
+#[cfg(feature = "for-broker")]
 pub use ssh::{HostKeyPolicy, SshTransport};
 #[cfg(feature = "for-broker")]
 pub use stub::{StubTransport, StubTransportRecord};
@@ -33,6 +37,8 @@ pub use transport::{Transport, TransportTarget};
 
 #[cfg(all(test, not(feature = "for-broker")))]
 mod op;
+#[cfg(all(test, not(feature = "for-broker")))]
+mod rest;
 #[cfg(all(test, not(feature = "for-broker")))]
 mod ssh;
 #[cfg(all(test, not(feature = "for-broker")))]
