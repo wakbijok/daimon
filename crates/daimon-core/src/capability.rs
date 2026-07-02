@@ -64,8 +64,8 @@ impl Capability {
     fn name_is_read(name: &str) -> bool {
         const READ_MARKERS: &[&str] = &[
             "_info", "_list", "list_", ".list", "_addresses", "ip_addresses",
-            "_status", ".read", "_read", "read_state", "describe", "diagnose",
-            ".get", "_get", "_show", "_print",
+            "_status", ".status", ".read", "_read", "read_state", "describe",
+            "diagnose", ".get", "_get", "_show", "_print",
         ];
         READ_MARKERS.iter().any(|m| name.contains(m))
     }
@@ -135,6 +135,32 @@ mod tests {
         // non-read name is still treated as a write.
         let sneaky = Capability::read_only("network.routeros.reboot", v);
         assert!(!sneaky.is_read(), "reboot has no read verb -> treated as write");
+    }
+
+    #[test]
+    fn dotted_connector_read_verbs_classify_as_read() {
+        // P2 connector profiles use dotted verbs (e.g. `orchestrator.k8s.pod.status`).
+        // `.status` is a read verb; the deploy write verbs are not.
+        let v = Version::new(1, 0, 0);
+        assert!(
+            Capability::read_only("orchestrator.k8s.pod.status", v.clone()).is_read(),
+            "pod.status must classify as a read"
+        );
+        // Writes with a dotted non-read verb stay writes (fail-closed).
+        let restart = Capability {
+            name: "orchestrator.k8s.deploy.restart".into(),
+            version: v.clone(),
+            description: None,
+            schema: None,
+            compensating: Some(CompensatingCapability {
+                name: "orchestrator.k8s.deploy.rollback".into(),
+                version_req: None,
+            }),
+            irreversible: false,
+        };
+        assert!(!restart.is_read(), "deploy.restart is a write");
+        let rollback = Capability::read_only("orchestrator.k8s.deploy.rollback", v);
+        assert!(!rollback.is_read(), "deploy.rollback has no read verb -> write");
     }
 
     #[test]

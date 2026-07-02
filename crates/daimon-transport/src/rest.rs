@@ -1,6 +1,6 @@
 //! Real REST/HTTP transport via `reqwest` (D7, FR-CON-15).
 //!
-//! Three of the four reference target classes (Proxmox / Kubernetes / vCenter)
+//! Three of the four reference target classes (Kubernetes / vCenter / cloud APIs)
 //! speak pure REST and are dead until this transport exists. It follows the
 //! exact pattern `SshTransport` set: `execute` matches on `Op::Http`, returns
 //! `TransportError::OpMismatch` for non-HTTP ops (mirroring `ssh.rs`), reads the
@@ -366,16 +366,16 @@ mod tests {
     #[tokio::test]
     async fn bare_path_composes_https_url() {
         let target = TransportTarget {
-            host: "pve.lan".into(),
+            host: "api.example".into(),
             port: 8006,
         };
         assert_eq!(
             RestTransport::full_url(&target, "/api2/json/version"),
-            "https://pve.lan:8006/api2/json/version"
+            "https://api.example:8006/api2/json/version"
         );
         assert_eq!(
             RestTransport::full_url(&target, "api2/json/version"),
-            "https://pve.lan:8006/api2/json/version"
+            "https://api.example:8006/api2/json/version"
         );
         assert_eq!(
             RestTransport::full_url(&target, "http://other.host/x"),

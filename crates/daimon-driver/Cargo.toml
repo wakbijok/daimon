@@ -16,6 +16,27 @@ daimon-broker = { path = "../daimon-broker" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-semver = "1"
+semver = { version = "1", features = ["serde"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
+# Declarative connector profiles (ConnectorDriver). `toml` is a leaf parser —
+# NOT a transport/vault/inventory crate, so D21 is preserved.
+toml = "0.8"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+# Test-only wiring for the ConnectorDriver REST reachability + write-approval +
+# second-driver-routing tests. D21 (workers cannot import vault/inventory/
+# transport) applies to PRODUCTION deps only — tests are exempt (never linked
+# into the driver binary).
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+daimon-inventory = { path = "../daimon-inventory", features = ["for-broker"] }
+daimon-transport = { path = "../daimon-transport", features = ["for-broker"] }
+daimon-vault = { path = "../daimon-vault", features = ["for-broker"] }
+daimon-guard = { path = "../daimon-guard" }
+daimon-db = { path = "../daimon-db" }
+daimon-runtime = { path = "../daimon-runtime" }
+daimon-driver-firewall-routeros = { path = "../daimon-driver-firewall-routeros" }
+tempfile = "3"

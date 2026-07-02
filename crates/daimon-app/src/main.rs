@@ -102,8 +102,63 @@ async fn main() {
         eprintln!("daimon-app: failed to spawn RouterOS driver: {e:#}");
         std::process::exit(1);
     }
+
+    // P2 commit 9 — the generic declarative ConnectorDriver (the SECOND driver).
+    // Load `.toml` connector profiles from $DAIMON_CONNECTORS_DIR (default
+    // deploy/connectors). Its capabilities register on the same bus + registry,
+    // appear in the chat/planner catalogs, and are dispatchable by capability
+    // exactly like the RouterOS driver — but over REST. If the dir is
+    // absent/empty, skip gracefully (log).
+    let connectors_dir = std::path::PathBuf::from(
+        std::env::var("DAIMON_CONNECTORS_DIR").unwrap_or_else(|_| "deploy/connectors".to_string()),
+    );
+    match daimon_driver::ConnectorDriver::from_dir(
+        daimon_core::AgentId::new("agent:connector"),
+        broker.clone(),
+        &connectors_dir,
+        "agent:connector",
+    ) {
+        Ok(Some(connector_driver)) => {
+            let cap_count = connector_driver.capabilities().len();
+            let connector_driver = Arc::new(connector_driver);
+            if let Err(e) = supervisor
+                .spawn(connector_driver as Arc<dyn daimon_core::Agent>)
+                .await
+            {
+                eprintln!("daimon-app: failed to spawn ConnectorDriver: {e:#}");
+                std::process::exit(1);
+            }
+            log!(
+                "connector driver spawned from {} — {} capabilities registered",
+                connectors_dir.display(),
+                cap_count
+            );
+        }
+        Ok(None) => {
+            log!(
+                "no connector profiles at {} — skipping ConnectorDriver",
+                connectors_dir.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("daimon-app: failed to load connector profiles from {}: {e:#}", connectors_dir.display());
+            std::process::exit(1);
+        }
+    }
+
     let harness = daimon_app::harness::Harness::new(bus, registry, supervisor);
-    log!("harness ready — RouterOS driver spawned under supervision");
+    log!("harness ready — drivers spawned under supervision");
+
+    // P2 commit 8 — the REAL boot policy-coherence gate. Runs AFTER every driver
+    // is spawned (registry populated), over the LIVE capability set: no write
+    // capability may resolve to Allow under the shipped policy, and no
+    // compensator may dangle. This is what the P1 hardcoded KNOWN_WRITE_CAPS
+    // loop became once there was an actual fleet to lint.
+    if let Err(e) = broker.lint_write_capabilities(&harness.capabilities().await) {
+        eprintln!("daimon-app: boot policy-coherence check failed: {e}");
+        std::process::exit(1);
+    }
+    log!("boot policy-coherence check passed — every write is deny/require_approval, no dangling compensators");
     // Phase 4 D4 — working memory tier. Redis when reachable; in-process
     // fallback otherwise. Set DAIMON_REDIS_URL=disabled to force in-process.
     let working_memory: Arc<dyn daimon_redis::WorkingMemory> = match std::env::var("DAIMON_REDIS_URL") {

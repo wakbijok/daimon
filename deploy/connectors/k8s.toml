@@ -1,0 +1,82 @@
+# daimon connector profile — Kubernetes (k3s) over the REST API.
+#
+# This is a DECLARATIVE connector: the generic `ConnectorDriver` interprets this
+# file at boot, projects each [[capability]] into a versioned Capability (which
+# registers on the bus + appears in the chat/planner catalogs), and dispatches
+# each call through the SAME Broker.execute path as the code drivers — so the
+# guard/vault/audit chain is inherited, and every `{param}` slot passes through
+# param::validate BEFORE it is substituted into the request (the injection
+# chokepoint). The driver NEVER touches vault/transport directly.
+#
+# Auth: the k8s API is reached with a ServiceAccount bearer token. That is a
+# `Credential::ApiToken` in the vault, injected as `Authorization: Bearer <tok>`
+# by RestTransport — the profile supplies only the path template + method, never
+# the host or credential (those come from inventory, resolved by target_ref).
+#
+# Class `orchestrator` + transport `rest` — routed by capability, so
+# `orchestrator.k8s.*` lands on THIS driver over REST while `network.routeros.*`
+# lands on the RouterOS driver over SSH (AC-P2-10: by-capability routing across
+# transports).
+
+name = "kubernetes"
+class = "orchestrator"
+transport = "rest"
+
+# --- READ: pod status -----------------------------------------------------
+# GET the live status of a pod. Reads bypass policy via the server-derived
+# read-only bit (the `.status` name carries a read verb), so no approval.
+[[capability]]
+name = "orchestrator.k8s.pod.status"
+version = "1.0.0"
+description = "Read the current status of a pod (GET the pod object)."
+read_only = true
+parse = "json"
+
+[capability.params]
+namespace = "identifier"
+name = "identifier"
+
+[capability.op]
+method = "GET"
+path = "/api/v1/namespaces/{namespace}/pods/{name}"
+
+# --- WRITE: rolling restart a deployment ----------------------------------
+# PATCH the deployment's pod template annotation to trigger a rolling restart
+# (the `kubectl rollout restart` mechanism). Compensated by deploy.rollback.
+# This is a WRITE — approval-gated by the `orchestrator.k8s.*` policy rule.
+[[capability]]
+name = "orchestrator.k8s.deploy.restart"
+version = "1.0.0"
+description = "Trigger a rolling restart of a deployment by bumping the restartedAt annotation."
+compensating = "orchestrator.k8s.deploy.rollback"
+irreversible = false
+
+[capability.params]
+namespace = "identifier"
+name = "identifier"
+
+[capability.op]
+method = "PATCH"
+path = "/apis/apps/v1/namespaces/{namespace}/deployments/{name}"
+# Strategic-merge patch that sets the restart annotation. The annotation VALUE
+# is a fixed marker (a declarative profile cannot compute `now()`); the presence
+# of the restartedAt key is what k8s uses to roll the pods.
+body = { spec = { template = { metadata = { annotations = { "kubectl.kubernetes.io/restartedAt" = "daimon-restart-{name}" } } } } }
+
+# --- WRITE: rollback (the compensator) ------------------------------------
+# The inverse used by saga rollback — PATCH the deployment to clear/flip the
+# restart annotation back. Approval-gated, no further compensator.
+[[capability]]
+name = "orchestrator.k8s.deploy.rollback"
+version = "1.0.0"
+description = "Roll a deployment back by clearing the daimon restart annotation."
+irreversible = false
+
+[capability.params]
+namespace = "identifier"
+name = "identifier"
+
+[capability.op]
+method = "PATCH"
+path = "/apis/apps/v1/namespaces/{namespace}/deployments/{name}"
+body = { spec = { template = { metadata = { annotations = { "kubectl.kubernetes.io/restartedAt" = "daimon-rollback-{name}" } } } } }

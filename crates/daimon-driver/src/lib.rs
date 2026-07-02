@@ -6,7 +6,7 @@
 //! `TransportKind` (`Ssh | Rest | Snmp | Grpc`) says *how* to reach a target;
 //! [`TargetClass`] says *what* the target is, so the LLM/orchestrator can pick
 //! verbs. The two axes are orthogonal: a `Firewall` may be `Ssh` (RouterOS) or
-//! `Rest` (FortiGate); `Compute` may be `Rest` (Proxmox, vCenter).
+//! `Rest` (FortiGate); `Compute` may be `Rest` (vCenter, k8s).
 //!
 //! Every driver implements [`Driver`]'s four class-uniform verbs
 //! (`describe`/`read_state`/`diagnose`/`remediate`). The verbs give the
@@ -33,10 +33,12 @@
 //! supplies the read-only flag itself (that is derived server-side from the
 //! registered `Capability`, closing the H6/H7 bypass).
 
+pub mod connector;
 pub mod error;
 pub mod param;
 pub mod types;
 
+pub use connector::{ConnectorDriver, ConnectorError, ConnectorProfile};
 pub use error::{DriverError, DriverResult};
 pub use param::{validate, ParamClass, ParamError};
 pub use types::{Finding, Receipt, Severity, StateDoc, TargetShape};
@@ -50,7 +52,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetClass {
-    /// Hypervisors / VM hosts: PVE, vCenter.
+    /// Hypervisors / VM hosts: vCenter, cloud VMs (via REST connectors).
     Compute,
     /// Routers, switches, APs (L2/L3 device config).
     Network,
@@ -177,7 +179,7 @@ mod parse_class_tests {
 
     #[test]
     fn compute_storage_orchestrator_map_straight() {
-        assert_eq!(parse_class("compute.pve.vm.start"), TargetClass::Compute);
+        assert_eq!(parse_class("compute.example.vm.start"), TargetClass::Compute);
         assert_eq!(parse_class("storage.ceph.pool.list"), TargetClass::Storage);
         assert_eq!(
             parse_class("orchestrator.k8s.deployment.patch_limits"),

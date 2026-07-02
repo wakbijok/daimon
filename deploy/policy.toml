@@ -50,6 +50,16 @@ capability = "platform.workload.*"
 decision = "require_approval"
 description = "VM / workload lifecycle changes need approval."
 
+# Kubernetes (k3s) orchestrator writes — the declarative ConnectorDriver
+# (deploy/connectors/k8s.toml). Deploy restart/rollback are approval-gated; the
+# read (pod.status) bypasses policy via the server-derived read-only bit. This
+# rule is what keeps the boot linter (Broker::lint_write_capabilities) green:
+# every orchestrator.k8s.* WRITE resolves to require_approval, never Allow.
+[[rule]]
+capability = "orchestrator.k8s.*"
+decision = "require_approval"
+description = "Kubernetes deployment lifecycle changes need operator approval."
+
 # Memory ingest/retrieve — allowed via admin UI; no approval prompt.
 [[rule]]
 capability = "memory.*"
