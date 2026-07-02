@@ -12,7 +12,7 @@
 //! Built on `rustls` (`reqwest` with `default-features = false`,
 //! `features = ["rustls-tls","json"]`). Certificate validation is ON by default
 //! and there is deliberately NO `danger_accept_invalid_certs` path — the
-//! deleted `daimon-pve` crate's SSRF/`danger_accept_invalid_certs` surface is
+//! removed PVE-client crate's SSRF/`danger_accept_invalid_certs` surface is
 //! exactly what this transport must not re-introduce.
 //!
 //! # Scheme
