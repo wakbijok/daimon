@@ -12,19 +12,14 @@
 //! - `DAIMON_PG_URL` (defaults to `postgres://wakbijak@localhost:5432/daimon`)
 //! - `DAIMON_GRAPH_URL` (defaults to `bolt://localhost:7687`)
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use daimon_broker::Broker;
 use daimon_db::Pool;
 use daimon_graph::{
     ensure_schema, BlastRadiusEntry, GraphClient, NornicGraphClient, TargetRef as GraphTargetRef,
 };
-use daimon_broker::TransportKind;
-use daimon_inventory::InMemoryRegistry;
 use daimon_orchestrator::{OrchestratorService, StepDef};
-use daimon_transport::StubTransport;
-use daimon_vault::StubVaultClient;
+use daimon_runtime::{CapabilityRegistry, Dispatcher, InProcBus};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -48,14 +43,11 @@ async fn pool() -> Pool {
         .expect("pool")
 }
 
-fn stub_broker() -> Arc<Broker> {
-    let inv = Arc::new(InMemoryRegistry::new());
-    let vault = Arc::new(StubVaultClient::new());
-    let ssh: Arc<dyn daimon_transport::Transport> = Arc::new(StubTransport::new("ssh"));
-    let mut transports: HashMap<TransportKind, Arc<dyn daimon_transport::Transport>> =
-        HashMap::new();
-    transports.insert(TransportKind::Ssh, ssh);
-    Arc::new(Broker::new(inv, vault, transports))
+/// This test only exercises `create_plan` (persistence + graph mirror), never
+/// `run_plan`/`dispatch_step`, so a bare `Dispatcher` over an empty in-proc bus
+/// suffices — no driver is spawned and no capability is dispatched.
+fn stub_dispatcher() -> Dispatcher {
+    Dispatcher::new(InProcBus::new(), CapabilityRegistry::new())
 }
 
 async fn graph_client() -> Arc<dyn GraphClient> {
@@ -71,10 +63,10 @@ async fn graph_client() -> Arc<dyn GraphClient> {
 async fn orchestrator_mirrors_plan_to_graph_and_blast_radius_finds_capability() {
     // Setup the same way main.rs does.
     let pool = pool().await;
-    let broker = stub_broker();
+    let dispatcher = stub_dispatcher();
     let graph = graph_client().await;
 
-    let service = OrchestratorService::new(pool.clone(), broker).with_graph(graph.clone());
+    let service = OrchestratorService::new(pool.clone(), dispatcher).with_graph(graph.clone());
 
     // A 2-step plan referencing a unique target so we don't collide with
     // prior test runs.

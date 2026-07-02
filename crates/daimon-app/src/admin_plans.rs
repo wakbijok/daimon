@@ -159,7 +159,7 @@ pub async fn plan_from_intent(intent: String) -> Result<String, ServerFnError> {
     let state = expect_context::<AppState>();
     let llm = AnthropicClient::from_env()
         .map_err(|e| ServerFnError::new(format!("llm init: {e}")))?;
-    let catalog = capability_catalog();
+    let catalog = capability_catalog(&state).await;
     let plan = state
         .orchestrator
         .plan_from_intent(Some(claims.user_id), &intent, &catalog, &llm)
@@ -168,21 +168,37 @@ pub async fn plan_from_intent(intent: String) -> Result<String, ServerFnError> {
     Ok(plan.id.to_string())
 }
 
+/// Project the planner catalog from the LIVE capability registry (AC-P2-03).
+/// Each registered driver capability is listed with its name/version/typed
+/// params — matching the flipped plan-step contract (typed params, not a raw
+/// command). Adding a new driver/connector makes it plannable with no edit here.
 #[cfg(feature = "ssr")]
-fn capability_catalog() -> String {
-    // Phase 6 D2 hardcoded catalog; Phase 6.1 reads from broker registry.
-    r#"
-network.routeros.system_info v1.0.0 — RouterOS device identity.
-  command: `/system identity print`
-network.routeros.interface_list v1.0.0 — List all interfaces.
-  command: `/interface print`
-network.routeros.ip_addresses v1.0.0 — List configured IPs.
-  command: `/ip address print`
-network.routeros.firewall_filter_list v1.0.0 — List firewall filter rules.
-  command: `/ip firewall filter print`
-
-Available targets (target_ref):
-  target://mikrotik-edge (or any registered RouterOS target)
-"#
-    .to_string()
+async fn capability_catalog(state: &crate::state::AppState) -> String {
+    let mut caps = state.harness.capabilities().await;
+    caps.sort_by(|a, b| a.name.cmp(&b.name).then(b.version.cmp(&a.version)));
+    let mut out = String::from(
+        "Capabilities (use capability_name EXACTLY; put the TYPED params under `params`):\n",
+    );
+    for c in caps {
+        out.push_str(&format!(
+            "- {} v{} — {}\n",
+            c.name,
+            c.version,
+            c.description.as_deref().unwrap_or("(no description)")
+        ));
+        match c
+            .schema
+            .as_ref()
+            .and_then(|s| s.get("properties"))
+            .and_then(|p| p.as_object())
+        {
+            Some(props) if !props.is_empty() => {
+                let names: Vec<&str> = props.keys().map(String::as_str).collect();
+                out.push_str(&format!("  params: {}\n", names.join(", ")));
+            }
+            _ => out.push_str("  params: target_ref only (read capability)\n"),
+        }
+    }
+    out.push_str("\nAvailable targets: any registered target_ref (e.g. target://mikrotik-edge).\n");
+    out
 }

@@ -1213,7 +1213,6 @@ dependencies = [
  "daimon-rag",
  "daimon-redis",
  "daimon-runtime",
- "daimon-tool-network",
  "futures",
  "futures-util",
  "gloo-timers",
@@ -1518,14 +1517,16 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "daimon-broker",
+ "daimon-core",
  "daimon-db",
  "daimon-graph",
  "daimon-inventory",
  "daimon-llm",
+ "daimon-runtime",
  "daimon-transport",
  "daimon-vault",
  "deadpool-postgres",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1590,24 +1591,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "daimon-tool-network"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "daimon-broker",
- "daimon-core",
- "daimon-inventory",
- "daimon-transport",
- "daimon-vault",
- "semver",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]

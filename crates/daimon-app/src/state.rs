@@ -14,15 +14,11 @@ pub struct AppState {
     /// (vault + inventory + transport + audit). Constructed once at boot
     /// in `main.rs::boot_broker()` and shared across all request handlers.
     pub broker: Arc<daimon_broker::Broker>,
-    /// Phase 4 D2 — first worker agent. Owned here so the chat handler
-    /// (Phase 4 D3) can dispatch tool calls without spinning up a fresh
-    /// agent per request.
-    pub network_agent: Arc<daimon_tool_network::NetworkAgent>,
     /// P2 — the multi-agent harness (bus + capability registry + supervisor).
     /// Chat + orchestrator dispatch capability calls over the bus through this,
     /// resolving the provider via the registry (versioned, fail-closed). The
-    /// first production consumer of daimon-runtime. `network_agent` above is the
-    /// pre-P2 direct path, removed in P2 commit 5.
+    /// first production consumer of daimon-runtime. Replaced the pre-P2 direct
+    /// `network_agent` path in P2 commit 5.
     pub harness: crate::harness::Harness,
     /// Phase 4 D4 — hot working memory tier (Redis in prod; in-proc fallback
     /// when Redis is unavailable). Used by the chat handler for session

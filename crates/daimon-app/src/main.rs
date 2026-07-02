@@ -82,14 +82,6 @@ async fn main() {
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
 
-    // Phase 4 D2 — first worker agent. Held in AppState so the chat
-    // handler can dispatch tool calls without recreating per request.
-    let network_agent = Arc::new(daimon_tool_network::NetworkAgent::new(
-        daimon_core::AgentId::new("network"),
-        broker.clone(),
-        "agent:network",
-    ));
-
     // P2 — the multi-agent harness. Construct the in-process bus + capability
     // registry + supervisor (the FIRST production consumers of daimon-runtime),
     // spawn the RouterOS reference driver under supervision (which registers its
@@ -174,9 +166,13 @@ async fn main() {
         }
     };
 
+    // P2 commit 6 — the orchestrator dispatches steps over the SAME bus+registry
+    // as the Harness (via a shared `Dispatcher`), NOT the broker directly. This
+    // preserves D21 (the orchestrator never imports vault/transport) and routes
+    // plan writes through the identical driver → broker → Guard path as chat.
     let orchestrator_service = daimon_orchestrator::OrchestratorService::new(
         pool.clone(),
-        broker.clone(),
+        harness.dispatcher().clone(),
     );
     let orchestrator = Arc::new(match graph.clone() {
         Some(g) => orchestrator_service.with_graph(g),
@@ -188,7 +184,6 @@ async fn main() {
         jwt_secret,
         ws_broadcast: ws_tx,
         broker,
-        network_agent,
         harness,
         working_memory,
         orchestrator,

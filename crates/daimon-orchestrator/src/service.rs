@@ -1,16 +1,17 @@
 //! OrchestratorService — owns the Postgres pool + broker handle, dispatches
 //! step executions, persists state transitions.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::Utc;
-use daimon_broker::{Broker, ExecRequest, Op, TargetRef};
+use daimon_core::AgentId;
 use daimon_db::Pool;
 use daimon_graph::{
     GraphClient, GraphPlan, GraphPlanStep, TargetRef as GraphTargetRef,
 };
 use daimon_llm::{ChatMessage, CompletionRequest, LlmClient};
+use daimon_runtime::Dispatcher;
+use semver::VersionReq;
 use serde_json::{Value as Json, json};
 use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
@@ -18,32 +19,45 @@ use uuid::Uuid;
 use crate::error::{Error, Result};
 use crate::plan::{Plan, PlanStatus, Step, StepDef, StepStatus};
 
+/// Per-step bus dispatch budget. Longer than chat's 35s: a plan step may block
+/// inside the worker's `broker.execute → Guard → ApprovalQueue::wait_for_decision`
+/// while an operator decides.
+const STEP_DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 const PLANNER_SYSTEM_PROMPT: &str = "\
 You are dAImon's plan-emitter. Given an operator intent and the capability \
 catalog, return a JSON object with shape:
 {
   \"steps\": [
     {
-      \"capability_name\": \"network.routeros.system_info\",
+      \"capability_name\": \"network.routeros.firewall_add_drop_rule\",
       \"capability_version\": \"1.0.0\",
       \"target_ref\": \"target://mikrotik-edge\",
-      \"params\": {\"command\": \"/system identity print\"},
+      \"params\": {\"dst_address\": \"185.60.216.0/24\", \"comment\": \"block\"},
       \"depends_on_index\": []
     }
   ]
 }
 
-Return JSON only, no prose. Use capability_name from the catalog exactly. \
-For RouterOS read capabilities, fill `params.command` with the matching CLI \
-string. (Do NOT emit is_read_only — the platform derives read/write \
-disposition from the capability itself.) Step `depends_on_index` is a list of \
-0-based indices of earlier steps that must complete before this one runs. \
-Use the minimum number of steps that satisfies the intent.";
+Return JSON only, no prose. Use capability_name from the catalog EXACTLY. \
+Put the capability's TYPED parameters (as named in its input schema) under \
+`params` — the driver renders the device command from them; do NOT emit a raw \
+CLI string or a `params.command` field. Read capabilities take only \
+`target_ref` and no params. (Do NOT emit is_read_only — the platform derives \
+read/write disposition from the capability itself.) Step `depends_on_index` is \
+a list of 0-based indices of earlier steps that must complete before this one \
+runs. Use the minimum number of steps that satisfies the intent.";
 
 #[derive(Clone)]
 pub struct OrchestratorService {
     pool: Pool,
-    broker: Arc<Broker>,
+    /// P2 commit 6: dispatch runs over the bus, not the broker directly. The
+    /// dispatcher is built from the SAME bus+registry as the app's Harness
+    /// (passed in from daimon-app main.rs), so a plan-initiated write resolves
+    /// the same driver, hits the same Guard gate, and lands the same audit
+    /// event as a chat-initiated write. The orchestrator keeps only the pool
+    /// for plan persistence — it never touches vault/transport (D21).
+    dispatcher: Dispatcher,
     /// Phase 8 graph tier (NornicDB). Postgres is the canonical store for
     /// plans; the graph holds the same plan + capability + target edges
     /// for cross-reference queries (blast-radius, lineage). Mirror writes
@@ -53,8 +67,8 @@ pub struct OrchestratorService {
 }
 
 impl OrchestratorService {
-    pub fn new(pool: Pool, broker: Arc<Broker>) -> Self {
-        Self { pool, broker, graph: None }
+    pub fn new(pool: Pool, dispatcher: Dispatcher) -> Self {
+        Self { pool, dispatcher, graph: None }
     }
 
     /// Attach a graph client for plan-DAG mirroring. See struct comment.
@@ -307,16 +321,10 @@ impl OrchestratorService {
             self.finish_plan(plan_id, PlanStatus::Succeeded).await?;
             return Ok(PlanStatus::Succeeded);
         }
-        let total = steps.len();
-        let mut by_id: HashMap<Uuid, usize> = steps
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.id, i))
-            .collect();
-        let _ = total;
-        let _ = by_id.len();
-
         let mut done: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        // Succeeded steps in the order they ran — the reverse-walk order for
+        // the saga compensation pass (P2 commit 7).
+        let mut succeeded_order: Vec<usize> = Vec::new();
         let mut failed = false;
 
         loop {
@@ -347,6 +355,7 @@ impl OrchestratorService {
                     steps[idx].status = StepStatus::Succeeded;
                     steps[idx].result = Some(result);
                     done.insert(step.id);
+                    succeeded_order.push(idx);
                 }
                 Err(e) => {
                     error!(error = %e, step_id = %step.id, "step failed");
@@ -360,57 +369,108 @@ impl OrchestratorService {
             }
         }
 
+        // P2 commit 7 — saga rollback. On fail-stop, walk the SUCCEEDED steps in
+        // REVERSE and compensate each one that declares a compensating
+        // capability. Read-only / irreversible / uncompensated steps are
+        // skipped and left visible for manual remediation. Compensating
+        // dispatches go through the SAME bus → driver → broker → Guard path (a
+        // compensating write is still gated).
+        if failed {
+            for &idx in succeeded_order.iter().rev() {
+                let step = steps[idx].clone();
+                match self.compensate_step(&step, actor_id).await {
+                    Ok(true) => {
+                        steps[idx].status = StepStatus::Compensated;
+                    }
+                    Ok(false) => { /* no compensator — leave Succeeded */ }
+                    Err(e) => {
+                        // A failed compensation is logged but does not abort the
+                        // pass — the operator sees the un-compensated step and
+                        // remediates manually.
+                        error!(error = %e, step_id = %step.id, "compensation failed");
+                    }
+                }
+            }
+        }
+
         let final_status = if failed { PlanStatus::Failed } else { PlanStatus::Succeeded };
         self.finish_plan(plan_id, final_status).await?;
         Ok(final_status)
     }
 
+    /// Compensate a single succeeded step (P2 commit 7).
+    ///
+    /// Looks up the step's `Capability` in the registry (via the dispatcher's
+    /// registry — the SAME registry the forward dispatch resolves against) to
+    /// read its `compensating` reference. Returns:
+    /// - `Ok(false)` if the capability has no compensator (read-only /
+    ///   irreversible) — nothing to do, the step is left as-is.
+    /// - `Ok(true)` after the compensator has been dispatched over the bus and
+    ///   the step marked `Compensated`.
+    ///
+    /// The compensating dispatch uses the `VersionReq` from
+    /// `CompensatingCapability.version_req` (or `*` if `None`, per D18: pick the
+    /// highest available), with params derived from the stored step result /
+    /// Receipt. It runs through the same Guard gate as any write.
+    async fn compensate_step(&self, step: &Step, actor_id: &str) -> Result<bool> {
+        let _ = actor_id;
+        // The dispatch + registry-resolution is pool-free (unit-testable with a
+        // fake driver over an in-proc bus, see tests/saga.rs); only the
+        // Compensated persistence needs the pool.
+        match dispatch_compensator(&self.dispatcher, step).await? {
+            Some(reply) => {
+                self.set_step_status(step.id, StepStatus::Compensated, Some(reply), false)
+                    .await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Dispatch one plan step over the bus (P2 commit 6).
+    ///
+    /// The step names a `capability_name` + `capability_version` + typed
+    /// `params`; there is NO raw-command path. `capability_version` is parsed
+    /// into a `VersionReq` and resolution FAILS CLOSED on a bad/unsatisfiable
+    /// string (FR-HAR-09) — no fallback to a version-incompatible agent, no
+    /// fallback to a direct broker call. The body is `NetworkRequest`-shaped
+    /// (capability + target_ref + typed params); the driver renders the device
+    /// command from the params and dispatches through `broker.execute` (Guard
+    /// gate, audit) — the same path a chat write takes. The reply is a
+    /// serialized `NetworkResponse` returned verbatim as the step result.
     async fn dispatch_step(&self, step: &Step, actor_id: &str) -> Result<Json> {
-        // Phase 6 D1 strictly dispatches Op::ShellCommand for steps with
-        // `params.command`. Other Op kinds (Http, Snmp*) ship as the
-        // capability tier expands; the dispatch path is identical — just
-        // construct a different Op.
-        let target_ref_str = step
+        let version_req: VersionReq = step.capability_version.parse().map_err(|e| {
+            Error::Dispatch(format!(
+                "bad capability_version `{}` for step {}: {e}",
+                step.capability_version, step.id
+            ))
+        })?;
+        let target_ref = step
             .target_ref
             .clone()
             .ok_or_else(|| Error::Dispatch(format!("step {} has no target_ref", step.id)))?;
-        let target = TargetRef::parse(&target_ref_str)
-            .map_err(|e| Error::Dispatch(format!("parse target_ref: {e}")))?;
 
-        let op = if let Some(cmd) = step.params.get("command").and_then(|v| v.as_str()) {
-            Op::ShellCommand {
-                command: cmd.to_string(),
-                timeout_secs: step
-                    .params
-                    .get("timeout_secs")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30) as u32,
-            }
-        } else {
-            return Err(Error::Dispatch(
-                "step params must contain a `command` field for Phase 6 D1".into(),
-            ));
-        };
+        let body = capability_body(&step.capability_name, &target_ref, &step.params);
 
-        let req = ExecRequest::new(
-            format!("orchestrator:{}:{}", step.plan_id, step.id),
-            target,
-            op,
-        )
-        // The read-only disposition is derived server-side by the broker from
-        // the registered capability (H6/H7) — the LLM-emitted `is_read_only`
-        // is IGNORED. Without a CapabilityRegistry (P2), the orchestrator
-        // attaches only the name, so the broker treats the step as a write and
-        // routes it through policy + approval (fail-closed).
-        .with_capability(&step.capability_name, false);
-        let _ = actor_id; // Phase 6 D1 ties actor to the orchestrator id above.
+        // FR-HAR-17: the audit/broker actor is the orchestrator step identity.
+        // The originating operator is recorded on the plan row (created_by);
+        // `actor_id` is threaded for the enqueue path but the bus `from` carries
+        // the step-scoped id so audit shows which plan/step drove the write.
+        let _ = actor_id;
+        let from = AgentId::new(format!("orchestrator:{}:{}", step.plan_id, step.id));
 
-        let result = self
-            .broker
-            .execute(req)
+        let reply = self
+            .dispatcher
+            .dispatch(
+                from,
+                &step.capability_name,
+                &version_req,
+                body,
+                STEP_DISPATCH_TIMEOUT,
+            )
             .await
-            .map_err(|e| Error::Dispatch(format!("{e}")))?;
-        Ok(serde_json::to_value(&result).unwrap_or_else(|_| json!({})))
+            .map_err(|e| Error::Dispatch(e.to_string()))?;
+        Ok(reply)
     }
 
     async fn set_step_status(
@@ -462,6 +522,110 @@ impl OrchestratorService {
     }
 }
 
+/// Resolve a step's compensator from the registry and dispatch it over the bus
+/// (P2 commit 7). Pool-free so it is unit-testable with a fake driver over an
+/// in-proc bus (the caller persists `Compensated`).
+///
+/// Returns:
+/// - `Ok(None)` if the step's capability has no compensator (read-only /
+///   irreversible / unregistered) — nothing dispatched.
+/// - `Ok(Some(reply))` after the compensator has been dispatched and its
+///   `NetworkResponse`-shaped reply returned (to store as the step result).
+///
+/// The compensating `VersionReq` comes from `CompensatingCapability.version_req`
+/// (or `*` if `None`, D18: pick the highest available). Params are derived from
+/// the original step params + stored Receipt via [`compensation_params`]. The
+/// dispatch runs through the SAME bus → driver → broker → Guard path as any
+/// write, so a compensating write is still gated.
+async fn dispatch_compensator(dispatcher: &Dispatcher, step: &Step) -> Result<Option<Json>> {
+    let Some(comp) = compensator_for(dispatcher, &step.capability_name).await else {
+        return Ok(None);
+    };
+    let comp_req: VersionReq = match comp.version_req.as_deref() {
+        Some(s) => s
+            .parse()
+            .map_err(|e| Error::Dispatch(format!("bad compensating version_req `{s}`: {e}")))?,
+        None => "*".parse().expect("`*` is a valid VersionReq"),
+    };
+    let target_ref = step
+        .target_ref
+        .clone()
+        .ok_or_else(|| Error::Dispatch(format!("step {} has no target_ref", step.id)))?;
+
+    let params = compensation_params(&step.params, step.result.as_ref());
+    let body = capability_body(&comp.name, &target_ref, &params);
+
+    let from = AgentId::new(format!("orchestrator:{}:{}:compensate", step.plan_id, step.id));
+    let reply = dispatcher
+        .dispatch(from, &comp.name, &comp_req, body, STEP_DISPATCH_TIMEOUT)
+        .await
+        .map_err(|e| Error::Dispatch(e.to_string()))?;
+    info!(step_id = %step.id, compensator = %comp.name, "step compensated");
+    Ok(Some(reply))
+}
+
+/// Resolve the compensating reference for a capability from the registry.
+/// `None` if the capability is unregistered or declares no compensator. Matches
+/// on name only (any version) — the compensator is a property of the capability
+/// contract, not a specific version pin.
+async fn compensator_for(
+    dispatcher: &Dispatcher,
+    capability_name: &str,
+) -> Option<daimon_core::CompensatingCapability> {
+    let any: VersionReq = "*".parse().ok()?;
+    let entry = dispatcher
+        .registry()
+        .require_by_capability(capability_name, &any)
+        .await
+        .ok()?;
+    entry
+        .capabilities
+        .into_iter()
+        .find(|c| c.name == capability_name)
+        .and_then(|c| c.compensating)
+}
+
+/// Build the `NetworkRequest`-shaped dispatch body for a capability call
+/// (P2 commit 6). Shape: `{capability, target_ref, timeout_secs?, params}` —
+/// the wire contract the driver's bus adapter decodes. Built as raw JSON (not
+/// via the driver's `NetworkRequest` type) so the orchestrator stays
+/// driver-agnostic and does not depend on any specific driver crate (D21).
+fn capability_body(capability: &str, target_ref: &str, params: &Json) -> Json {
+    let timeout_secs = params
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30);
+    json!({
+        "capability": capability,
+        "target_ref": target_ref,
+        "timeout_secs": timeout_secs,
+        "params": params,
+    })
+}
+
+/// Derive the parameters for a compensating dispatch from the ORIGINAL step
+/// params + the stored success result (Receipt) (SDS §4.9.1).
+///
+/// Default: the compensator is keyed on the original params (idempotent inverse
+/// on the same inputs). Special case for the RouterOS firewall pair
+/// (`firewall_add_drop_rule` → `firewall_remove_rule`): the `comment` used on
+/// add is the natural selector for remove, so it is projected onto `match` when
+/// the original params carry a `comment` and no explicit `match` (SDS §4.9.1
+/// worked example). The `_result` receipt is accepted for future use (e.g. a
+/// row id emitted by the write); today the comment→match projection needs only
+/// the original params.
+fn compensation_params(original: &Json, _result: Option<&Json>) -> Json {
+    let mut params = original.clone();
+    if let Some(obj) = params.as_object_mut() {
+        if !obj.contains_key("match") {
+            if let Some(comment) = obj.get("comment").and_then(|v| v.as_str()) {
+                obj.insert("match".to_string(), Json::String(comment.to_string()));
+            }
+        }
+    }
+    params
+}
+
 fn row_to_plan(row: tokio_postgres::Row) -> Plan {
     let status_str: String = row.get(3);
     Plan {
@@ -494,5 +658,201 @@ fn row_to_step(row: tokio_postgres::Row) -> Step {
         result: row.get(11),
         started_at: row.get(12),
         finished_at: row.get(13),
+    }
+}
+
+#[cfg(test)]
+mod saga_tests {
+    //! Saga compensation unit tests (P2 commit 7).
+    //!
+    //! `run_plan` itself needs a live Postgres pool (covered by the `#[ignore]`
+    //! graph_mirror integration test), but the compensation MECHANISM — resolve
+    //! the compensator from the registry, dispatch it over the bus, get the
+    //! reply — is pool-free (`dispatch_compensator`). These tests exercise it
+    //! with a fake driver agent over a real in-proc `Dispatcher`, modelling the
+    //! run_plan scenario: step 1 (a write with a compensator) succeeded, step 2
+    //! failed → step 1's compensator is dispatched to the driver.
+
+    use super::*;
+    use async_trait::async_trait;
+    use daimon_core::{
+        Agent, AgentContext, AgentEnvelope, Capability, CompensatingCapability, CoreError,
+    };
+    use daimon_runtime::{CapabilityRegistry, InProcBus, Supervisor};
+    use semver::Version;
+    use std::sync::{Arc, Mutex};
+
+    /// A fake firewall driver: advertises a write cap (`test.fw.add`) whose
+    /// compensator is `test.fw.remove`, plus the compensator cap itself. Records
+    /// every capability it is asked to run (via the bus body) and replies with a
+    /// `NetworkResponse`-shaped success so the caller's decode path is exercised.
+    struct FakeFirewallDriver {
+        id: AgentId,
+        caps: Vec<Capability>,
+        seen: Arc<Mutex<Vec<(String, Json)>>>,
+    }
+
+    impl FakeFirewallDriver {
+        fn new(seen: Arc<Mutex<Vec<(String, Json)>>>) -> Self {
+            let add = Capability {
+                name: "test.fw.add".into(),
+                version: Version::new(1, 0, 0),
+                description: Some("add drop rule".into()),
+                schema: None,
+                compensating: Some(CompensatingCapability {
+                    name: "test.fw.remove".into(),
+                    version_req: None, // → dispatched with "*"
+                }),
+                irreversible: false,
+            };
+            let remove = Capability {
+                name: "test.fw.remove".into(),
+                version: Version::new(1, 0, 0),
+                description: Some("remove rule".into()),
+                schema: None,
+                compensating: None,
+                irreversible: true,
+            };
+            Self {
+                id: AgentId::new("fake-fw"),
+                caps: vec![add, remove],
+                seen,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Agent for FakeFirewallDriver {
+        fn id(&self) -> &AgentId {
+            &self.id
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &self.caps
+        }
+        async fn handle(
+            &self,
+            env: AgentEnvelope,
+            ctx: AgentContext,
+        ) -> std::result::Result<(), CoreError> {
+            let cap = env
+                .body
+                .get("capability")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let params = env.body.get("params").cloned().unwrap_or(Json::Null);
+            self.seen.lock().unwrap().push((cap.clone(), params));
+            // NetworkResponse-shaped success reply.
+            let reply_body = json!({
+                "success": true,
+                "output": {
+                    "command": format!("ran {cap}"),
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_status": 0
+                },
+                "error": null
+            });
+            let reply = AgentEnvelope::reply_to(&env, self.id.clone(), reply_body);
+            ctx.bus.send(reply).await
+        }
+    }
+
+    async fn dispatcher_with_fake_fw(
+        seen: Arc<Mutex<Vec<(String, Json)>>>,
+    ) -> (Dispatcher, Arc<Supervisor>) {
+        let bus = InProcBus::new();
+        let registry = CapabilityRegistry::new();
+        let supervisor = Arc::new(Supervisor::new(bus.clone(), registry.clone()));
+        supervisor
+            .spawn(Arc::new(FakeFirewallDriver::new(seen)) as Arc<dyn Agent>)
+            .await
+            .expect("spawn fake fw");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        (Dispatcher::new(bus, registry), supervisor)
+    }
+
+    fn succeeded_write_step() -> Step {
+        // Models step 1 after it succeeded: a `test.fw.add` write with a
+        // `comment` (which compensation_params projects onto `match` for the
+        // remove compensator), and a stored NetworkResponse-shaped receipt.
+        Step {
+            id: Uuid::new_v4(),
+            plan_id: Uuid::new_v4(),
+            step_index: 0,
+            capability_name: "test.fw.add".into(),
+            capability_version: "1.0.0".into(),
+            target_ref: Some("target://edge".into()),
+            credential_ref: None,
+            params: json!({ "dst_address": "10.0.0.0/24", "comment": "saga-marker" }),
+            depends_on: vec![],
+            compensating_step_id: None,
+            status: StepStatus::Succeeded,
+            result: Some(json!({ "success": true })),
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn compensator_is_dispatched_for_succeeded_write() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (dispatcher, _sup) = dispatcher_with_fake_fw(seen.clone()).await;
+
+        let step = succeeded_write_step();
+        let out = dispatch_compensator(&dispatcher, &step)
+            .await
+            .expect("dispatch ok");
+
+        // A reply came back (the step gets marked Compensated in run_plan).
+        assert!(out.is_some(), "compensator must have been dispatched");
+        assert_eq!(out.unwrap()["success"], true);
+
+        // The driver was asked to run the COMPENSATOR (`test.fw.remove`), with
+        // `match` projected from the original `comment`.
+        let calls = seen.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "exactly one compensating dispatch");
+        assert_eq!(calls[0].0, "test.fw.remove");
+        assert_eq!(calls[0].1["match"], "saga-marker");
+    }
+
+    #[tokio::test]
+    async fn read_only_step_has_no_compensator_and_is_skipped() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (dispatcher, _sup) = dispatcher_with_fake_fw(seen.clone()).await;
+
+        // `test.fw.remove` declares no compensator (irreversible) → skip.
+        let mut step = succeeded_write_step();
+        step.capability_name = "test.fw.remove".into();
+        let out = dispatch_compensator(&dispatcher, &step)
+            .await
+            .expect("dispatch ok");
+        assert!(out.is_none(), "no compensator → nothing dispatched");
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn compensation_params_projects_comment_onto_match() {
+        let original = json!({ "dst_address": "10.0.0.0/24", "comment": "blk" });
+        let p = compensation_params(&original, None);
+        assert_eq!(p["match"], "blk");
+        // Original keys preserved.
+        assert_eq!(p["dst_address"], "10.0.0.0/24");
+    }
+
+    #[test]
+    fn compensation_params_keeps_explicit_match() {
+        let original = json!({ "match": "rule-7", "comment": "ignored" });
+        let p = compensation_params(&original, None);
+        assert_eq!(p["match"], "rule-7");
+    }
+
+    #[test]
+    fn capability_body_has_network_request_shape() {
+        let body = capability_body("test.fw.add", "target://edge", &json!({ "a": 1 }));
+        assert_eq!(body["capability"], "test.fw.add");
+        assert_eq!(body["target_ref"], "target://edge");
+        assert_eq!(body["timeout_secs"], 30);
+        assert_eq!(body["params"]["a"], 1);
     }
 }

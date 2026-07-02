@@ -8,17 +8,23 @@
 //! resolving the provider via the registry and FAILING CLOSED when no agent
 //! satisfies the version requirement (AC-P2-02).
 //!
+//! The dispatch primitive itself now lives in `daimon-runtime` as
+//! [`daimon_runtime::Dispatcher`] (so the orchestrator can share it without
+//! depending on `daimon-app`, D21). `Harness` HOLDS a `Dispatcher` (+ the
+//! supervisor, so the spawned agent tasks stay alive) and delegates
+//! `dispatch`/`capabilities`/`version_req_for` to it. The public API is
+//! unchanged.
+//!
 //! ssr-only: the runtime types are server-side. Held in `AppState`.
 #![cfg(feature = "ssr")]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use daimon_core::{AgentEnvelope, AgentId, BusHandle, Capability, CoreError, Recipient};
-use daimon_runtime::{AgentBus, CapabilityRegistry, InProcBus, Supervisor};
+use daimon_core::{AgentId, Capability, CoreError};
+use daimon_runtime::{CapabilityRegistry, DispatchError, Dispatcher, InProcBus, Supervisor};
 use semver::VersionReq;
 use thiserror::Error;
-use tokio::sync::broadcast;
 
 #[derive(Debug, Error)]
 pub enum HarnessError {
@@ -32,12 +38,23 @@ pub enum HarnessError {
     Core(#[from] CoreError),
 }
 
+impl From<DispatchError> for HarnessError {
+    fn from(e: DispatchError) -> Self {
+        match e {
+            DispatchError::CapabilityNotFound(s) => HarnessError::CapabilityNotFound(s),
+            DispatchError::Timeout(d) => HarnessError::Timeout(d),
+            DispatchError::BusClosed => HarnessError::BusClosed,
+            DispatchError::Core(e) => HarnessError::Core(e),
+        }
+    }
+}
+
 /// The live harness held in `AppState`. Clone-cheap (all handles are `Arc`/
 /// broadcast-backed). Owns the supervisor so the spawned agent tasks stay
 /// alive for the process lifetime.
 #[derive(Clone)]
 pub struct Harness {
-    bus: InProcBus,
+    dispatcher: Dispatcher,
     registry: CapabilityRegistry,
     _supervisor: Arc<Supervisor>,
 }
@@ -45,10 +62,17 @@ pub struct Harness {
 impl Harness {
     pub fn new(bus: InProcBus, registry: CapabilityRegistry, supervisor: Arc<Supervisor>) -> Self {
         Self {
-            bus,
+            dispatcher: Dispatcher::new(bus, registry.clone()),
             registry,
             _supervisor: supervisor,
         }
+    }
+
+    /// The shared dispatch primitive, so callers that already hold the `Harness`
+    /// (and the orchestrator, wired from the same bus+registry) route over one
+    /// bus. See [`daimon_runtime::Dispatcher`].
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
     }
 
     /// Route a capability call over the bus and await its correlated reply.
@@ -67,45 +91,10 @@ impl Harness {
         body: serde_json::Value,
         timeout: Duration,
     ) -> Result<serde_json::Value, HarnessError> {
-        self.registry
-            .require_by_capability(name, version_req)
+        self.dispatcher
+            .dispatch(from, name, version_req, body, timeout)
             .await
-            .map_err(|_| HarnessError::CapabilityNotFound(format!("{name} @ {version_req}")))?;
-
-        let mut rx = self.bus.subscribe_raw();
-        let req = AgentEnvelope::new(
-            from.clone(),
-            Recipient::ByCapability {
-                name: name.to_string(),
-                version_req: version_req.clone(),
-            },
-            body,
-        );
-        let corr = req.correlation_id;
-        self.bus.send(req).await?;
-
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(HarnessError::Timeout(timeout));
-            }
-            match tokio::time::timeout(remaining, rx.recv()).await {
-                Err(_) => return Err(HarnessError::Timeout(timeout)),
-                Ok(Ok(env)) => {
-                    if env.correlation_id == corr {
-                        if let Recipient::Direct(ref id) = env.to {
-                            if *id == from {
-                                return Ok(env.body);
-                            }
-                        }
-                        // else: our own outgoing ByCapability request — skip.
-                    }
-                }
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(broadcast::error::RecvError::Closed)) => return Err(HarnessError::BusClosed),
-            }
-        }
+            .map_err(HarnessError::from)
     }
 
     /// Every capability currently registered (flattened across agents) — the
@@ -138,7 +127,8 @@ impl Harness {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use daimon_core::{Agent, AgentContext};
+    use daimon_core::{Agent, AgentContext, AgentEnvelope};
+    use daimon_runtime::{CapabilityRegistry, InProcBus, Supervisor};
     use semver::Version;
     use serde_json::json;
 

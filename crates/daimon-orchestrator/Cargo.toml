@@ -8,9 +8,15 @@ description = "Plan orchestrator for daimon — persists Plan DAGs, executes ste
 
 [dependencies]
 daimon-db = { path = "../daimon-db" }
-daimon-broker = { path = "../daimon-broker" }
 daimon-llm = { path = "../daimon-llm" }
 daimon-graph = { path = "../daimon-graph" }
+# P2 commit 6: the orchestrator dispatches steps over the bus (NOT the broker
+# directly), so it holds a `daimon_runtime::Dispatcher` built from the same
+# bus+registry as the app's Harness. It depends on daimon-core (AgentId) +
+# daimon-runtime + semver (VersionReq) — NOT on daimon-app (D21).
+daimon-core = { path = "../daimon-core" }
+daimon-runtime = { path = "../daimon-runtime" }
+semver = { version = "1", features = ["serde"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

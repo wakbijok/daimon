@@ -49,7 +49,6 @@ daimon-rag = { path = "../daimon-rag", optional = true }
 
 # Phase 4: LLM + first worker agent for /chat.
 daimon-llm = { path = "../daimon-llm", optional = true }
-daimon-tool-network = { path = "../daimon-tool-network", optional = true }
 daimon-core = { path = "../daimon-core", optional = true }
 # P2: the multi-agent harness (bus/registry/supervisor) + the reference driver.
 daimon-runtime = { path = "../daimon-runtime", optional = true }
@@ -94,7 +93,6 @@ ssr = [
     "dep:daimon-memory",
     "dep:daimon-rag",
     "dep:daimon-llm",
-    "dep:daimon-tool-network",
     "dep:daimon-core",
     "dep:daimon-runtime",
     "dep:daimon-driver-firewall-routeros",

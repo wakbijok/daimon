@@ -5,26 +5,29 @@
 //! 2. Append user message
 //! 3. Stream-completion against the LLM with tool definitions injected
 //! 4. As deltas arrive, emit `AgentTokenDelta` to the WS
-//! 5. If the LLM emits tool_use blocks, dispatch each via `NetworkAgent.run()`,
+//! 5. If the LLM emits tool_use blocks, dispatch each over the harness bus via
+//!    `harness.dispatch()` (capability-routed, versioned, fail-closed),
 //!    append the tool result, and re-prompt — loop until `stop_reason != ToolUse`
 //! 6. Emit `AgentDone` with usage; persist final conversation
 //!
-//! Every LLM call + tool dispatch lands an audit event via the broker.
+//! Every LLM call + tool dispatch lands an audit event via the broker (inside
+//! the worker's `broker.execute`, reached over the bus).
 
 #![cfg(feature = "ssr")]
 
 use axum::extract::ws::{Message, WebSocket};
 use chrono::Utc;
 use daimon_broker::ActionKind;
+use daimon_core::AgentId;
+use daimon_driver_firewall_routeros::{NetworkRequest, NetworkResponse};
 use daimon_llm::{
     AnthropicClient, AssistantContent, ChatMessage, CompletionRequest, ContentDelta, LlmClient,
     Role, StopReason, ToolDefinition,
 };
 use daimon_redis::ConvMessage;
-use daimon_tool_network::NetworkRequest;
 use futures::StreamExt;
 use serde_json::{Value as Json, json};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
 
 use crate::state::AppState;
@@ -36,10 +39,12 @@ network device state via the tools provided. Be terse, technical, and \
 direct. When the operator's intent maps to a tool, call it. If the result \
 is empty, surface that clearly. Never invent device state.";
 
-/// Build the tool catalog from the NetworkAgent's capabilities. Phase 6
-/// will replace this with a broker-registry query.
-fn network_tools() -> Vec<ToolDefinition> {
-    let target_schema = json!({
+/// The default JSON-Schema for a capability that declares none — a single
+/// `target_ref` string. Read capabilities take no typed params, so this is the
+/// right shape for them; a write capability that omits its schema falls back to
+/// this too (its typed params are still validated at the driver chokepoint).
+fn default_target_schema() -> Json {
+    json!({
         "type": "object",
         "properties": {
             "target_ref": {
@@ -48,29 +53,30 @@ fn network_tools() -> Vec<ToolDefinition> {
             }
         },
         "required": ["target_ref"]
-    });
-    vec![
-        ToolDefinition {
-            name: "network.routeros.system_info".into(),
-            description: "Read RouterOS device identity / system info via SSH.".into(),
-            input_schema: target_schema.clone(),
-        },
-        ToolDefinition {
-            name: "network.routeros.interface_list".into(),
-            description: "List all interfaces on a RouterOS device.".into(),
-            input_schema: target_schema.clone(),
-        },
-        ToolDefinition {
-            name: "network.routeros.ip_addresses".into(),
-            description: "List configured IP addresses on a RouterOS device.".into(),
-            input_schema: target_schema.clone(),
-        },
-        ToolDefinition {
-            name: "network.routeros.firewall_filter_list".into(),
-            description: "List firewall filter rules on a RouterOS device.".into(),
-            input_schema: target_schema.clone(),
-        },
-    ]
+    })
+}
+
+/// Project the LLM tool catalog from the live `CapabilityRegistry` (SDS §4.5).
+///
+/// Every capability registered by a spawned driver — reads AND writes — is
+/// surfaced as an Anthropic `ToolDefinition`. Writes are intentionally included:
+/// when the LLM calls one, `harness.dispatch` routes it through the driver →
+/// `broker.execute` → Guard, which gates it behind policy + approval. Adding a
+/// new driver/connector capability makes it visible here with no recompile.
+async fn tool_definitions(state: &AppState) -> Vec<ToolDefinition> {
+    state
+        .harness
+        .capabilities()
+        .await
+        .into_iter()
+        .map(|c| ToolDefinition {
+            name: c.name,
+            description: c
+                .description
+                .unwrap_or_else(|| "Capability provided by a registered driver.".into()),
+            input_schema: c.schema.unwrap_or_else(default_target_schema),
+        })
+        .collect()
 }
 
 /// Entry point — handle a single ChatSend message from the client.
@@ -90,7 +96,6 @@ pub async fn handle_chat_send(
             return;
         }
     };
-    let network_agent = state.network_agent.clone();
     let working = state.working_memory.clone();
 
     // Load (or start) the conversation history from the working memory tier.
@@ -117,7 +122,7 @@ pub async fn handle_chat_send(
         )
         .await;
 
-    let tools = network_tools();
+    let tools = tool_definitions(state).await;
     let mut loop_count = 0;
     let max_loops = 8; // safety cap
 
@@ -278,7 +283,10 @@ pub async fn handle_chat_send(
             break;
         }
 
-        // Dispatch each tool call, append results to history, loop again.
+        // Dispatch each tool call over the harness bus, append results to
+        // history, loop again. The tool name emitted by the LLM IS the
+        // capability name; the version requirement is the caret of the highest
+        // registered version (fail-closed if the cap is unregistered).
         for tc in &completed_tool_calls {
             let target_ref = tc
                 .arguments
@@ -286,30 +294,68 @@ pub async fn handle_chat_send(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let net_req = NetworkRequest {
+            let version_req = state
+                .harness
+                .version_req_for(&tc.name)
+                .await
+                .unwrap_or_else(|| "*".parse().unwrap());
+            let body = match serde_json::to_value(NetworkRequest {
                 capability: tc.name.clone(),
                 target_ref: target_ref.clone(),
                 timeout_secs: Some(30),
                 // Chat-tool invocations pass tool args under params for
                 // write capabilities; read capabilities ignore them.
                 params: Some(tc.arguments.clone()),
-            };
-            // Stamp the real console operator on the broker/audit trail
-            // (AC-P1-07), not the shared agent id.
-            let result = network_agent.run_as(actor_id, net_req).await;
-            let (output, is_error) = match result {
-                Ok(o) => {
-                    let summary = format!(
-                        "exit={} stdout_len={} stderr_len={}\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                        o.exit_status,
-                        o.stdout.len(),
-                        o.stderr.len(),
-                        o.stdout,
-                        o.stderr
-                    );
-                    (summary, o.exit_status != 0)
+            }) {
+                Ok(b) => b,
+                Err(e) => {
+                    error!(error = %e, "encode NetworkRequest");
+                    json!({})
                 }
-                Err(e) => (format!("tool error: {e}"), true),
+            };
+            // Stamp the real console operator as the envelope `from` — the
+            // driver's bus adapter carries it onto ExecRequest.actor_id
+            // (AC-P1-07 / FR-HAR-17), so audit/approval records the real
+            // requester, not a shared agent id.
+            let reply = state
+                .harness
+                .dispatch(
+                    AgentId::new(actor_id),
+                    &tc.name,
+                    &version_req,
+                    body,
+                    Duration::from_secs(35),
+                )
+                .await;
+            // The bus reply is a serialized `NetworkResponse` (success/output/
+            // error), NOT a raw `NetworkOutput`. Decode it and format from its
+            // output/error fields.
+            let (output, is_error) = match reply {
+                Ok(val) => match serde_json::from_value::<NetworkResponse>(val) {
+                    Ok(resp) if resp.success => match resp.output {
+                        Some(o) => {
+                            let summary = format!(
+                                "exit={} stdout_len={} stderr_len={}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                                o.exit_status,
+                                o.stdout.len(),
+                                o.stderr.len(),
+                                o.stdout,
+                                o.stderr
+                            );
+                            (summary, o.exit_status != 0)
+                        }
+                        None => ("tool succeeded with no output".into(), false),
+                    },
+                    Ok(resp) => (
+                        format!(
+                            "tool error: {}",
+                            resp.error.unwrap_or_else(|| "unspecified failure".into())
+                        ),
+                        true,
+                    ),
+                    Err(e) => (format!("tool reply decode error: {e}"), true),
+                },
+                Err(e) => (format!("tool dispatch error: {e}"), true),
             };
             send_ws(
                 socket,
