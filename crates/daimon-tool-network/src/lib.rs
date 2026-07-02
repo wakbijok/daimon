@@ -191,7 +191,7 @@ impl Agent for NetworkAgent {
         };
 
         debug!(capability = %req.capability, target = %req.target_ref, "dispatch");
-        let result = self.invoke(&req).await;
+        let result = self.invoke(self.actor_id.as_str(), &req).await;
         let resp = match result {
             Ok(out) => NetworkResponse::ok(out),
             Err(e) => {
@@ -209,14 +209,14 @@ impl Agent for NetworkAgent {
 }
 
 impl NetworkAgent {
-    async fn invoke(&self, req: &NetworkRequest) -> Result<NetworkOutput, NetworkAgentError> {
+    async fn invoke(&self, actor_id: &str, req: &NetworkRequest) -> Result<NetworkOutput, NetworkAgentError> {
         let command = build_command(&req.capability, req.params.as_ref())?;
         let target = InvTargetRef::parse(&req.target_ref)
             .map_err(|e| NetworkAgentError::BadTarget(format!("{e}")))?;
         let timeout_secs = req.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1);
 
         let exec_req = ExecRequest::new(
-            self.actor_id.clone(),
+            actor_id.to_string(),
             target,
             Op::ShellCommand {
                 command: command.clone(),
@@ -254,8 +254,20 @@ impl NetworkAgent {
 
     /// Surface helper: agents that don't have an incoming envelope (e.g.
     /// orchestrator picking up a tool-use directly) call this synchronously.
+    /// Audits under the agent's own actor id.
     pub async fn run(&self, req: NetworkRequest) -> Result<NetworkOutput, NetworkAgentError> {
-        self.invoke(&req).await
+        self.invoke(self.actor_id.as_str(), &req).await
+    }
+
+    /// Like `run`, but stamps the audit/broker actor as `actor_id` — used by
+    /// the chat surface so operator-initiated tool ops record the real console
+    /// user, not the shared agent id (AC-P1-07).
+    pub async fn run_as(
+        &self,
+        actor_id: &str,
+        req: NetworkRequest,
+    ) -> Result<NetworkOutput, NetworkAgentError> {
+        self.invoke(actor_id, &req).await
     }
 
     pub fn timeout(&self) -> Duration {

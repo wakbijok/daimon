@@ -294,7 +294,9 @@ pub async fn handle_chat_send(
                 // write capabilities; read capabilities ignore them.
                 params: Some(tc.arguments.clone()),
             };
-            let result = network_agent.run(net_req).await;
+            // Stamp the real console operator on the broker/audit trail
+            // (AC-P1-07), not the shared agent id.
+            let result = network_agent.run_as(actor_id, net_req).await;
             let (output, is_error) = match result {
                 Ok(o) => {
                     let summary = format!(

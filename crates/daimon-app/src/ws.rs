@@ -97,12 +97,25 @@ pub enum WsScope {
 pub async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     axum::Extension(state): axum::Extension<crate::state::AppState>,
-) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // C4: authenticate BEFORE upgrading — no anonymous socket ever exists.
+    // The socket reaches the LLM + SSH tool dispatch, so this is a blocker.
+    let Some(claims) = crate::auth_guard::authenticate_headers(&state, &headers).await else {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "authentication required",
+        )
+            .into_response();
+    };
+    let actor = format!("user:{}", claims.sub);
+    ws.on_upgrade(move |socket| handle_ws(socket, state, actor))
+        .into_response()
 }
 
 #[cfg(feature = "ssr")]
-async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState) {
+async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState, actor: String) {
     let mut rx = state.ws_broadcast.subscribe();
     let mut subscriptions: std::collections::HashSet<WsScope> = std::collections::HashSet::new();
 
@@ -129,11 +142,12 @@ async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState) {
                                     let _ = socket.send(Message::Text(pong.into())).await;
                                 }
                                 WsClientMsg::ChatSend { session_id, user_message, model } => {
-                                    let actor = "operator"; // Phase 4.1 plumbs auth claims here
+                                    // Real authenticated operator (C4/AC-P1-07),
+                                    // not the old hardcoded "operator".
                                     crate::chat::handle_chat_send(
                                         &mut socket,
                                         &state,
-                                        actor,
+                                        &actor,
                                         session_id,
                                         user_message,
                                         model,
