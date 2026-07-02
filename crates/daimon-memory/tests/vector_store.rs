@@ -24,6 +24,7 @@ fn rand_suffix() -> String {
 }
 
 #[tokio::test]
+#[ignore = "requires a live Qdrant on localhost:6334 (run: just qdrant-up)"]
 async fn smoke_ensure_upsert_search_drop() {
     let store = VectorStore::connect(QDRANT_URL)
         .expect("connect to qdrant at localhost:6334 — is `just qdrant-up` running?");
@@ -81,6 +82,7 @@ async fn smoke_ensure_upsert_search_drop() {
 }
 
 #[tokio::test]
+#[ignore = "requires a live Qdrant on localhost:6334 (run: just qdrant-up)"]
 async fn ensure_collection_is_idempotent() {
     let store = VectorStore::connect(QDRANT_URL).expect("connect");
     let collection = format!("idempotent_test_{}", rand_suffix());

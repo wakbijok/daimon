@@ -76,20 +76,6 @@ async fn orchestrator_mirrors_plan_to_graph_and_blast_radius_finds_capability() 
 
     let service = OrchestratorService::new(pool.clone(), broker).with_graph(graph.clone());
 
-    // Pick a tenant from the live DB. The default "wak" tenant lands during
-    // the V002 bootstrap migration; fall back to any extant tenant_id.
-    let tenant_id: Uuid = {
-        let client = pool.get().await.expect("pg conn");
-        let row = client
-            .query_one(
-                "SELECT id FROM public.tenants ORDER BY created_at ASC LIMIT 1",
-                &[],
-            )
-            .await
-            .expect("at least one tenant must exist; run `just pg-migrate` first");
-        row.get(0)
-    };
-
     // A 2-step plan referencing a unique target so we don't collide with
     // prior test runs.
     let target_ref = format!("target://orch-graph-{}", Uuid::new_v4());
@@ -116,14 +102,14 @@ async fn orchestrator_mirrors_plan_to_graph_and_blast_radius_finds_capability() 
     ];
 
     let plan = service
-        .create_plan(tenant_id, None, "orchestrator graph mirror smoke test", steps)
+        .create_plan(None, "orchestrator graph mirror smoke test", steps)
         .await
         .expect("create_plan");
 
     // Blast radius from the target should now include the Capability node(s)
     // by name and the Plan id.
     let entries: Vec<BlastRadiusEntry> = graph
-        .blast_radius(tenant_id, &GraphTargetRef::from(target_ref.as_str()), 4)
+        .blast_radius(&GraphTargetRef::from(target_ref.as_str()), 4)
         .await
         .expect("blast_radius");
 

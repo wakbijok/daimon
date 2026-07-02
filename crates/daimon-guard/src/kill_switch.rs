@@ -47,13 +47,16 @@ impl KillState {
     pub fn engage(&self, reason: impl Into<String>) {
         let r = reason.into();
         self.engaged.store(true, Ordering::Release);
-        let _ = self.reason.send(r.clone());
+        // send_replace updates the stored value even when no receivers are
+        // subscribed; plain send() fails (and drops the value) once the
+        // construction-time receiver is gone, which left reason() empty.
+        self.reason.send_replace(r.clone());
         warn!(reason = %r, "KILL switch ENGAGED");
     }
 
     pub fn release(&self) {
         self.engaged.store(false, Ordering::Release);
-        let _ = self.reason.send(String::new());
+        self.reason.send_replace(String::new());
         info!("KILL switch released");
     }
 }

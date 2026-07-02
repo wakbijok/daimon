@@ -21,7 +21,6 @@ use daimon_rag::{
     ChunkConfig, Document, Embedder, PackConfig, Reranker, SparseEmbedder, delete_document,
     ingest_document, long_term_collection, pack_context, retrieve, retrieve_with_rerank,
 };
-use uuid::Uuid;
 
 fn pg_url() -> String {
     std::env::var("DAIMON_PG_URL").unwrap_or_else(|_| {
@@ -34,36 +33,15 @@ fn qdrant_url() -> String {
     std::env::var("DAIMON_QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into())
 }
 
-async fn provision_tenant(pool: &daimon_db::Pool, slug: &str) -> Uuid {
-    let client = pool.get().await.expect("pool");
-    client
-        .execute(
-            "INSERT INTO public.tenants (slug, name, status)
-             VALUES ($1, $2, 'active')
-             ON CONFLICT (slug) DO UPDATE SET status = 'active'",
-            &[&slug, &slug],
-        )
-        .await
-        .expect("seed tenant");
-    let row = client
-        .query_one("SELECT id FROM public.tenants WHERE slug = $1", &[&slug])
-        .await
-        .expect("lookup tenant");
-    row.get(0)
-}
-
-async fn cleanup(pool: &daimon_db::Pool, store: &VectorStore, slug: &str, tenant_id: Uuid) {
+async fn cleanup(pool: &daimon_db::Pool, store: &VectorStore) {
     let client = pool.get().await.expect("pool");
     let _ = client
         .execute(
-            "DELETE FROM memory.documents WHERE tenant_id = $1",
-            &[&tenant_id],
+            "DELETE FROM memory.documents WHERE source_id IN ('doc-a', 'doc-b')",
+            &[],
         )
         .await;
-    let _ = client
-        .execute("DELETE FROM public.tenants WHERE id = $1", &[&tenant_id])
-        .await;
-    let _ = store.drop_collection(&long_term_collection(slug)).await;
+    let _ = store.drop_collection(&long_term_collection()).await;
 }
 
 #[tokio::test]
@@ -74,8 +52,8 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
     let pool = daimon_db::build_pool(&pg_url).expect("pool");
     let store = VectorStore::connect(&qdrant_url()).expect("qdrant");
 
-    let slug = format!("test-p3-{}", Uuid::new_v4().simple());
-    let tenant_id = provision_tenant(&pool, &slug).await;
+    // Start from a clean slate — single fixed collection is shared.
+    cleanup(&pool, &store).await;
 
     let embedder = Embedder::new_default().expect("dense embedder");
     let sparse = SparseEmbedder::new_default().expect("sparse embedder");
@@ -96,21 +74,19 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
     };
 
     let cfg = ChunkConfig::default();
-    let stats_a = ingest_document(&pool, &store, &embedder, &sparse, tenant_id, &slug, &doc_a, &cfg)
+    let stats_a = ingest_document(&pool, &store, &embedder, &sparse, &doc_a, &cfg)
         .await
         .expect("ingest A");
-    let stats_b = ingest_document(&pool, &store, &embedder, &sparse, tenant_id, &slug, &doc_b, &cfg)
+    let stats_b = ingest_document(&pool, &store, &embedder, &sparse, &doc_b, &cfg)
         .await
         .expect("ingest B");
     assert!(!stats_a.skipped_unchanged);
     assert!(!stats_b.skipped_unchanged);
 
     // ---- (1) BM25-strong query should rank doc A above doc B ----
-    let bm25_hits = retrieve(
-        &pool, &store, &embedder, &sparse, tenant_id, &slug, "wakanda forever chant", 5,
-    )
-    .await
-    .expect("retrieve bm25");
+    let bm25_hits = retrieve(&pool, &store, &embedder, &sparse, "wakanda forever chant", 5)
+        .await
+        .expect("retrieve bm25");
     assert!(
         !bm25_hits.is_empty(),
         "expected at least one hit for the lexical query"
@@ -122,7 +98,7 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
 
     // ---- (2) Semantic-strong query should find doc B ----
     let semantic_hits = retrieve(
-        &pool, &store, &embedder, &sparse, tenant_id, &slug,
+        &pool, &store, &embedder, &sparse,
         "Batman patrolling Gotham fighting villains", 5,
     )
     .await
@@ -134,7 +110,7 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
 
     // ---- (3) Rerank changes ordering ----
     let reranked = retrieve_with_rerank(
-        &pool, &store, &embedder, &sparse, &reranker, tenant_id, &slug,
+        &pool, &store, &embedder, &sparse, &reranker,
         "wakanda forever chant", 5, 10,
     )
     .await
@@ -158,16 +134,14 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
     );
 
     // ---- (5) Delete doc-a → no longer retrievable ----
-    let deleted = delete_document(&pool, &store, tenant_id, &slug, "doc-a")
+    let deleted = delete_document(&pool, &store, "doc-a")
         .await
         .expect("delete doc-a");
     assert!(deleted >= 1, "delete should report at least one chunk removed");
 
-    let post_delete = retrieve(
-        &pool, &store, &embedder, &sparse, tenant_id, &slug, "wakanda forever chant", 5,
-    )
-    .await
-    .expect("retrieve post-delete");
+    let post_delete = retrieve(&pool, &store, &embedder, &sparse, "wakanda forever chant", 5)
+        .await
+        .expect("retrieve post-delete");
     assert!(
         post_delete.iter().all(|h| h.source_id != "doc-a"),
         "doc-a must not appear after delete; got {post_delete:?}"
@@ -177,9 +151,8 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
     let client = pool.get().await.expect("pool");
     let cnt: i64 = client
         .query_one(
-            "SELECT COUNT(*) FROM memory.documents
-             WHERE tenant_id = $1 AND source_id = 'doc-a'",
-            &[&tenant_id],
+            "SELECT COUNT(*) FROM memory.documents WHERE source_id = 'doc-a'",
+            &[],
         )
         .await
         .unwrap()
@@ -187,5 +160,5 @@ async fn hybrid_dense_and_sparse_retrieval_plus_delete_plus_pack() {
     assert_eq!(cnt, 0, "memory.documents must have 0 rows for deleted doc-a");
     drop(client);
 
-    cleanup(&pool, &store, &slug, tenant_id).await;
+    cleanup(&pool, &store).await;
 }

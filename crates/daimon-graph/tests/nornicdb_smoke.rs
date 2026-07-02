@@ -34,14 +34,12 @@ async fn persist_plan_and_query_blast_radius() {
     let g = connect().await;
     ensure_schema(&g).await.expect("schema");
 
-    let tenant = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
     let step1 = Uuid::new_v4();
     let step2 = Uuid::new_v4();
 
     let plan = GraphPlan {
         id: plan_id,
-        tenant_id: tenant,
         intent: "smoke test plan".into(),
         created_at: Utc::now(),
         steps: vec![
@@ -67,7 +65,7 @@ async fn persist_plan_and_query_blast_radius() {
     // Blast radius from the target should now include the Plan + PlanSteps +
     // Capabilities reachable from it.
     let entries = g
-        .blast_radius(tenant, &TargetRef("target://mikrotik-edge".into()), 4)
+        .blast_radius(&TargetRef("target://mikrotik-edge".into()), 4)
         .await
         .expect("blast_radius");
     assert!(
@@ -87,22 +85,21 @@ async fn upsert_target_and_dependency() {
     let g = connect().await;
     ensure_schema(&g).await.expect("schema");
 
-    let tenant = Uuid::new_v4();
     let a = TargetRef("target://test-a".into());
     let b = TargetRef("target://test-b".into());
 
-    g.upsert_target(tenant, &a, serde_json::json!({"kind": "vlan", "id": 20}))
+    g.upsert_target(&a, serde_json::json!({"kind": "vlan", "id": 20}))
         .await
         .expect("upsert_target a");
-    g.upsert_target(tenant, &b, serde_json::json!({"kind": "workload", "name": "tikTok"}))
+    g.upsert_target(&b, serde_json::json!({"kind": "workload", "name": "tikTok"}))
         .await
         .expect("upsert_target b");
-    g.declare_dependency(tenant, &b, &a)
+    g.declare_dependency(&b, &a)
         .await
         .expect("declare_dependency b -> a");
 
     // From `a`, blast radius should include `b`.
-    let entries = g.blast_radius(tenant, &a, 2).await.expect("blast_radius");
+    let entries = g.blast_radius(&a, 2).await.expect("blast_radius");
     assert!(
         entries.iter().any(|e| e.label.contains("target://test-b")),
         "expected target://test-b in blast radius of test-a, got {entries:?}"

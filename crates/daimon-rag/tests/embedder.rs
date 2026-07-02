@@ -4,6 +4,7 @@
 use daimon_rag::{Embedder, cosine};
 
 #[test]
+#[ignore = "downloads the fastembed model (~33MB); run explicitly with --ignored"]
 fn embed_and_compare_semantics() {
     let embedder = Embedder::new_default().expect("init default embedder");
     assert_eq!(embedder.dim(), 384, "BGESmallENV15 dim is 384");
