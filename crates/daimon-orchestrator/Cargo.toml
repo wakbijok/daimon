@@ -35,8 +35,17 @@ deadpool-postgres = "0.14"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-daimon-inventory = { path = "../daimon-inventory" }
-daimon-transport = { path = "../daimon-transport" }
-daimon-vault = { path = "../daimon-vault" }
+# The remediation-vertical e2e test (tests/remediation_vertical.rs) assembles the
+# REAL loop: broker + guard + inventory + vault + stub transport + the RouterOS
+# driver on the bus. The internal broker-only crates (inventory/vault/transport)
+# must enable `for-broker` or their public surface is empty (D21 gate). Mirrors
+# the way daimon-broker itself depends on them.
+daimon-broker = { path = "../daimon-broker" }
+daimon-guard = { path = "../daimon-guard" }
+daimon-audit = { path = "../daimon-audit" }
+daimon-driver-firewall-routeros = { path = "../daimon-driver-firewall-routeros" }
+daimon-inventory = { path = "../daimon-inventory", features = ["for-broker"] }
+daimon-transport = { path = "../daimon-transport", features = ["for-broker"] }
+daimon-vault = { path = "../daimon-vault", features = ["for-broker"] }
 deadpool-postgres = "0.14"
 tokio-postgres = "0.7"

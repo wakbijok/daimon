@@ -1218,9 +1218,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "daimon-audit",
+ "daimon-broker",
  "daimon-core",
  "daimon-db",
+ "daimon-driver-firewall-routeros",
  "daimon-graph",
+ "daimon-guard",
  "daimon-inventory",
  "daimon-llm",
  "daimon-memory",
