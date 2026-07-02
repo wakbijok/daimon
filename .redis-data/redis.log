@@ -10,3 +10,11 @@
 11523:M 23 May 2026 17:31:55.876 * Creating AOF incr file appendonly.aof.1.incr.aof on server start
 11523:M 23 May 2026 17:31:55.876 * Ready to accept connections tcp
 11523:M 23 May 2026 17:31:55.876 # WARNING: Redis does not require authentication. Redis will accept connections from any local client.
+11523:signal-handler (1782055446) Received SIGTERM scheduling shutdown...
+11523:M 21 Jun 2026 23:24:06.045 * User requested shutdown...
+11523:M 21 Jun 2026 23:24:06.047 * Calling fsync() on the AOF file.
+11523:M 21 Jun 2026 23:24:06.054 * Saving the final RDB snapshot before exiting.
+11523:M 21 Jun 2026 23:24:06.057 * BGSAVE done, 0 keys saved, 0 keys skipped, 88 bytes written.
+11523:M 21 Jun 2026 23:24:06.062 * DB saved on disk
+11523:M 21 Jun 2026 23:24:06.078 * Removing the pid file.
+11523:M 21 Jun 2026 23:24:06.079 # Redis is now ready to exit, bye bye...
