@@ -67,7 +67,6 @@ impl OrchestratorService {
     #[instrument(skip(self, steps))]
     pub async fn create_plan(
         &self,
-        tenant_id: Uuid,
         created_by: Option<Uuid>,
         intent: &str,
         steps: Vec<StepDef>,
@@ -77,11 +76,11 @@ impl OrchestratorService {
 
         let plan_row = txn
             .query_one(
-                "INSERT INTO public.plans (tenant_id, created_by, intent, status, metadata)
-                 VALUES ($1, $2, $3, 'planning', '{}'::jsonb)
-                 RETURNING id, tenant_id, created_by, intent, status, metadata,
+                "INSERT INTO public.plans (created_by, intent, status, metadata)
+                 VALUES ($1, $2, 'planning', '{}'::jsonb)
+                 RETURNING id, created_by, intent, status, metadata,
                            created_at, updated_at, started_at, finished_at",
-                &[&tenant_id, &created_by, &intent],
+                &[&created_by, &intent],
             )
             .await?;
         let plan = row_to_plan(plan_row);
@@ -142,7 +141,6 @@ impl OrchestratorService {
                 .collect();
             let graph_plan = GraphPlan {
                 id: plan.id,
-                tenant_id: plan.tenant_id,
                 intent: plan.intent.clone(),
                 created_at: plan.created_at,
                 steps: graph_steps,
@@ -164,7 +162,6 @@ impl OrchestratorService {
     #[instrument(skip(self, llm, catalog))]
     pub async fn plan_from_intent(
         &self,
-        tenant_id: Uuid,
         created_by: Option<Uuid>,
         intent: &str,
         catalog: &str,
@@ -236,22 +233,21 @@ impl OrchestratorService {
             })
             .collect();
 
-        let plan = self.create_plan(tenant_id, created_by, intent, steps).await?;
+        let plan = self.create_plan(created_by, intent, steps).await?;
         info!(plan_id = %plan.id, "LLM-emitted plan persisted");
         Ok(plan)
     }
 
-    pub async fn list_plans(&self, tenant_id: Uuid, limit: i64) -> Result<Vec<Plan>> {
+    pub async fn list_plans(&self, limit: i64) -> Result<Vec<Plan>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT id, tenant_id, created_by, intent, status, metadata,
+                "SELECT id, created_by, intent, status, metadata,
                         created_at, updated_at, started_at, finished_at
                  FROM public.plans
-                 WHERE tenant_id = $1
                  ORDER BY created_at DESC
-                 LIMIT $2",
-                &[&tenant_id, &limit],
+                 LIMIT $1",
+                &[&limit],
             )
             .await?;
         Ok(rows.into_iter().map(row_to_plan).collect())
@@ -261,7 +257,7 @@ impl OrchestratorService {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
-                "SELECT id, tenant_id, created_by, intent, status, metadata,
+                "SELECT id, created_by, intent, status, metadata,
                         created_at, updated_at, started_at, finished_at
                  FROM public.plans WHERE id = $1",
                 &[&id],
@@ -467,18 +463,17 @@ impl OrchestratorService {
 }
 
 fn row_to_plan(row: tokio_postgres::Row) -> Plan {
-    let status_str: String = row.get(4);
+    let status_str: String = row.get(3);
     Plan {
         id: row.get(0),
-        tenant_id: row.get(1),
-        created_by: row.get(2),
-        intent: row.get(3),
+        created_by: row.get(1),
+        intent: row.get(2),
         status: PlanStatus::from_str(&status_str),
-        metadata: row.get(5),
-        created_at: row.get(6),
-        updated_at: row.get(7),
-        started_at: row.get(8),
-        finished_at: row.get(9),
+        metadata: row.get(4),
+        created_at: row.get(5),
+        updated_at: row.get(6),
+        started_at: row.get(7),
+        finished_at: row.get(8),
     }
 }
 

@@ -7,16 +7,14 @@ use std::time::Duration;
 use chrono::Utc;
 use daimon_db::Pool;
 use tracing::{error, info, instrument, warn};
-use uuid::Uuid;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::prometheus::PrometheusClient;
 use crate::queries::NamedQueryLibrary;
-use crate::sink::{MetricPoint, MetricSink, PostgresMetricSink};
+use crate::sink::{MetricPoint, MetricSink};
 
 #[derive(Debug, Clone)]
 pub struct ObserverIngestConfig {
-    pub tenant_id: Uuid,
     pub prom_url: String,
     pub interval: Duration,
 }
@@ -24,7 +22,6 @@ pub struct ObserverIngestConfig {
 impl Default for ObserverIngestConfig {
     fn default() -> Self {
         Self {
-            tenant_id: Uuid::nil(),
             prom_url: "http://localhost:9090".into(),
             interval: Duration::from_secs(30),
         }
@@ -42,11 +39,11 @@ pub struct ObserverIngest {
 impl ObserverIngest {
     pub fn new(
         cfg: ObserverIngestConfig,
+        sink: Arc<dyn MetricSink>,
         pool: Pool,
         library: NamedQueryLibrary,
     ) -> Result<Self> {
         let prom = PrometheusClient::new(&cfg.prom_url)?;
-        let sink = Arc::new(PostgresMetricSink::new(pool.clone()));
         Ok(Self {
             cfg,
             prom,
@@ -62,7 +59,6 @@ impl ObserverIngest {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.cfg.interval);
             info!(
-                tenant = %self.cfg.tenant_id,
                 prom = %self.cfg.prom_url,
                 queries = self.library.queries.len(),
                 "observer ingest spawned"
@@ -108,7 +104,7 @@ impl ObserverIngest {
                 for t in &q.thresholds {
                     if t.breaches(s.value) {
                         if let Err(e) = self
-                            .raise_anomaly(self.cfg.tenant_id, q, t, &source_id, s.value)
+                            .raise_anomaly(q, t, &source_id, s.value)
                             .await
                         {
                             warn!(error = %e, "anomaly insert failed");
@@ -122,7 +118,7 @@ impl ObserverIngest {
         }
 
         if !points.is_empty() {
-            self.sink.push_batch(self.cfg.tenant_id, points).await?;
+            self.sink.push_batch(points).await?;
         }
         if anomalies_raised > 0 {
             info!(raised = anomalies_raised, "anomalies emitted");
@@ -132,7 +128,6 @@ impl ObserverIngest {
 
     async fn raise_anomaly(
         &self,
-        tenant_id: Uuid,
         q: &crate::queries::NamedQuery,
         t: &crate::queries::Threshold,
         source_id: &str,
@@ -142,11 +137,10 @@ impl ObserverIngest {
         client
             .execute(
                 "INSERT INTO observer.anomalies
-                    (tenant_id, source, source_id, severity, title, description,
+                    (source, source_id, severity, title, description,
                      metric_name, metric_value, threshold, metadata)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 &[
-                    &tenant_id,
                     &q.source,
                     &source_id,
                     &t.severity,

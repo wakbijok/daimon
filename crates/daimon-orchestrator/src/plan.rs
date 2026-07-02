@@ -97,7 +97,6 @@ pub struct StepDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub id: Uuid,
-    pub tenant_id: Uuid,
     pub created_by: Option<Uuid>,
     pub intent: String,
     pub status: PlanStatus,

@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::types::{BlastRadiusEntry, GraphPlan, NodeKind, TargetRef};
@@ -28,7 +27,6 @@ pub trait GraphClient: Send + Sync {
     /// ordered by depth ascending.
     async fn blast_radius(
         &self,
-        tenant_id: Uuid,
         target_ref: &TargetRef,
         max_depth: u32,
     ) -> Result<Vec<BlastRadiusEntry>>;
@@ -36,18 +34,12 @@ pub trait GraphClient: Send + Sync {
     /// Upsert a target node. Idempotent on `target_ref`.
     async fn upsert_target(
         &self,
-        tenant_id: Uuid,
         target_ref: &TargetRef,
         labels: serde_json::Value,
     ) -> Result<()>;
 
-    /// Declare a dependency edge between two targets in the same tenant.
-    async fn declare_dependency(
-        &self,
-        tenant_id: Uuid,
-        from: &TargetRef,
-        to: &TargetRef,
-    ) -> Result<()>;
+    /// Declare a dependency edge between two targets.
+    async fn declare_dependency(&self, from: &TargetRef, to: &TargetRef) -> Result<()>;
 }
 
 #[derive(Clone)]
@@ -141,13 +133,11 @@ impl GraphClient for NornicGraphClient {
         // 1) Plan node (single MERGE, no chain).
         batch.push((
             "MERGE (p:Plan {id: $pid}) \
-               ON CREATE SET p.tenant_id = $tid, \
-                             p.intent = $intent, \
+               ON CREATE SET p.intent = $intent, \
                              p.created_at = $created_at"
                 .into(),
             json!({
                 "pid": plan.id.to_string(),
-                "tid": plan.tenant_id.to_string(),
                 "intent": plan.intent,
                 "created_at": plan.created_at.to_rfc3339(),
             }),
@@ -191,12 +181,10 @@ impl GraphClient for NornicGraphClient {
                     "cver": s.capability_version,
                 }),
             ));
-            // 6) Target node (single MERGE with SET — verified safe pattern).
+            // 6) Target node (single MERGE).
             batch.push((
-                "MERGE (t:Target {ref: $tref}) \
-                   ON CREATE SET t.tenant_id = $tid"
-                    .into(),
-                json!({"tref": s.target_ref.as_str(), "tid": plan.tenant_id.to_string()}),
+                "MERGE (t:Target {ref: $tref})".into(),
+                json!({"tref": s.target_ref.as_str()}),
             ));
             // 7) DEPENDS_ON_TARGET rel.
             batch.push((
@@ -225,7 +213,6 @@ impl GraphClient for NornicGraphClient {
 
     async fn blast_radius(
         &self,
-        tenant_id: Uuid,
         target_ref: &TargetRef,
         max_depth: u32,
     ) -> Result<Vec<BlastRadiusEntry>> {
@@ -234,11 +221,7 @@ impl GraphClient for NornicGraphClient {
         // RETURN min(d)` collapses to a single row even when n varies.
         // Workaround is to compute min depth in the RETURN itself with an
         // implicit grouping on the non-aggregate columns — that path
-        // returns the expected per-node minimum depth. tenant_id filter
-        // is omitted from the MATCH because NornicDB also misbehaves on
-        // multi-property node-pattern matches; instead we rely on the
-        // application boundary (only this tenant's nodes are in the
-        // accessible subgraph) until per-tenant database isolation lands.
+        // returns the expected per-node minimum depth.
         let cypher = format!(
             "MATCH (t:Target {{ref: $tref}}) \
              MATCH path = (t)-[*1..{max_depth}]-(n) \
@@ -249,7 +232,6 @@ impl GraphClient for NornicGraphClient {
              ORDER BY depth ASC, nlabel ASC \
              LIMIT 200"
         );
-        let _ = tenant_id; // reserved — see comment above
         let res = self
             .run_one(&cypher, json!({"tref": target_ref.as_str()}))
             .await?;
@@ -275,19 +257,13 @@ impl GraphClient for NornicGraphClient {
         Ok(out)
     }
 
-    async fn upsert_target(
-        &self,
-        tenant_id: Uuid,
-        target_ref: &TargetRef,
-        labels: serde_json::Value,
-    ) -> Result<()> {
+    async fn upsert_target(&self, target_ref: &TargetRef, labels: serde_json::Value) -> Result<()> {
         self.run_one(
             "MERGE (t:Target {ref: $tref}) \
-               ON CREATE SET t.tenant_id = $tid, t.labels = $lbl \
+               ON CREATE SET t.labels = $lbl \
                ON MATCH SET t.labels = $lbl",
             json!({
                 "tref": target_ref.as_str(),
-                "tid": tenant_id.to_string(),
                 "lbl": labels.to_string(),
             }),
         )
@@ -295,20 +271,14 @@ impl GraphClient for NornicGraphClient {
         Ok(())
     }
 
-    async fn declare_dependency(
-        &self,
-        tenant_id: Uuid,
-        from: &TargetRef,
-        to: &TargetRef,
-    ) -> Result<()> {
+    async fn declare_dependency(&self, from: &TargetRef, to: &TargetRef) -> Result<()> {
         self.run_one(
-            "MATCH (a:Target {ref: $from_tref, tenant_id: $tid}), \
-                   (b:Target {ref: $to_tref, tenant_id: $tid}) \
+            "MATCH (a:Target {ref: $from_tref}), \
+                   (b:Target {ref: $to_tref}) \
              MERGE (a)-[:DEPENDS_ON_TARGET]->(b)",
             json!({
                 "from_tref": from.as_str(),
                 "to_tref": to.as_str(),
-                "tid": tenant_id.to_string(),
             }),
         )
         .await?;

@@ -1,14 +1,12 @@
 //! Postgres-backed `Inventory` impl (Phase 2c D3b).
 //!
-//! Replaces `SqliteRegistry` for production. Tenant-scoped via the Pool —
-//! each constructed `PostgresRegistry` instance is bound to a single
-//! tenant_id. Multi-tenant routing lands in D6.
+//! Replaces `SqliteRegistry` for production. Single-org: the inventory is
+//! global to the process (tenant scoping removed).
 
 use async_trait::async_trait;
 use daimon_db::Pool;
 use std::collections::BTreeMap;
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::refspec::TargetRef;
 use crate::registry::{Inventory, InventoryError};
@@ -17,12 +15,11 @@ use crate::target::{ManagedTarget, TargetKind, TargetMetadata, TransportKind};
 #[derive(Clone)]
 pub struct PostgresRegistry {
     pool: Pool,
-    tenant_id: Uuid,
 }
 
 impl PostgresRegistry {
-    pub fn new(pool: Pool, tenant_id: Uuid) -> Self {
-        Self { pool, tenant_id }
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
     }
 
     pub async fn count(&self) -> Result<u64, InventoryError> {
@@ -32,10 +29,7 @@ impl PostgresRegistry {
             .await
             .map_err(|e| InventoryError::Other(format!("pool: {e}")))?;
         let row = client
-            .query_one(
-                "SELECT COUNT(*) FROM inventory.targets WHERE tenant_id = $1",
-                &[&self.tenant_id],
-            )
+            .query_one("SELECT COUNT(*) FROM inventory.targets", &[])
             .await
             .map_err(|e| InventoryError::Other(format!("count: {e}")))?;
         let n: i64 = row.get(0);
@@ -63,8 +57,8 @@ impl Inventory for PostgresRegistry {
             .query_opt(
                 "SELECT target_ref, kind, transport, host, port, credential_ref, labels, capabilities
                  FROM inventory.targets
-                 WHERE tenant_id = $1 AND target_ref = $2",
-                &[&self.tenant_id, &key],
+                 WHERE target_ref = $1",
+                &[&key],
             )
             .await
             .map_err(|e| InventoryError::Other(format!("get: {e}")))?
@@ -87,9 +81,9 @@ impl Inventory for PostgresRegistry {
                     .query(
                         "SELECT target_ref, kind, transport, host, port, credential_ref, labels, capabilities
                          FROM inventory.targets
-                         WHERE tenant_id = $1 AND kind = $2
+                         WHERE kind = $1
                          ORDER BY target_ref",
-                        &[&self.tenant_id, &kind_str],
+                        &[&kind_str],
                     )
                     .await
             }
@@ -98,9 +92,8 @@ impl Inventory for PostgresRegistry {
                     .query(
                         "SELECT target_ref, kind, transport, host, port, credential_ref, labels, capabilities
                          FROM inventory.targets
-                         WHERE tenant_id = $1
                          ORDER BY target_ref",
-                        &[&self.tenant_id],
+                        &[],
                     )
                     .await
             }
@@ -135,10 +128,10 @@ impl Inventory for PostgresRegistry {
         client
             .execute(
                 "INSERT INTO inventory.targets
-                    (tenant_id, target_ref, kind, transport, host, port,
+                    (target_ref, kind, transport, host, port,
                      credential_ref, labels, capabilities)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                 ON CONFLICT (tenant_id, target_ref) DO UPDATE
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (target_ref) DO UPDATE
                     SET kind = EXCLUDED.kind,
                         transport = EXCLUDED.transport,
                         host = EXCLUDED.host,
@@ -148,7 +141,6 @@ impl Inventory for PostgresRegistry {
                         capabilities = EXCLUDED.capabilities,
                         updated_at = now()",
                 &[
-                    &self.tenant_id,
                     &ref_str,
                     &kind_str,
                     &transport_str,
@@ -174,8 +166,8 @@ impl Inventory for PostgresRegistry {
             .map_err(|e| InventoryError::Other(format!("pool: {e}")))?;
         let n = client
             .execute(
-                "DELETE FROM inventory.targets WHERE tenant_id = $1 AND target_ref = $2",
-                &[&self.tenant_id, &key],
+                "DELETE FROM inventory.targets WHERE target_ref = $1",
+                &[&key],
             )
             .await
             .map_err(|e| InventoryError::Other(format!("remove: {e}")))?;

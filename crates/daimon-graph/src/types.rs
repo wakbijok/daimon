@@ -98,7 +98,6 @@ pub struct BlastRadiusEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphPlan {
     pub id: Uuid,
-    pub tenant_id: Uuid,
     pub intent: String,
     pub created_at: DateTime<Utc>,
     pub steps: Vec<GraphPlanStep>,

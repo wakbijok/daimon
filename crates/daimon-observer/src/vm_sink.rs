@@ -12,7 +12,6 @@
 //! - `MetricPoint.name` is dotted (e.g. `pve.node.cpu_pct`). VM (like
 //!   Prometheus) requires `[a-zA-Z_][a-zA-Z0-9_]*` — dots become
 //!   underscores: `pve_node_cpu_pct`.
-//! - Tenant id flattens to a `tenant="<uuid>"` label.
 //! - `source` + `source_id` become labels.
 //! - `MetricPoint.labels` (JSON object) flattens into Prom labels. Nested
 //!   structure is collapsed via `serde_json::to_string` for non-scalars.
@@ -20,7 +19,6 @@
 
 use async_trait::async_trait;
 use reqwest::Client;
-use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::sink::{MetricPoint, MetricSink};
@@ -46,11 +44,10 @@ impl VictoriaMetricsSink {
 
     /// Render a single point in Prom exposition format.
     /// Each call appends one full line including newline.
-    fn render_point(&self, tenant_id: Uuid, p: &MetricPoint, out: &mut String) {
+    fn render_point(&self, p: &MetricPoint, out: &mut String) {
         out.push_str(&sanitize_metric_name(&p.name));
         out.push('{');
-        write_label(out, "tenant", &tenant_id.to_string(), true);
-        write_label(out, "source", &p.source, false);
+        write_label(out, "source", &p.source, true);
         write_label(out, "source_id", &p.source_id, false);
         if let Some(obj) = p.labels.as_object() {
             for (k, v) in obj {
@@ -83,17 +80,17 @@ impl VictoriaMetricsSink {
 
 #[async_trait]
 impl MetricSink for VictoriaMetricsSink {
-    async fn push(&self, tenant_id: Uuid, point: MetricPoint) -> Result<()> {
-        self.push_batch(tenant_id, vec![point]).await
+    async fn push(&self, point: MetricPoint) -> Result<()> {
+        self.push_batch(vec![point]).await
     }
 
-    async fn push_batch(&self, tenant_id: Uuid, points: Vec<MetricPoint>) -> Result<()> {
+    async fn push_batch(&self, points: Vec<MetricPoint>) -> Result<()> {
         if points.is_empty() {
             return Ok(());
         }
         let mut body = String::with_capacity(points.len() * 128);
         for p in &points {
-            self.render_point(tenant_id, p, &mut body);
+            self.render_point(p, &mut body);
         }
         let resp = self
             .http
@@ -176,11 +173,9 @@ mod tests {
     #[test]
     fn renders_prom_text() {
         let sink = VictoriaMetricsSink::new("http://x");
-        let tenant = Uuid::nil();
         let mut buf = String::new();
-        sink.render_point(tenant, &point(), &mut buf);
+        sink.render_point(&point(), &mut buf);
         assert!(buf.starts_with("pve_node_cpu_pct{"));
-        assert!(buf.contains(r#"tenant="00000000-0000-0000-0000-000000000000""#));
         assert!(buf.contains(r#"source="pve""#));
         assert!(buf.contains(r#"source_id="cluster-a""#));
         assert!(buf.contains(r#"node="pve-01""#));
@@ -199,15 +194,14 @@ mod tests {
     #[test]
     fn handles_non_finite_values() {
         let sink = VictoriaMetricsSink::new("http://x");
-        let tenant = Uuid::nil();
         let mut p = point();
         p.value = f64::NAN;
         let mut buf = String::new();
-        sink.render_point(tenant, &p, &mut buf);
+        sink.render_point(&p, &mut buf);
         assert!(buf.contains(" NaN "));
         p.value = f64::INFINITY;
         let mut buf = String::new();
-        sink.render_point(tenant, &p, &mut buf);
+        sink.render_point(&p, &mut buf);
         assert!(buf.contains(" +Inf "));
     }
 }

@@ -43,7 +43,6 @@ impl ApprovalStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
     pub id: Uuid,
-    pub tenant_id: Uuid,
     pub actor_id: String,
     pub capability: String,
     pub target_ref: Option<String>,
@@ -67,7 +66,6 @@ impl ApprovalQueue {
     /// Create a new pending approval. Returns the new row's id.
     pub async fn enqueue(
         &self,
-        tenant_id: Uuid,
         actor_id: &str,
         capability: &str,
         target_ref: Option<&str>,
@@ -77,10 +75,10 @@ impl ApprovalQueue {
         let row = client
             .query_one(
                 "INSERT INTO public.approvals
-                    (tenant_id, actor_id, capability, target_ref, params, status)
-                 VALUES ($1, $2, $3, $4, $5, 'pending')
+                    (actor_id, capability, target_ref, params, status)
+                 VALUES ($1, $2, $3, $4, 'pending')
                  RETURNING id",
-                &[&tenant_id, &actor_id, &capability, &target_ref, &params],
+                &[&actor_id, &capability, &target_ref, &params],
             )
             .await?;
         Ok(row.get(0))
@@ -91,7 +89,7 @@ impl ApprovalQueue {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
-                "SELECT id, tenant_id, actor_id, capability, target_ref, params,
+                "SELECT id, actor_id, capability, target_ref, params,
                         status, created_at, decided_at, decided_by
                  FROM public.approvals WHERE id = $1",
                 &[&id],
@@ -113,7 +111,7 @@ impl ApprovalQueue {
                 "UPDATE public.approvals
                  SET status = $1, decided_at = now(), decided_by = $2
                  WHERE id = $3 AND status = 'pending'
-                 RETURNING id, tenant_id, actor_id, capability, target_ref, params,
+                 RETURNING id, actor_id, capability, target_ref, params,
                            status, created_at, decided_at, decided_by",
                 &[&status.as_str(), &decided_by, &id],
             )
@@ -122,18 +120,18 @@ impl ApprovalQueue {
         Ok(row_to_record(row))
     }
 
-    /// List pending approvals for a tenant. Newest first.
-    pub async fn list_pending(&self, tenant_id: Uuid, limit: u32) -> Result<Vec<ApprovalRecord>> {
+    /// List pending approvals. Newest first.
+    pub async fn list_pending(&self, limit: u32) -> Result<Vec<ApprovalRecord>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
-                "SELECT id, tenant_id, actor_id, capability, target_ref, params,
+                "SELECT id, actor_id, capability, target_ref, params,
                         status, created_at, decided_at, decided_by
                  FROM public.approvals
-                 WHERE tenant_id = $1 AND status = 'pending'
+                 WHERE status = 'pending'
                  ORDER BY created_at DESC
-                 LIMIT $2",
-                &[&tenant_id, &(limit as i64)],
+                 LIMIT $1",
+                &[&(limit as i64)],
             )
             .await?;
         Ok(rows.into_iter().map(row_to_record).collect())
@@ -183,17 +181,16 @@ impl ApprovalQueue {
 }
 
 fn row_to_record(row: tokio_postgres::Row) -> ApprovalRecord {
-    let status_str: String = row.get(6);
+    let status_str: String = row.get(5);
     ApprovalRecord {
         id: row.get(0),
-        tenant_id: row.get(1),
-        actor_id: row.get(2),
-        capability: row.get(3),
-        target_ref: row.get(4),
-        params: row.get(5),
+        actor_id: row.get(1),
+        capability: row.get(2),
+        target_ref: row.get(3),
+        params: row.get(4),
         status: ApprovalStatus::from_str(&status_str),
-        created_at: row.get(7),
-        decided_at: row.get(8),
-        decided_by: row.get(9),
+        created_at: row.get(6),
+        decided_at: row.get(7),
+        decided_by: row.get(8),
     }
 }

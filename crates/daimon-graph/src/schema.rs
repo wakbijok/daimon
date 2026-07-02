@@ -12,7 +12,6 @@ pub const SCHEMA_CYPHER: &[&str] = &[
     // (e.g. `(c.name, c.version) IS UNIQUE`) — application-level MERGE
     // semantics enforce the (name, version) uniqueness for Capability
     // instead.
-    "CREATE CONSTRAINT tenant_id_unique IF NOT EXISTS FOR (t:Tenant) REQUIRE t.id IS UNIQUE",
     "CREATE CONSTRAINT agent_id_unique IF NOT EXISTS FOR (a:Agent) REQUIRE a.id IS UNIQUE",
     "CREATE CONSTRAINT target_ref_unique IF NOT EXISTS FOR (t:Target) REQUIRE t.ref IS UNIQUE",
     "CREATE CONSTRAINT credential_ref_unique IF NOT EXISTS FOR (c:Credential) REQUIRE c.ref IS UNIQUE",
@@ -20,10 +19,7 @@ pub const SCHEMA_CYPHER: &[&str] = &[
     "CREATE CONSTRAINT planstep_id_unique IF NOT EXISTS FOR (s:PlanStep) REQUIRE s.id IS UNIQUE",
     "CREATE CONSTRAINT auditevent_id_unique IF NOT EXISTS FOR (e:AuditEvent) REQUIRE e.id IS UNIQUE",
     "CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE",
-    // Lookup indexes — most blast-radius queries enter from a Target or Credential.
-    "CREATE INDEX target_tenant_idx IF NOT EXISTS FOR (t:Target) ON (t.tenant_id)",
-    "CREATE INDEX credential_tenant_idx IF NOT EXISTS FOR (c:Credential) ON (c.tenant_id)",
-    "CREATE INDEX plan_tenant_idx IF NOT EXISTS FOR (p:Plan) ON (p.tenant_id)",
+    // Lookup index — blast-radius queries filter Capability by name.
     "CREATE INDEX capability_name_idx IF NOT EXISTS FOR (c:Capability) ON (c.name)",
 ];
 

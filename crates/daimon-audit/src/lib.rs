@@ -5,7 +5,7 @@
 //! flow through here. Schema is append-only — DB-level triggers block
 //! UPDATE and DELETE.
 //!
-//! Phase 2c D3b: storage moved from SQLite to PostgreSQL. Per-tenant hash
+//! Phase 2c D3b: storage moved from SQLite to PostgreSQL. A single-org hash
 //! chain (V008 BEFORE INSERT trigger) provides tamper evidence; the
 //! `daimon-anchor` operator binary snapshots + verifies. Event IDs are now
 //! `Uuid` rather than `i64`.

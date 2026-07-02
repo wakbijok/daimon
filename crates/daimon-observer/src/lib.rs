@@ -9,10 +9,9 @@
 //!    durations, etc.).
 //!
 //! Both paths write through a `MetricSink`. Phase 8 lock per MASTERPLAN
-//! §3.5: default sink is `VictoriaMetricsSink` (Prom-text-format POST to
-//! VM's `/api/v1/import/prometheus`). `PostgresMetricSink` is retained for
-//! tests + grandfathering; production deployments after V015 do not write
-//! to `observer.metrics`. Threshold-bound named queries emit
+//! §3.5: the sink is `VictoriaMetricsSink` (Prom-text-format POST to
+//! VM's `/api/v1/import/prometheus`). The old Postgres `observer.metrics`
+//! table was dropped by migration V015. Threshold-bound named queries emit
 //! `AnomalyDetected` rows into `observer.anomalies` + (Phase 8) emit a bus
 //! envelope subscribed by Guard + Orchestrator.
 
@@ -27,5 +26,5 @@ pub use error::{Error, Result};
 pub use ingest::{ObserverIngest, ObserverIngestConfig};
 pub use prometheus::PrometheusClient;
 pub use queries::{NamedQuery, NamedQueryLibrary, Threshold};
-pub use sink::{MetricPoint, MetricSink, PostgresMetricSink};
+pub use sink::{MetricPoint, MetricSink};
 pub use vm_sink::VictoriaMetricsSink;

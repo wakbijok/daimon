@@ -34,7 +34,6 @@ pub use policy::{Decision, PolicyEngine, PolicyRule, PolicyVerdict};
 
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 /// Guard facade — the single struct the broker holds for kill / policy /
 /// approval checks. Cheap to clone (Arc-internal).
@@ -43,26 +42,17 @@ pub struct Guard {
     kill: KillState,
     policy: Arc<PolicyEngine>,
     approvals: Arc<ApprovalQueue>,
-    /// Default tenant when broker.execute can't supply one (Phase 5
-    /// transitional — Phase 6 has plan-bound tenant context).
-    default_tenant: Uuid,
     /// How long broker.execute will wait for an operator approval before
     /// failing.
     approval_timeout: Duration,
 }
 
 impl Guard {
-    pub fn new(
-        kill: KillState,
-        policy: PolicyEngine,
-        approvals: ApprovalQueue,
-        default_tenant: Uuid,
-    ) -> Self {
+    pub fn new(kill: KillState, policy: PolicyEngine, approvals: ApprovalQueue) -> Self {
         Self {
             kill,
             policy: Arc::new(policy),
             approvals: Arc::new(approvals),
-            default_tenant,
             approval_timeout: Duration::from_secs(300),
         }
     }
@@ -81,10 +71,6 @@ impl Guard {
 
     pub fn approval_timeout(&self) -> Duration {
         self.approval_timeout
-    }
-
-    pub fn default_tenant(&self) -> Uuid {
-        self.default_tenant
     }
 
     /// Pre-flight a capability invocation. Returns Ok(()) if the broker may
@@ -119,7 +105,7 @@ impl Guard {
             Decision::RequireApproval => {
                 let id = self
                     .approvals
-                    .enqueue(self.default_tenant, actor_id, capability, target_ref, params)
+                    .enqueue(actor_id, capability, target_ref, params)
                     .await?;
                 tracing::info!(
                     approval = %id,

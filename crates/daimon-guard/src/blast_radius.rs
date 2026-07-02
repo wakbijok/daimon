@@ -14,7 +14,6 @@ use std::sync::Arc;
 use daimon_graph::{BlastRadiusEntry, GraphClient, TargetRef as GraphTargetRef};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::approvals::ApprovalRecord;
 
@@ -41,7 +40,7 @@ pub async fn enrich_with_blast_radius(
     let mut out = Vec::with_capacity(approvals.len());
     for approval in approvals {
         let blast_radius = match approval.target_ref.as_ref() {
-            Some(tref) => blast_radius_for_target(graph, approval.tenant_id, tref, max_depth).await,
+            Some(tref) => blast_radius_for_target(graph, tref, max_depth).await,
             None => Vec::new(),
         };
         out.push(ApprovalWithBlastRadius { approval, blast_radius });
@@ -54,16 +53,14 @@ pub async fn enrich_with_blast_radius(
 /// console.
 pub async fn blast_radius_for_target(
     graph: &Arc<dyn GraphClient>,
-    tenant_id: Uuid,
     target_ref: &str,
     max_depth: u32,
 ) -> Vec<BlastRadiusEntry> {
     let tref = GraphTargetRef::from(target_ref);
-    match graph.blast_radius(tenant_id, &tref, max_depth).await {
+    match graph.blast_radius(&tref, max_depth).await {
         Ok(entries) => entries,
         Err(e) => {
             warn!(
-                tenant_id = %tenant_id,
                 target = target_ref,
                 error = %e,
                 "blast_radius query failed; rendering approval without summary"

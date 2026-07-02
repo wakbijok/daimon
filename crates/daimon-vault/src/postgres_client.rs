@@ -12,9 +12,7 @@
 //! handles concurrency internally. The 5-minute TTL LRU cache lives on a
 //! tokio::sync::Mutex.
 //!
-//! Multi-tenancy: each client instance is scoped to a single tenant_id at
-//! construction. D6 will plumb the tenant claim through JWT and either
-//! construct per-tenant clients or extend the API to accept a tenant_id.
+//! Single-org: credentials are org-wide (name unique across the vault).
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -54,7 +52,6 @@ pub struct PostgresVaultClient {
 
 struct Inner {
     pool: Pool,
-    tenant_id: Uuid,
     sealer: SealedSession,
     cache: AsyncMutex<LruCache<String, CacheEntry>>,
     cache_ttl: Duration,
@@ -67,15 +64,13 @@ struct CacheEntry {
 }
 
 impl PostgresVaultClient {
-    /// Construct with a live `daimon-db` pool, the tenant scope, and the
-    /// master DEK. Master key is dropped after `SealedSession` derives its
-    /// cipher state.
-    pub fn new(pool: Pool, tenant_id: Uuid, master_key: MasterKey) -> Self {
+    /// Construct with a live `daimon-db` pool and the master DEK. Master key
+    /// is dropped after `SealedSession` derives its cipher state.
+    pub fn new(pool: Pool, master_key: MasterKey) -> Self {
         let sealer = SealedSession::from_key(master_key.as_bytes());
         Self {
             inner: Arc::new(Inner {
                 pool,
-                tenant_id,
                 sealer,
                 cache: AsyncMutex::new(LruCache::new(
                     NonZeroUsize::new(DEFAULT_CACHE_SIZE).expect("non-zero"),
@@ -97,9 +92,8 @@ impl PostgresVaultClient {
             .query(
                 "SELECT id, name, kind, created_at, updated_at
                  FROM vault.credentials
-                 WHERE tenant_id = $1
                  ORDER BY name ASC",
-                &[&self.inner.tenant_id],
+                &[],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("list: {e}")))?;
@@ -137,15 +131,10 @@ impl PostgresVaultClient {
         let row = client
             .query_one(
                 "INSERT INTO vault.credentials
-                    (tenant_id, name, kind, payload_sealed, encryption_version)
-                 VALUES ($1, $2, $3, $4, 1)
+                    (name, kind, payload_sealed, encryption_version)
+                 VALUES ($1, $2, $3, 1)
                  RETURNING id",
-                &[
-                    &self.inner.tenant_id,
-                    &name,
-                    &kind_to_str(&kind),
-                    &sealed,
-                ],
+                &[&name, &kind_to_str(&kind), &sealed],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("insert: {e}")))?;
@@ -172,8 +161,8 @@ impl PostgresVaultClient {
             .execute(
                 "UPDATE vault.credentials
                  SET kind = $1, payload_sealed = $2
-                 WHERE id = $3 AND tenant_id = $4",
-                &[&kind_to_str(&kind), &sealed, &id, &self.inner.tenant_id],
+                 WHERE id = $3",
+                &[&kind_to_str(&kind), &sealed, &id],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("update: {e}")))?;
@@ -196,8 +185,8 @@ impl PostgresVaultClient {
             .execute(
                 "UPDATE vault.credentials
                  SET name = $1
-                 WHERE id = $2 AND tenant_id = $3",
-                &[&new_name, &id, &self.inner.tenant_id],
+                 WHERE id = $2",
+                &[&new_name, &id],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("rename: {e}")))?;
@@ -218,8 +207,8 @@ impl PostgresVaultClient {
             .map_err(|e| VaultError::Transport(format!("pool: {e}")))?;
         let n = client
             .execute(
-                "DELETE FROM vault.credentials WHERE id = $1 AND tenant_id = $2",
-                &[&id, &self.inner.tenant_id],
+                "DELETE FROM vault.credentials WHERE id = $1",
+                &[&id],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("delete: {e}")))?;
@@ -241,8 +230,8 @@ impl PostgresVaultClient {
         let row = client
             .query_opt(
                 "SELECT payload_sealed FROM vault.credentials
-                 WHERE id = $1 AND tenant_id = $2",
-                &[&id, &self.inner.tenant_id],
+                 WHERE id = $1",
+                &[&id],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("reveal: {e}")))?
@@ -295,8 +284,8 @@ impl VaultClient for PostgresVaultClient {
         let row = client
             .query_opt(
                 "SELECT payload_sealed FROM vault.credentials
-                 WHERE tenant_id = $1 AND name = $2",
-                &[&self.inner.tenant_id, &name],
+                 WHERE name = $1",
+                &[&name],
             )
             .await
             .map_err(|e| VaultError::Transport(format!("resolve: {e}")))?

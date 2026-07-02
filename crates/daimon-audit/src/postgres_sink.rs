@@ -1,12 +1,12 @@
 //! Postgres-backed `AuditSink` impl (Phase 2c D3b).
 //!
 //! Append + paged query against `audit.events` in the relational tier.
-//! The V008 BEFORE INSERT trigger computes prev_hash + row_hash per-tenant.
-//! V005 triggers block UPDATE/DELETE at DB level (defence in depth on top
-//! of the AuditSink API).
+//! The V008 BEFORE INSERT trigger computes prev_hash + row_hash for the
+//! single-org chain. V005 triggers block UPDATE/DELETE at DB level (defence
+//! in depth on top of the AuditSink API).
 //!
-//! Multi-tenancy: each instance is scoped to a single tenant_id. D6 wires
-//! tenant routing at the AppState level.
+//! Single-org: the audit log is global to the process (tenant scoping
+//! removed).
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -21,12 +21,11 @@ use crate::sink::{AuditError, AuditSink};
 #[derive(Clone)]
 pub struct PostgresAuditSink {
     pool: Pool,
-    tenant_id: Uuid,
 }
 
 impl PostgresAuditSink {
-    pub fn new(pool: Pool, tenant_id: Uuid) -> Self {
-        Self { pool, tenant_id }
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
     }
 }
 
@@ -47,12 +46,11 @@ impl AuditSink for PostgresAuditSink {
         let row = client
             .query_one(
                 "INSERT INTO audit.events
-                    (tenant_id, actor_id, action, target_ref, credential_ref,
+                    (actor_id, action, target_ref, credential_ref,
                      op_summary, result, latency_ms, metadata)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  RETURNING id",
                 &[
-                    &self.tenant_id,
                     &event.actor_id,
                     &action_str,
                     &event.target_ref,
@@ -79,7 +77,7 @@ impl AuditSink for PostgresAuditSink {
             .get()
             .await
             .map_err(|e| AuditError::Storage(format!("pool: {e}")))?;
-        let (sql, params) = build_query(filter, &self.tenant_id, Some((limit, offset)));
+        let (sql, params) = build_query(filter, Some((limit, offset)));
         let pgs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
             .iter()
             .map(|p| &**p as &(dyn tokio_postgres::types::ToSql + Sync))
@@ -97,7 +95,7 @@ impl AuditSink for PostgresAuditSink {
             .get()
             .await
             .map_err(|e| AuditError::Storage(format!("pool: {e}")))?;
-        let (sql, params) = build_count(filter, &self.tenant_id);
+        let (sql, params) = build_count(filter);
         let pgs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
             .iter()
             .map(|p| &**p as &(dyn tokio_postgres::types::ToSql + Sync))
@@ -114,18 +112,14 @@ impl AuditSink for PostgresAuditSink {
 // Parameter container — boxed so SQL builder can mix types in one Vec.
 type Param = Box<dyn tokio_postgres::types::ToSql + Sync + Send>;
 
-fn build_query(
-    filter: &AuditFilter,
-    tenant_id: &Uuid,
-    paging: Option<(u32, u32)>,
-) -> (String, Vec<Param>) {
+fn build_query(filter: &AuditFilter, paging: Option<(u32, u32)>) -> (String, Vec<Param>) {
     let mut sql = String::from(
         "SELECT id, ts, actor_id, action, target_ref, credential_ref,
                 op_summary, result, latency_ms, metadata
          FROM audit.events
-         WHERE tenant_id = $1",
+         WHERE 1=1",
     );
-    let mut params: Vec<Param> = vec![Box::new(*tenant_id)];
+    let mut params: Vec<Param> = Vec::new();
     push_filter_clauses(&mut sql, &mut params, filter);
     sql.push_str(" ORDER BY ts DESC, id DESC");
     if let Some((limit, offset)) = paging {
@@ -136,9 +130,9 @@ fn build_query(
     (sql, params)
 }
 
-fn build_count(filter: &AuditFilter, tenant_id: &Uuid) -> (String, Vec<Param>) {
-    let mut sql = String::from("SELECT COUNT(*) FROM audit.events WHERE tenant_id = $1");
-    let mut params: Vec<Param> = vec![Box::new(*tenant_id)];
+fn build_count(filter: &AuditFilter) -> (String, Vec<Param>) {
+    let mut sql = String::from("SELECT COUNT(*) FROM audit.events WHERE 1=1");
+    let mut params: Vec<Param> = Vec::new();
     push_filter_clauses(&mut sql, &mut params, filter);
     (sql, params)
 }

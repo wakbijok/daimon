@@ -7,13 +7,12 @@
 //! Subject layout (per MASTERPLAN §2.2):
 //!
 //! ```text
-//! daimon.<tenant_id>.envelopes
+//! daimon.envelopes
 //! ```
 //!
-//! Tenants are isolated by NKEY scopes at the NATS account level — the
-//! Rust client treats subjects as opaque and trusts the server-side ACL.
-//! Phase 8.1 adds per-agent + per-topic subjects (`daimon.<tenant>.
-//! agent.<id>.<topic>`) when wildcard subscriptions become the limit.
+//! The Rust client treats subjects as opaque and trusts the server-side ACL.
+//! Phase 8.1 adds per-agent + per-topic subjects (`daimon.agent.<id>.<topic>`)
+//! when wildcard subscriptions become the limit.
 //!
 //! Envelopes are encoded as JSON over the NATS wire — same shape as
 //! `InProcBus`'s broadcast payload. Switching the encoding to Cap'n Proto
@@ -45,16 +44,11 @@ pub struct NatsBus {
 }
 
 impl NatsBus {
-    /// Connect to a NATS server and start the inbound subscription. The
-    /// `tenant_id` becomes part of the subject (one-subject-per-tenant in
-    /// Phase 8; finer-grained subjects come in Phase 8.1).
-    pub async fn connect(
-        url: &str,
-        tenant_id: &str,
-        nkey_seed: Option<&str>,
-    ) -> Result<Self, NatsBusError> {
+    /// Connect to a NATS server and start the inbound subscription.
+    /// Finer-grained subjects come in Phase 8.1.
+    pub async fn connect(url: &str, nkey_seed: Option<&str>) -> Result<Self, NatsBusError> {
         let mut opts = ConnectOptions::new()
-            .name(format!("daimon-agent-{tenant_id}"))
+            .name("daimon-agent".to_string())
             .require_tls(false);
         if let Some(seed) = nkey_seed {
             opts = opts.nkey(seed.to_string());
@@ -64,7 +58,7 @@ impl NatsBus {
             .await
             .map_err(|e| NatsBusError::Connect(format!("{e}")))?;
 
-        let subject = format!("daimon.{tenant_id}.envelopes");
+        let subject = "daimon.envelopes".to_string();
         let (mirror_tx, _) = broadcast::channel(NATS_MIRROR_CAPACITY);
 
         // Spawn a forwarder that pulls NATS messages and republishes them
@@ -147,8 +141,8 @@ mod tests {
     async fn roundtrip_envelope_through_nats() {
         let url = std::env::var("DAIMON_NATS_URL")
             .unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
-        let bus_a = NatsBus::connect(&url, "test-tenant", None).await.unwrap();
-        let bus_b = NatsBus::connect(&url, "test-tenant", None).await.unwrap();
+        let bus_a = NatsBus::connect(&url, None).await.unwrap();
+        let bus_b = NatsBus::connect(&url, None).await.unwrap();
         let mut rx = bus_b.subscribe_raw();
         // Let the mirror subscriber settle.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
