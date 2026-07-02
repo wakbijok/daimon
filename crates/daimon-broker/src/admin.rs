@@ -360,17 +360,16 @@ impl Broker {
 
     // -------- Approval inbox proxy (Phase 8) -----------------------------
 
-    /// List pending approval-inbox rows for a tenant, newest first. Errors
-    /// if no Guard is attached.
+    /// List pending approval-inbox rows, newest first. Errors if no Guard
+    /// is attached.
     pub async fn approvals_pending(
         &self,
-        tenant_id: uuid::Uuid,
         limit: u32,
     ) -> Result<Vec<daimon_guard::ApprovalRecord>, BrokerError> {
         let guard = self.require_guard()?;
         guard
             .approvals()
-            .list_pending(tenant_id, limit)
+            .list_pending(limit)
             .await
             .map_err(|e| BrokerError::Audit(format!("{e}")))
     }

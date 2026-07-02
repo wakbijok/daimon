@@ -9,9 +9,9 @@
 //! holds.
 //!
 //! Phase 2c D3b: storage moved from SQLite to PostgreSQL. The boot now
-//! requires a `pg_url` + `tenant_slug`; vault/inventory/audit are all
-//! pool-backed against the relational tier owned by `daimon-db`. SSH
-//! transport unchanged.
+//! requires a `pg_url`; vault/inventory/audit are all pool-backed against
+//! the relational tier owned by `daimon-db`. Single-org: no tenant
+//! resolution. SSH transport unchanged.
 //!
 //! Typical use from `daimon-app/src/main.rs`:
 //!
@@ -19,7 +19,6 @@
 //! let master_key = daimon_broker::production::MasterKey::from_systemd_or_dev_env()?;
 //! let broker = daimon_broker::production::build_production_broker(BootConfig {
 //!     pg_url: std::env::var("DAIMON_PG_URL")?,
-//!     tenant_slug: "default".into(),
 //!     known_hosts_path: "/var/lib/daimon/known_hosts".into(),
 //!     master_key,
 //! })
@@ -39,7 +38,6 @@ use daimon_transport::{SshTransport, Transport};
 use daimon_vault::{MasterKey, PostgresVaultClient};
 use thiserror::Error;
 use tracing::info;
-use uuid::Uuid;
 
 use crate::{Broker, TransportKind};
 
@@ -51,9 +49,6 @@ pub use daimon_vault::{MasterKey as MasterKeyHandle, MasterKeyError};
 pub struct BootConfig {
     /// PostgreSQL connection URL. Typically derived from `$DAIMON_PG_URL`.
     pub pg_url: String,
-    /// Tenant slug this broker instance serves. D6 will plumb multi-tenant
-    /// routing; for now the broker is single-tenant per process.
-    pub tenant_slug: String,
     /// SSH `known_hosts` file path. Production should be
     /// `/var/lib/daimon/known_hosts`. The file does not need to exist at
     /// startup — it is created on first SSH connect or by an explicit
@@ -78,8 +73,6 @@ pub enum BootError {
     PgClient(#[from] tokio_postgres::Error),
     #[error("pool: {0}")]
     Pool(String),
-    #[error("tenant `{0}` not found in public.tenants")]
-    TenantNotFound(String),
     #[error("vault: {0}")]
     Vault(#[from] daimon_vault::VaultError),
     #[error("inventory: {0}")]
@@ -90,24 +83,22 @@ pub enum BootError {
     Guard(#[from] daimon_guard::Error),
 }
 
-/// Assemble the production broker. Opens a Postgres pool, resolves the
-/// tenant id, and wires the russh-backed SSH transport against
-/// `cfg.known_hosts_path`. Returns the broker wrapped in `Arc` for sharing
-/// across request handlers.
+/// Assemble the production broker. Opens a Postgres pool and wires the
+/// russh-backed SSH transport against `cfg.known_hosts_path`. Returns the
+/// broker wrapped in `Arc` for sharing across request handlers. Single-org:
+/// no tenant resolution.
 pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, BootError> {
     info!(
         pg_url = %scrub_pg_url(&cfg.pg_url),
-        tenant = %cfg.tenant_slug,
         known_hosts = %cfg.known_hosts_path.display(),
         "assembling production broker stack"
     );
 
     let pool = daimon_db::build_pool(&cfg.pg_url)?;
-    let tenant_id = resolve_tenant(&pool, &cfg.tenant_slug).await?;
 
-    let vault = Arc::new(PostgresVaultClient::new(pool.clone(), tenant_id, cfg.master_key));
-    let inventory: Arc<dyn Inventory> = Arc::new(PostgresRegistry::new(pool.clone(), tenant_id));
-    let audit: Arc<dyn AuditSink> = Arc::new(PostgresAuditSink::new(pool.clone(), tenant_id));
+    let vault = Arc::new(PostgresVaultClient::new(pool.clone(), cfg.master_key));
+    let inventory: Arc<dyn Inventory> = Arc::new(PostgresRegistry::new(pool.clone()));
+    let audit: Arc<dyn AuditSink> = Arc::new(PostgresAuditSink::new(pool.clone()));
 
     let ssh: Arc<dyn Transport> =
         Arc::new(SshTransport::with_known_hosts_path(cfg.known_hosts_path));
@@ -123,7 +114,6 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
         kill_switch.state(),
         policy,
         approvals,
-        tenant_id,
     ));
     info!(
         kill_path = %cfg.kill_path.display(),
@@ -134,15 +124,6 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
 
     let broker = Broker::with_production_admin(inventory, vault, audit, transports).with_guard(guard);
     Ok(Arc::new(broker))
-}
-
-async fn resolve_tenant(pool: &daimon_db::Pool, slug: &str) -> Result<Uuid, BootError> {
-    let client = pool.get().await.map_err(|e| BootError::Pool(e.to_string()))?;
-    let row = client
-        .query_opt("SELECT id FROM public.tenants WHERE slug = $1", &[&slug])
-        .await?
-        .ok_or_else(|| BootError::TenantNotFound(slug.to_string()))?;
-    Ok(row.get(0))
 }
 
 fn scrub_pg_url(url: &str) -> String {
