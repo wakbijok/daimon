@@ -18,6 +18,12 @@ pub struct AppState {
     /// (Phase 4 D3) can dispatch tool calls without spinning up a fresh
     /// agent per request.
     pub network_agent: Arc<daimon_tool_network::NetworkAgent>,
+    /// P2 — the multi-agent harness (bus + capability registry + supervisor).
+    /// Chat + orchestrator dispatch capability calls over the bus through this,
+    /// resolving the provider via the registry (versioned, fail-closed). The
+    /// first production consumer of daimon-runtime. `network_agent` above is the
+    /// pre-P2 direct path, removed in P2 commit 5.
+    pub harness: crate::harness::Harness,
     /// Phase 4 D4 — hot working memory tier (Redis in prod; in-proc fallback
     /// when Redis is unavailable). Used by the chat handler for session
     /// persistence + by Phase 5 for the kill-switch signal channel.

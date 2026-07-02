@@ -51,6 +51,12 @@ daimon-rag = { path = "../daimon-rag", optional = true }
 daimon-llm = { path = "../daimon-llm", optional = true }
 daimon-tool-network = { path = "../daimon-tool-network", optional = true }
 daimon-core = { path = "../daimon-core", optional = true }
+# P2: the multi-agent harness (bus/registry/supervisor) + the reference driver.
+daimon-runtime = { path = "../daimon-runtime", optional = true }
+daimon-driver-firewall-routeros = { path = "../daimon-driver-firewall-routeros", optional = true }
+semver = { version = "1", optional = true }
+async-trait = { version = "0.1", optional = true }
+thiserror = { version = "1", optional = true }
 daimon-redis = { path = "../daimon-redis", optional = true }
 daimon-orchestrator = { path = "../daimon-orchestrator", optional = true }
 daimon-observer = { path = "../daimon-observer", optional = true }
@@ -90,6 +96,11 @@ ssr = [
     "dep:daimon-llm",
     "dep:daimon-tool-network",
     "dep:daimon-core",
+    "dep:daimon-runtime",
+    "dep:daimon-driver-firewall-routeros",
+    "dep:semver",
+    "dep:async-trait",
+    "dep:thiserror",
     "dep:daimon-redis",
     "dep:daimon-orchestrator",
     "dep:daimon-observer",

@@ -7,6 +7,8 @@ pub mod db;
 pub mod auth;
 pub mod auth_guard;
 pub mod state;
+#[cfg(feature = "ssr")]
+pub mod harness;
 pub mod ws;
 pub mod admin_approvals;
 pub mod admin_audit;

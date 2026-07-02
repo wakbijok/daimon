@@ -89,6 +89,29 @@ async fn main() {
         broker.clone(),
         "agent:network",
     ));
+
+    // P2 — the multi-agent harness. Construct the in-process bus + capability
+    // registry + supervisor (the FIRST production consumers of daimon-runtime),
+    // spawn the RouterOS reference driver under supervision (which registers its
+    // capabilities), and hold the assembled Harness in AppState. Chat +
+    // orchestrator dispatch over this bus in P2 commits 5/6.
+    let bus = daimon_runtime::InProcBus::new();
+    let registry = daimon_runtime::CapabilityRegistry::new();
+    let supervisor = Arc::new(daimon_runtime::Supervisor::new(bus.clone(), registry.clone()));
+    let routeros_driver = Arc::new(daimon_driver_firewall_routeros::RouterOsDriver::new(
+        daimon_core::AgentId::new("agent:routeros"),
+        broker.clone(),
+        "agent:routeros",
+    ));
+    if let Err(e) = supervisor
+        .spawn(routeros_driver.clone() as Arc<dyn daimon_core::Agent>)
+        .await
+    {
+        eprintln!("daimon-app: failed to spawn RouterOS driver: {e:#}");
+        std::process::exit(1);
+    }
+    let harness = daimon_app::harness::Harness::new(bus, registry, supervisor);
+    log!("harness ready — RouterOS driver spawned under supervision");
     // Phase 4 D4 — working memory tier. Redis when reachable; in-process
     // fallback otherwise. Set DAIMON_REDIS_URL=disabled to force in-process.
     let working_memory: Arc<dyn daimon_redis::WorkingMemory> = match std::env::var("DAIMON_REDIS_URL") {
@@ -166,6 +189,7 @@ async fn main() {
         ws_broadcast: ws_tx,
         broker,
         network_agent,
+        harness,
         working_memory,
         orchestrator,
         graph,
