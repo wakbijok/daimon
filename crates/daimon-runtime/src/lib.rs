@@ -10,6 +10,7 @@
 //! See `docs/specs/2026-05-20-multi-agent-architecture-design.md`.
 
 pub mod bus;
+pub mod dispatcher;
 pub mod error;
 #[cfg(feature = "nats")]
 pub mod nats_bus;
@@ -17,6 +18,7 @@ pub mod registry;
 pub mod supervisor;
 
 pub use bus::{AgentBus, InProcBus};
+pub use dispatcher::{DispatchError, Dispatcher};
 pub use error::RuntimeError;
 #[cfg(feature = "nats")]
 pub use nats_bus::{NatsBus, NatsBusError};
