@@ -2,32 +2,115 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "revival/**"]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  # Compile the ACTUAL shipped application, both feature sets. daimon-app has
+  # no default feature (bin needs `ssr`, WASM lib needs `hydrate`), so a bare
+  # `cargo build` compiles an empty shell — these steps are what prove the
+  # server tier + hydrate build actually compile (H3 / AC-P0-10).
+  app-compile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --all-targets
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Test
-        run: cargo test
+      - name: Check daimon-app (ssr)
+        run: cargo check -p daimon-app --features ssr
+      - name: Check daimon-app (hydrate / wasm)
+        run: cargo check -p daimon-app --features hydrate --no-default-features --target wasm32-unknown-unknown
+      - name: Clippy (non-app crates)
+        run: cargo clippy --workspace --exclude daimon-app --all-targets -- -D warnings
+
+  # Workspace build + tests for the non-app crates (the app is covered above,
+  # under its features).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (non-app crates)
+        run: cargo build --workspace --exclude daimon-app --all-targets
+      - name: Test (non-app crates; live-service tests are #[ignore]-gated)
+        run: cargo test --workspace --exclude daimon-app
+
+  # AC-P0-03 / AC-P0-07: replay the FULL migration chain on a fresh Postgres
+  # and prove the tenancy/PVE scaffold is gone. This is the standing guard
+  # against the V007/V016 collision (C1) and any tenant_id/RLS regressing back.
+  migrate-replay:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: daimon
+          POSTGRES_PASSWORD: daimon
+          POSTGRES_DB: daimon
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U daimon"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: daimon
+      PGPASSWORD: daimon
+      PGDATABASE: daimon
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Replay migration chain on a fresh DB
+        run: |
+          set -euo pipefail
+          for f in $(ls crates/daimon-db/migrations/V0*.sql | sort); do
+            echo "applying $(basename "$f")"
+            psql -v ON_ERROR_STOP=1 -1 -q -f "$f"
+          done
+      - name: Assert schema is de-tenanted (AC-P0-07)
+        run: |
+          set -euo pipefail
+          assert_zero() { n=$(psql -tAc "$2"); if [ "$n" != "0" ]; then echo "FAIL: $1 (got $n, want 0)"; exit 1; fi; echo "ok: $1"; }
+          assert_one()  { n=$(psql -tAc "$2"); if [ "$n" != "1" ]; then echo "FAIL: $1 (got $n, want 1)"; exit 1; fi; echo "ok: $1"; }
+          assert_zero "no tenant_id columns"        "SELECT count(*) FROM information_schema.columns WHERE column_name='tenant_id';"
+          assert_zero "no public.tenants table"     "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='tenants';"
+          assert_zero "no public.clusters table"    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='clusters';"
+          assert_zero "no RLS-enabled tables"       "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relrowsecurity AND n.nspname IN ('public','vault','inventory','audit','memory','observer');"
+          assert_zero "no RLS policies"             "SELECT count(*) FROM pg_policies;"
+          assert_zero "no tenant helper functions"  "SELECT count(*) FROM pg_proc WHERE proname IN ('current_tenant_id','current_role_is_cluster_admin');"
+          assert_one  "observer.named_queries exists" "SELECT count(*) FROM information_schema.tables WHERE table_schema='observer' AND table_name='named_queries';"
+          assert_one  "users org-wide unique username" "SELECT count(*) FROM pg_indexes WHERE tablename='users' AND indexname='users_username_idx';"
+
+  # AC-P0-06: the tenancy + PVE scaffolding must be gone from live crate
+  # source. The pattern targets code identifiers (plumbing fns, deleted crate
+  # names, PVE types), not the literal table names — those still appear in
+  # explanatory comments and in migrations, which is fine. daimon-migrate is
+  # excluded: it is the obsolete SQLite->PG bridge, a P6 cull candidate that
+  # legitimately still references the dropped objects until it is removed.
+  scaffold-gone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: grep-clean gate (tenant / PVE scaffolding in live crates)
+        run: |
+          set -euo pipefail
+          pattern='resolve_tenant|current_tenant_id|with_tenant|set_tenant_context|tenant_slug|daimon_pve|daimon-pve|daimon_tool_platform|daimon-tool-platform|PveCache'
+          if grep -rInE "$pattern" --include='*.rs' crates/*/src | grep -v '/daimon-migrate/'; then
+            echo "FAIL: tenancy/PVE scaffolding tokens still present in live crate source"
+            exit 1
+          fi
+          echo "ok: no tenant/PVE scaffolding in crates/*/src (daimon-migrate excluded — P6 cull)"
 
   # D21 enforcement: `daimon-vault`, `daimon-inventory`, and `daimon-transport`
-  # may only appear as dependencies of `daimon-broker`. Catches accidental
-  # direct deps from worker crates or `daimon-app`. See `deny.toml`.
+  # may only appear as dependencies of `daimon-broker`. See `deny.toml`.
   deny:
     runs-on: ubuntu-latest
     steps:

@@ -14,11 +14,9 @@
 //! at the SQL layer via row-level security policies (added in V002+).
 
 pub mod error;
-pub mod session;
 
 pub use deadpool_postgres::Pool;
 pub use error::{Error, Result};
-pub use session::{set_tenant_context, with_tenant};
 
 use deadpool_postgres::{Manager, ManagerConfig, RecyclingMethod};
 use tokio_postgres::{Config, NoTls};
