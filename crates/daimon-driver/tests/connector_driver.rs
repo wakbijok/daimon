@@ -45,6 +45,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // -------------------------------------------------------------------------
 
 const K8S_TOML: &str = include_str!("../../../deploy/connectors/k8s.toml");
+const PROXMOX_TOML: &str = include_str!("../../../deploy/connectors/proxmox.toml");
 
 /// Build a broker with a REST transport pointing at nothing in particular; the
 /// caller seeds the inventory target host/port. `guard_policy` (if Some) attaches
@@ -201,6 +202,70 @@ async fn read_dispatched_against_wiremock_returns_doc() {
     assert_eq!(doc.doc["status"], 200);
     assert_eq!(doc.doc["result"]["status"]["phase"], "Running");
     assert_eq!(doc.doc["result"]["metadata"]["name"], "web-0");
+}
+
+// AC-P5-02: the Proxmox connector dispatches VM status over REST with the
+// custom PVEAPIToken auth header (P5-1 auth scheme), end-to-end through the
+// broker + real RestTransport — NOT Bearer.
+#[tokio::test]
+async fn proxmox_dispatch_sends_pveapitoken_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api2/json/nodes/pve1/qemu/100/status/current"))
+        .and(header("authorization", "PVEAPIToken root@pam!daimon=uuid-secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "status": "running", "vmid": 100, "uptime": 3600 }
+        })))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let (host, port) = uri.strip_prefix("http://").unwrap().split_once(':').unwrap();
+
+    let (broker, inv, vault) = broker_with_rest(None).await;
+    // Seed the PVE target + its API-token credential (the full PVE token value).
+    let cred_ref = CredentialRef::parse("vault://pve-token").unwrap();
+    vault
+        .insert(
+            cred_ref.clone(),
+            Credential::ApiToken {
+                token: "root@pam!daimon=uuid-secret".into(),
+            },
+        )
+        .await;
+    inv.upsert(ManagedTarget {
+        r#ref: InvTargetRef::parse("target://pve-lab").unwrap(),
+        kind: TargetKind::Platform,
+        transport: TransportKind::Rest,
+        host: host.to_string(),
+        port: port.parse().unwrap(),
+        credential_ref: cred_ref.to_string(),
+        labels: BTreeMap::new(),
+        capabilities: vec!["compute.proxmox.vm.status".into()],
+    })
+    .await
+    .unwrap();
+
+    // Proxmox profile with op paths rewritten to the wiremock base.
+    let mut profile: ConnectorProfile = toml::from_str(PROXMOX_TOML).expect("proxmox.toml parses");
+    for cap in &mut profile.capabilities {
+        cap.op.path = format!("{uri}{}", cap.op.path);
+    }
+    let d = connector(broker, vec![profile]);
+
+    let doc = d
+        .read_state(
+            "target://pve-lab",
+            json!({
+                "capability": "compute.proxmox.vm.status",
+                "params": { "node": "pve1", "vmid": "100" }
+            }),
+        )
+        .await
+        .expect("proxmox read_state ok (header matched -> mock responded)");
+
+    assert_eq!(doc.doc["status"], 200);
+    assert_eq!(doc.doc["result"]["data"]["status"], "running");
 }
 
 // -------------------------------------------------------------------------

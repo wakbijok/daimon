@@ -1,0 +1,78 @@
+# daimon connector profile — Proxmox VE virtualization over the REST API.
+#
+# This is where daimon's `compute` class extends from BAREMETAL (redfish.toml)
+# to VIRTUALIZATION: VM lifecycle on a Proxmox VE cluster. Same declarative
+# ConnectorDriver, same Broker.execute path (guard + vault + audit), same
+# param::validate injection chokepoint on every {param}.
+#
+# Auth: Proxmox does NOT use Bearer — it uses an API-TOKEN header
+# `Authorization: PVEAPIToken <user>@<realm>!<tokenid>=<secret>`. The `[auth]`
+# block below (P5-1 auth scheme) formats that header; the token VALUE
+# (`user@realm!tokenid=secret`) is a Credential::ApiToken in the vault, resolved
+# by target_ref — never in this file. Create the PVE token with a role that can
+# read status + start/stop the VMs daimon should manage; store it in the vault.
+#
+# Target: the inventory entry gives host + port (PVE API is :8006) + the vault
+# credential ref. Class `compute` -> aggregated with redfish into the compute
+# class-driver.
+
+name = "proxmox"
+class = "compute"
+transport = "rest"
+
+[auth]
+scheme = "header"
+header = "Authorization"
+value = "PVEAPIToken {token}"
+
+# --- READ: VM status ------------------------------------------------------
+# GET the live QEMU VM status. `.status` carries a read verb -> bypasses policy
+# via the server-derived read-only bit; no approval.
+[[capability]]
+name = "compute.proxmox.vm.status"
+version = "1.0.0"
+description = "Read a Proxmox VE VM's current status (running/stopped, cpu, mem, uptime)."
+read_only = true
+parse = "json"
+
+[capability.params]
+node = "identifier"
+vmid = "int"
+
+[capability.op]
+method = "GET"
+path = "/api2/json/nodes/{node}/qemu/{vmid}/status/current"
+
+# --- WRITE: start a VM (compensated by stop) ------------------------------
+# POST the start action — a WRITE, approval-gated by the compute.* policy rule.
+# Saga inverse: stop.
+[[capability]]
+name = "compute.proxmox.vm.start"
+version = "1.0.0"
+description = "Start a Proxmox VE VM."
+compensating = "compute.proxmox.vm.stop"
+irreversible = false
+
+[capability.params]
+node = "identifier"
+vmid = "int"
+
+[capability.op]
+method = "POST"
+path = "/api2/json/nodes/{node}/qemu/{vmid}/status/start"
+
+# --- WRITE: stop a VM (compensated by start) ------------------------------
+[[capability]]
+name = "compute.proxmox.vm.stop"
+version = "1.0.0"
+description = "Stop a Proxmox VE VM."
+compensating = "compute.proxmox.vm.start"
+irreversible = false
+
+[capability.params]
+node = "identifier"
+vmid = "int"
+
+[capability.op]
+method = "POST"
+path = "/api2/json/nodes/{node}/qemu/{vmid}/status/stop"
