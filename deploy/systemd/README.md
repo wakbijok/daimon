@@ -65,6 +65,58 @@ start and exposes it at `$CREDENTIALS_DIRECTORY/vault-master`, which
 For local development (no systemd), set `DAIMON_MASTER_KEY_FILE` to a 32-byte
 key file instead; the loader logs a loud WARN in that mode.
 
+## Messaging gateways (Telegram / Matrix)
+
+daimon can be reached from a chat platform (P4). A channel message runs the
+**same** authenticated chat + tool path a browser turn takes — bound to a real
+IAM identity, gated by the same policy + approval. Configure channels under
+**Settings → Channels** (`admin`-gated). Nothing is enabled by default; with no
+channel enabled, the `POST /api/v1/gw/{channel}` route 404s and no poller runs.
+
+**Secrets live in the vault, referenced by credential name** (never in
+`app_config` or a log — FR-GW-17). Create each bot secret as an `ApiToken`
+credential under **Settings → Vault & KMS**, then name it in the Channels tab.
+
+### Telegram (inbound webhook)
+
+Needs a public HTTPS ingress (a reverse proxy terminating TLS in front of
+`:3000`). Telegram POSTs updates to `https://<host>/api/v1/gw/telegram`,
+authenticated by a secret token daimon verifies constant-time.
+
+1. Create the bot via `@BotFather`; note the bot token.
+2. Store both as vault `ApiToken` credentials, e.g. `gw-telegram-bot-token` and
+   `gw-telegram-webhook-secret` (any random 32+ char string for the latter).
+3. In **Channels**, set:
+   `channels.telegram.enabled = true`,
+   `channels.telegram.bot_token_cred = gw-telegram-bot-token`,
+   `channels.telegram.webhook_secret_cred = gw-telegram-webhook-secret`.
+4. Register the webhook with Telegram (once), pinning the secret token:
+   ```sh
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d "url=https://<host>/api/v1/gw/telegram" \
+     -d "secret_token=<the webhook secret>"
+   ```
+5. Restart daimon. Enrol the operator's Telegram **numeric user id** →
+   daimon username under **Channels → Identity enrolment**. An unmapped handle
+   is refused fail-closed.
+
+### Matrix (`/sync` poller)
+
+No public ingress needed — daimon long-polls the homeserver as a bot.
+
+1. Create a bot account on your homeserver; obtain a long-lived **access token**.
+2. Store it as a vault `ApiToken` credential, e.g. `gw-matrix-access-token`.
+3. In **Channels**, set:
+   `channels.matrix.enabled = true`,
+   `channels.matrix.homeserver = https://matrix.example.org`,
+   `channels.matrix.access_token_cred = gw-matrix-access-token`.
+4. Restart daimon. Invite the bot to a room; enrol the operator's **MXID**
+   (`@user:server`) → daimon username under **Identity enrolment**. The bot skips
+   its own messages and resumes from a persisted `/sync` cursor across restarts.
+
+> Outbound alert routing (anomaly / approval push to a channel) is a later-phase
+> deliverable — P4 is inbound + reply only.
+
 ## Self-update
 
 > **Status: under rework (revival P5).** The release-artifact pipeline and the

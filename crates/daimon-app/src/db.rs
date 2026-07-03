@@ -436,6 +436,20 @@ pub async fn get_config(pool: &Pool, key: &str) -> Result<Option<String>> {
     }))
 }
 
+/// Read a config value as its raw JSON (not string-collapsed). `get_config`
+/// above returns `None` for any non-string JSONB (e.g. a boolean
+/// `channels.telegram.enabled = true`); boot-time consumers that need the real
+/// type use this instead.
+#[cfg(feature = "ssr")]
+pub async fn get_config_json(pool: &Pool, key: &str) -> Result<Option<serde_json::Value>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt("SELECT value FROM public.app_config WHERE key = $1", &[&key])
+        .await
+        .context("get_config_json")?;
+    Ok(row.map(|r| r.get::<_, serde_json::Value>(0)))
+}
+
 #[cfg(feature = "ssr")]
 pub async fn set_config(pool: &Pool, key: &str, value: &str) -> Result<()> {
     let client = pool.get().await.context("pg client")?;

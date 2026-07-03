@@ -329,6 +329,10 @@ async fn main() {
     // observer→app dependency.
     let self_metrics = Arc::new(daimon_app::observability::SelfMetrics::new());
 
+    // P4-7 — build the messaging-gateway registry from the channels.* config +
+    // the vault-held bot secrets. Done before AppState moves `broker`/`pool`.
+    let (gateway_registry, matrix_adapter) = build_gateways(&broker, &pool).await;
+
     let app_state = AppState {
         db: pool,
         jwt_secret,
@@ -340,11 +344,19 @@ async fn main() {
         graph,
         memory,
         self_metrics: self_metrics.clone(),
-        // P4-4: the gateway registry. Empty here; P4-7 replaces this with
-        // `build_registry(...)` which enables the configured channels + resolves
-        // their vault-held secrets at boot.
-        gateways: std::sync::Arc::new(daimon_app::gw::GatewayRegistry::new()),
+        // P4-7: the gateway registry, built from the channels.* config —
+        // webhook adapters (Telegram) registered here; the Matrix poller is
+        // spawned just below once AppState exists. Empty when nothing is enabled.
+        gateways: std::sync::Arc::new(gateway_registry),
     };
+
+    // P4-7 (FR-GW-05): spawn the Matrix /sync poller only if the channel is
+    // enabled + its access token resolved. The poller needs the full AppState
+    // (for the shared inbound pipeline), so it is spawned after the struct.
+    if let Some(adapter) = matrix_adapter {
+        daimon_app::gw::spawn_matrix_poller(app_state.clone(), std::sync::Arc::new(adapter));
+        log!("gateway: matrix poller spawned");
+    }
 
     // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
     //
@@ -515,39 +527,12 @@ async fn boot_broker() -> anyhow::Result<std::sync::Arc<daimon_broker::Broker>> 
 /// `NullMemory` (memory degrades, boot proceeds).
 #[cfg(feature = "ssr")]
 async fn resolve_dmem_token(broker: &std::sync::Arc<daimon_broker::Broker>) -> Option<String> {
-    use daimon_broker::Credential;
     use leptos::logging::log;
-
-    const ACTOR: &str = "system:boot";
     const CRED_NAME: &str = "dmem-bearer";
 
-    match broker.vault_list_metadata(ACTOR).await {
-        Ok(metas) => {
-            if let Some(meta) = metas.into_iter().find(|m| m.name == CRED_NAME) {
-                match broker.vault_reveal(ACTOR, meta.id).await {
-                    // `Credential` is ZeroizeOnDrop (implements Drop) so we can't
-                    // move `token` out — match by ref and clone the secret.
-                    Ok(cred) => match &cred {
-                        Credential::ApiToken { token } => return Some(token.clone()),
-                        other => {
-                            log!(
-                                "resolve_dmem_token: vault entry '{CRED_NAME}' is not an ApiToken \
-                                 (kind={:?}) — ignoring; falling back to env",
-                                other.kind()
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        log!("resolve_dmem_token: vault_reveal('{CRED_NAME}') failed ({e}) — falling back to env");
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log!("resolve_dmem_token: vault_list_metadata failed ({e}) — falling back to env");
-        }
+    if let Some(t) = resolve_vault_api_token(broker, CRED_NAME).await {
+        return Some(t);
     }
-
     match std::env::var("DAIMON_DMEM_TOKEN") {
         Ok(t) if !t.is_empty() => {
             log!(
@@ -558,6 +543,133 @@ async fn resolve_dmem_token(broker: &std::sync::Arc<daimon_broker::Broker>) -> O
         }
         _ => None,
     }
+}
+
+/// Resolve a named `ApiToken` credential from daimon's OWN vault (audited reveal
+/// under the synthetic `"system:boot"` actor). Shared by the dmem bearer and the
+/// gateway bot tokens / signing secrets (FR-GW-17: secrets by reference, never
+/// plaintext config). Returns `None` (with a log) on any miss so the caller can
+/// degrade — a gateway simply stays disabled.
+#[cfg(feature = "ssr")]
+async fn resolve_vault_api_token(
+    broker: &std::sync::Arc<daimon_broker::Broker>,
+    cred_name: &str,
+) -> Option<String> {
+    use daimon_broker::Credential;
+    use leptos::logging::log;
+    const ACTOR: &str = "system:boot";
+
+    match broker.vault_list_metadata(ACTOR).await {
+        Ok(metas) => {
+            if let Some(meta) = metas.into_iter().find(|m| m.name == cred_name) {
+                match broker.vault_reveal(ACTOR, meta.id).await {
+                    // `Credential` is ZeroizeOnDrop — match by ref, clone the secret.
+                    Ok(cred) => match &cred {
+                        Credential::ApiToken { token } => return Some(token.clone()),
+                        other => log!(
+                            "resolve_vault_api_token: '{cred_name}' is not an ApiToken (kind={:?})",
+                            other.kind()
+                        ),
+                    },
+                    Err(e) => log!("resolve_vault_api_token: reveal('{cred_name}') failed ({e})"),
+                }
+            } else {
+                log!("resolve_vault_api_token: credential '{cred_name}' not found in vault");
+            }
+        }
+        Err(e) => log!("resolve_vault_api_token: vault_list_metadata failed ({e})"),
+    }
+    None
+}
+
+/// Build the gateway registry from the `channels.*` config (P4-7, FR-GW-05/16).
+///
+/// A channel is wired only if `channels.<ch>.enabled` is truthy AND its
+/// vault-held secret(s) resolve — otherwise it is skipped with a log (fail-safe:
+/// a mis-configured channel never blocks boot). Returns the webhook registry
+/// (Telegram) plus an optional Matrix poller adapter for the caller to spawn
+/// once `AppState` exists. With nothing enabled, the registry is empty and no
+/// poller runs — the `/api/v1/gw/*` route then 404s (no footprint).
+#[cfg(feature = "ssr")]
+async fn build_gateways(
+    broker: &std::sync::Arc<daimon_broker::Broker>,
+    pool: &daimon_db::Pool,
+) -> (
+    daimon_app::gw::GatewayRegistry,
+    Option<daimon_gateway::adapters::matrix::MatrixAdapter>,
+) {
+    use daimon_app::gw::{AppConfigCursor, GatewayRegistry};
+    use daimon_gateway::adapters::{matrix::MatrixAdapter, telegram::TelegramAdapter};
+    use leptos::logging::log;
+
+    async fn truthy(pool: &daimon_db::Pool, key: &str) -> bool {
+        match daimon_app::db::get_config_json(pool, key).await {
+            Ok(Some(serde_json::Value::Bool(b))) => b,
+            Ok(Some(serde_json::Value::String(s))) => {
+                matches!(s.to_lowercase().as_str(), "true" | "1" | "yes" | "on")
+            }
+            _ => false,
+        }
+    }
+    async fn cfg_str(pool: &daimon_db::Pool, key: &str) -> Option<String> {
+        match daimon_app::db::get_config_json(pool, key).await {
+            Ok(Some(serde_json::Value::String(s))) if !s.trim().is_empty() => Some(s),
+            _ => None,
+        }
+    }
+
+    let mut registry = GatewayRegistry::new();
+    let mut matrix = None;
+
+    // --- Telegram (webhook) ---
+    if truthy(pool, "channels.telegram.enabled").await {
+        let token_cred = cfg_str(pool, "channels.telegram.bot_token_cred").await;
+        let secret_cred = cfg_str(pool, "channels.telegram.webhook_secret_cred").await;
+        match (token_cred, secret_cred) {
+            (Some(tc), Some(sc)) => {
+                let token = resolve_vault_api_token(broker, &tc).await;
+                let secret = resolve_vault_api_token(broker, &sc).await;
+                match (token, secret) {
+                    (Some(token), Some(secret)) => {
+                        registry.register(std::sync::Arc::new(TelegramAdapter::new(token, secret)));
+                        log!("gateway: telegram ENABLED (webhook /api/v1/gw/telegram)");
+                    }
+                    _ => log!(
+                        "gateway: telegram enabled but token/secret credential did not resolve — skipping"
+                    ),
+                }
+            }
+            _ => log!(
+                "gateway: telegram enabled but channels.telegram.{{bot_token_cred,webhook_secret_cred}} unset — skipping"
+            ),
+        }
+    }
+
+    // --- Matrix (/sync poller) ---
+    if truthy(pool, "channels.matrix.enabled").await {
+        let homeserver = cfg_str(pool, "channels.matrix.homeserver").await;
+        let token_cred = cfg_str(pool, "channels.matrix.access_token_cred").await;
+        match (homeserver, token_cred) {
+            (Some(hs), Some(tc)) => match resolve_vault_api_token(broker, &tc).await {
+                Some(token) => {
+                    matrix = Some(MatrixAdapter::new(
+                        hs,
+                        token,
+                        std::sync::Arc::new(AppConfigCursor::new(pool.clone())),
+                    ));
+                    log!("gateway: matrix ENABLED (/sync poller)");
+                }
+                None => log!(
+                    "gateway: matrix enabled but access-token credential did not resolve — skipping"
+                ),
+            },
+            _ => log!(
+                "gateway: matrix enabled but channels.matrix.{{homeserver,access_token_cred}} unset — skipping"
+            ),
+        }
+    }
+
+    (registry, matrix)
 }
 
 #[cfg(feature = "ssr")]
