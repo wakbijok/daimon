@@ -149,6 +149,15 @@ async fn main() {
     // so this handle publishes to the SAME channel the supervised TriageAgent
     // subscribes on.
     let bus_handle = bus.handle();
+
+    // P7-1 (FR-GW-13): give the guard the bus handle so a write that parks for
+    // approval publishes an `awaiting_approval` envelope the alert router fans
+    // out to an approver's channel. Fail-soft inside the guard — a publish
+    // failure never affects the approval flow.
+    if let Some(guard) = broker.guard() {
+        guard.set_bus(bus_handle.clone());
+    }
+
     let routeros_driver = Arc::new(daimon_driver_firewall_routeros::RouterOsDriver::new(
         daimon_core::AgentId::new("agent:routeros"),
         broker.clone(),

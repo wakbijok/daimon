@@ -1117,6 +1117,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "daimon-core",
  "daimon-db",
  "daimon-graph",
  "deadpool-postgres",

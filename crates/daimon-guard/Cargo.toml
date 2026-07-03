@@ -9,6 +9,11 @@ description = "Guard for daimon — KILL switch (D13), policy DSL, approval inbo
 [dependencies]
 daimon-db = { path = "../daimon-db" }
 daimon-graph = { path = "../daimon-graph" }
+# P7-1: the guard publishes an `awaiting_approval` envelope on the bus when a
+# write parks for approval (FR-GW-13). Uses only the abstract BusHandle +
+# AgentEnvelope from core — never the concrete InProcBus (same seam the observer
+# uses); no vault/inventory/transport dep, so the D21 boundary is unaffected.
+daimon-core = { path = "../daimon-core" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
