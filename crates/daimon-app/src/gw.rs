@@ -133,6 +133,17 @@ impl InboundHandler for AppInboundHandler {
             "gateway turn dispatched (same Harness/Guard path as a browser turn)"
         );
 
+        // P6-12 (FR-GW-14): approve-over-chat. If the message is an approve/deny
+        // command, apply the decision through the SAME server-side role check as
+        // the console (approver/admin) — the bound channel identity NEVER grants
+        // authority — instead of dispatching it to the LLM.
+        if let Some((approved, approval_id)) = parse_approval_command(&msg.text) {
+            self.decide_over_chat(&actor, approved, approval_id, &session_id, &mut sink)
+                .await;
+            sink.finish().await;
+            return;
+        }
+
         // The SAME entry point a browser turn uses (FR-GW-09/10). It calls
         // `sink.finish()` itself at end-of-turn, flushing the batched reply.
         crate::chat::handle_chat_send(
@@ -145,6 +156,92 @@ impl InboundHandler for AppInboundHandler {
         )
         .await;
     }
+}
+
+impl AppInboundHandler {
+    /// Apply an approve/deny decision received over a gateway (FR-GW-14). The
+    /// authority check is IDENTICAL to the console `decide_approval` server-fn
+    /// (`require_approver`: the actor must hold `approver` or `admin`) and runs
+    /// server-side against the fail-closed-bound identity — a read-only/operator
+    /// reply is refused. Does NOT trust any client-supplied actor; uses the
+    /// bound `GatewayActor`.
+    async fn decide_over_chat(
+        &self,
+        actor: &crate::db::GatewayActor,
+        approved: bool,
+        approval_id: uuid::Uuid,
+        session_id: &str,
+        sink: &mut Box<dyn ReplySink>,
+    ) {
+        let is_approver = actor
+            .roles
+            .iter()
+            .any(|r| r == "approver" || r == "admin");
+        if !is_approver {
+            warn!(actor = %actor.username, "approve-over-chat refused — not an approver/admin");
+            reply(sink, session_id,
+                "🚫 Not authorized: approving requires the `approver` or `admin` role.").await;
+            return;
+        }
+
+        // The guard's ApprovalQueue is the single decision writer — the broker's
+        // parked `execute` is watching the same row (identical to a console
+        // decision). Reached via the broker, never a direct vault/db path.
+        let Some(queue) = self.state.broker.guard().map(|g| g.approvals().clone()) else {
+            reply(sink, session_id, "internal error: no guard configured").await;
+            return;
+        };
+        let status = if approved {
+            daimon_guard::ApprovalStatus::Approved
+        } else {
+            daimon_guard::ApprovalStatus::Denied
+        };
+        match queue.decide(approval_id, actor.user_id, status).await {
+            Ok(_) => {
+                info!(
+                    actor = %actor.username,
+                    approval = %approval_id,
+                    approved,
+                    "approve-over-chat decision applied"
+                );
+                let verb = if approved { "✅ Approved" } else { "🛑 Denied" };
+                reply(sink, session_id, &format!("{verb} approval `{approval_id}`.")).await;
+            }
+            // decide() only touches a `pending` row, so a missing row means the
+            // approval was already decided, expired, or the id is wrong.
+            Err(e) => {
+                warn!(approval = %approval_id, error = %e, "approve-over-chat decide failed");
+                reply(sink, session_id, &format!(
+                    "No pending approval `{approval_id}` (already decided, expired, or unknown id)."
+                )).await;
+            }
+        }
+    }
+}
+
+/// Parse an `approve <uuid>` / `deny <uuid>` command (case-insensitive, optional
+/// leading `/`). Returns `(approved, id)` or `None` if the text is a normal
+/// chat message. This is the explicit-id form; reply-to correlation layers on
+/// top of it by resolving the replied-to alert message to its approval id.
+fn parse_approval_command(text: &str) -> Option<(bool, uuid::Uuid)> {
+    let t = text.trim();
+    let (verb, rest) = t.split_once(char::is_whitespace)?;
+    let approved = match verb.to_ascii_lowercase().as_str() {
+        "approve" | "/approve" => true,
+        "deny" | "/deny" => false,
+        _ => return None,
+    };
+    let id = uuid::Uuid::parse_str(rest.trim()).ok()?;
+    Some((approved, id))
+}
+
+/// Emit a single-message reply through a batched sink (one `TokenDelta`).
+async fn reply(sink: &mut Box<dyn ReplySink>, session_id: &str, text: &str) {
+    sink.emit(TurnEvent::TokenDelta {
+        session_id: session_id.to_string(),
+        content: text.to_string(),
+    })
+    .await;
 }
 
 /// `POST /api/v1/gw/{channel}` — the inbound webhook route for every webhook
@@ -245,4 +342,26 @@ pub fn spawn_poller(state: AppState, adapter: Arc<dyn daimon_gateway::PollingGat
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_approval_command;
+
+    #[test]
+    fn parses_approve_and_deny_with_uuid() {
+        let id = "11111111-2222-3333-4444-555555555555";
+        let (ok, got) = parse_approval_command(&format!("approve {id}")).unwrap();
+        assert!(ok);
+        assert_eq!(got.to_string(), id);
+        let (ok, _) = parse_approval_command(&format!("/DENY {id}")).unwrap();
+        assert!(!ok);
+    }
+
+    #[test]
+    fn ignores_non_commands_and_bad_ids() {
+        assert!(parse_approval_command("what firewall rules do you have?").is_none());
+        assert!(parse_approval_command("approve not-a-uuid").is_none());
+        assert!(parse_approval_command("approve").is_none()); // no id
+    }
 }
