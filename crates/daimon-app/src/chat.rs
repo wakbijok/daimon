@@ -29,7 +29,7 @@ use daimon_driver_firewall_routeros::{NetworkRequest, NetworkResponse};
 use daimon_gateway::{ReplySink, TurnEvent};
 use daimon_llm::{
     AnthropicClient, AssistantContent, ChatMessage, CompletionRequest, ContentDelta, LlmClient,
-    Role, StopReason, ToolDefinition,
+    LocalClient, OpenAiClient, Role, StopReason, ToolDefinition,
 };
 use daimon_memory::{PreTurnContext, RecallBudget, TypedRecord};
 use daimon_redis::ConvMessage;
@@ -172,6 +172,31 @@ fn parse_typed_record(tool_name: &str, mut args: Json) -> std::result::Result<Ty
     serde_json::from_value::<TypedRecord>(args).map_err(|e| format!("invalid {kind} record: {e}"))
 }
 
+/// Select the LLM client by `DAIMON_LLM_PROVIDER` (default `anthropic`):
+/// - `anthropic` — `api.anthropic.com`, `ANTHROPIC_API_KEY` (pay-per-token).
+/// - `openai` — OpenAI-compatible; `OPENAI_BASE_URL` (default `api.openai.com`),
+///   `OPENAI_API_KEY`, `OPENAI_MODEL`. Point the base URL at a local runtime or a
+///   subscription-fronting proxy for zero API charges.
+/// - `local` / `ollama` — native Ollama client, `DAIMON_LLM_LOCAL_URL`.
+///
+/// All return a boxed `LlmClient`, so the turn loop is provider-agnostic
+/// (SDS §8 AI Provider; the provider is config, not a compile-time constant).
+fn select_llm() -> std::result::Result<Box<dyn LlmClient>, String> {
+    let provider =
+        std::env::var("DAIMON_LLM_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
+    match provider.to_ascii_lowercase().as_str() {
+        "openai" => OpenAiClient::from_env()
+            .map(|c| Box::new(c) as Box<dyn LlmClient>)
+            .map_err(|e| e.to_string()),
+        "local" | "ollama" => LocalClient::from_env()
+            .map(|c| Box::new(c) as Box<dyn LlmClient>)
+            .map_err(|e| e.to_string()),
+        _ => AnthropicClient::from_env()
+            .map(|c| Box::new(c) as Box<dyn LlmClient>)
+            .map_err(|e| e.to_string()),
+    }
+}
+
 /// Entry point — handle a single ChatSend message from the client.
 pub async fn handle_chat_send(
     sink: &mut dyn ReplySink,
@@ -181,8 +206,12 @@ pub async fn handle_chat_send(
     user_message: String,
     model: Option<String>,
 ) {
-    // Resolve clients lazily — Phase 4 default is Anthropic.
-    let llm = match AnthropicClient::from_env() {
+    // Resolve the LLM client by provider (DAIMON_LLM_PROVIDER; default anthropic).
+    // `openai` honours OPENAI_BASE_URL, so it also reaches a local runtime or a
+    // subscription-fronting proxy (the zero-API-charge paths); `local` is the
+    // Ollama-style client. All three satisfy the same LlmClient trait, so the
+    // turn loop is provider-agnostic.
+    let llm: Box<dyn LlmClient> = match select_llm() {
         Ok(c) => c,
         Err(e) => {
             sink.emit(TurnEvent::Error {

@@ -1,9 +1,12 @@
-//! OpenAI Chat Completions API client.
+//! OpenAI-compatible Chat Completions client.
 //!
-//! Endpoint: `https://api.openai.com/v1/chat/completions`
-//! Auth: `Authorization: Bearer <key>`.
-//! Tool-use uses OpenAI's `tools` + `tool_choice` + `tool_calls` shape; we
-//! map to/from daimon's provider-agnostic `ToolDefinition` / `ToolCall`.
+//! Default endpoint: `https://api.openai.com/v1/chat/completions`, overridable
+//! via `OPENAI_BASE_URL` so daimon can point at ANY OpenAI-compatible server —
+//! a local runtime (Ollama `/v1`, llama.cpp, vLLM, LM Studio), a gateway
+//! (LiteLLM), or a subscription-fronting proxy — without per-token API charges.
+//! Auth: `Authorization: Bearer <key>` (`OPENAI_API_KEY`; a proxy may accept any
+//! placeholder). Tool-use uses OpenAI's `tools`/`tool_choice`/`tool_calls` shape,
+//! mapped to/from daimon's provider-agnostic `ToolDefinition` / `ToolCall`.
 
 use std::pin::Pin;
 
@@ -21,29 +24,50 @@ use crate::types::{
 };
 use crate::LlmClient;
 
-const API_URL: &str = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_BASE: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "gpt-4o";
 
 pub struct OpenAiClient {
     http: Client,
     api_key: String,
+    /// Full chat-completions endpoint, derived from the base URL.
+    url: String,
     default_model: String,
 }
 
 impl OpenAiClient {
+    /// Construct from env: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`),
+    /// `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o`). Pointing
+    /// `OPENAI_BASE_URL` at a local runtime or a subscription-fronting proxy is
+    /// the zero-API-charge path.
     pub fn from_env() -> Result<Self> {
+        let base =
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.to_string());
+        // A proxy / local server often accepts any token; still require the var
+        // so auth is explicit, but allow a placeholder.
         let api_key =
             std::env::var("OPENAI_API_KEY").map_err(|_| Error::MissingApiKey("OPENAI_API_KEY"))?;
-        Self::new(api_key, DEFAULT_MODEL.to_string())
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        Self::with_base(api_key, base, model)
     }
 
+    /// Construct against the default OpenAI endpoint.
     pub fn new(api_key: String, default_model: String) -> Result<Self> {
+        Self::with_base(api_key, DEFAULT_BASE.to_string(), default_model)
+    }
+
+    /// Construct against an explicit OpenAI-compatible base URL (e.g.
+    /// `http://localhost:11434/v1` for Ollama). The chat-completions path is
+    /// appended.
+    pub fn with_base(api_key: String, base_url: String, default_model: String) -> Result<Self> {
         let http = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         Ok(Self {
             http,
             api_key,
+            url,
             default_model,
         })
     }
@@ -66,7 +90,7 @@ impl LlmClient for OpenAiClient {
         let body = build_request_body(&req, false);
         let resp = self
             .http
-            .post(API_URL)
+            .post(&self.url)
             .bearer_auth(&self.api_key)
             .header("content-type", "application/json")
             .json(&body)
@@ -97,7 +121,7 @@ impl LlmClient for OpenAiClient {
         let body = build_request_body(&req, true);
         let resp = self
             .http
-            .post(API_URL)
+            .post(&self.url)
             .bearer_auth(&self.api_key)
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
