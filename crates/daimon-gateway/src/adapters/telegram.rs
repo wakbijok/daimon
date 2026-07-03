@@ -153,7 +153,11 @@ impl OutboundChannel for TelegramOutbound {
             .json(&serde_json::json!({ "chat_id": self.chat_id, "text": text }))
             .send()
             .await
-            .map_err(|e| format!("telegram sendMessage: {e}"))?;
+            // FR-GW-17: the bot token is in the URL path (Telegram's API design),
+            // and reqwest appends the request URL to a transport error's Display.
+            // `without_url()` strips it so a routine network blip does not write
+            // the token to the fail-soft warn! log in BufferSink::finish.
+            .map_err(|e| format!("telegram sendMessage: {}", e.without_url()))?;
         if !resp.status().is_success() {
             return Err(format!("telegram sendMessage HTTP {}", resp.status()));
         }
@@ -240,6 +244,23 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, GatewayError::Ignored(_)));
+    }
+
+    #[tokio::test]
+    async fn send_error_does_not_leak_bot_token() {
+        // FR-GW-17 regression: a transport error must not carry the bot token
+        // (which is in the URL path) into the error string that gets logged.
+        // Port 1 on loopback refuses immediately → a connect error whose URL,
+        // if not stripped, would contain the token.
+        let out = TelegramOutbound {
+            http: reqwest::Client::new(),
+            api_base: "http://127.0.0.1:1".into(),
+            bot_token: TOKEN.into(),
+            chat_id: "555".into(),
+        };
+        let err = out.send("hi".into()).await.unwrap_err();
+        assert!(!err.contains(TOKEN), "bot token leaked in transport error: {err}");
+        assert!(!err.contains("BOT-TOKEN"), "bot token fragment leaked: {err}");
     }
 
     #[tokio::test]

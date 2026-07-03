@@ -239,7 +239,10 @@ impl OutboundChannel for MatrixOutbound {
             .json(&serde_json::json!({ "msgtype": "m.text", "body": text }))
             .send()
             .await
-            .map_err(|e| format!("matrix room send: {e}"))?;
+            // Strip the URL from the logged error for consistency with the
+            // Telegram fix — the Matrix access token rides in the bearer header
+            // (not the URL), so this is defence-in-depth, not a known leak.
+            .map_err(|e| format!("matrix room send: {}", e.without_url()))?;
         if !resp.status().is_success() {
             return Err(format!("matrix room send HTTP {}", resp.status()));
         }
