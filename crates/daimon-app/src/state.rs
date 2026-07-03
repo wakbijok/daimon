@@ -46,4 +46,9 @@ pub struct AppState {
     /// shared `Arc<AtomicU64>` handles the `ObserverIngest` increments directly,
     /// so `/metrics` is a single source of truth without an observer→app dep.
     pub self_metrics: Arc<crate::observability::SelfMetrics>,
+    /// P4 — messaging gateways (SRS §4.8). The enabled webhook adapters keyed by
+    /// channel id; the `POST /api/v1/gw/{channel}` route dispatches through this.
+    /// Populated at boot from the Channels config (`build_registry`, P4-7); empty
+    /// when no channel is enabled — the route then 404s and no adapter runs.
+    pub gateways: Arc<crate::gw::GatewayRegistry>,
 }

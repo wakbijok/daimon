@@ -340,6 +340,10 @@ async fn main() {
         graph,
         memory,
         self_metrics: self_metrics.clone(),
+        // P4-4: the gateway registry. Empty here; P4-7 replaces this with
+        // `build_registry(...)` which enables the configured channels + resolves
+        // their vault-held secrets at boot.
+        gateways: std::sync::Arc::new(daimon_app::gw::GatewayRegistry::new()),
     };
 
     // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
@@ -403,6 +407,16 @@ async fn main() {
         .route(
             "/api/v1/ws",
             axum::routing::get(daimon_app::ws::ws_handler),
+        )
+        // P4 (FR-GW-05/07): the inbound webhook route for every webhook adapter.
+        // Registered here (before leptos_routes) exactly like `/api/v1/ws`. It is
+        // internet-facing and UNauthenticated at the HTTP layer on purpose —
+        // authenticity is the per-request signature/secret the adapter verifies
+        // (FR-GW-07), then identity is bound fail-closed (FR-GW-08). An unknown
+        // or disabled channel 404s (no adapter registered).
+        .route(
+            "/api/v1/gw/{channel}",
+            axum::routing::post(daimon_app::gw::gateway_webhook),
         )
         .route(
             "/healthz",

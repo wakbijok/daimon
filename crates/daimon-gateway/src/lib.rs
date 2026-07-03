@@ -22,6 +22,7 @@
 //! `daimon-transport`. Credentials reach a gateway only by reference through the
 //! broker. A CI grep gate on `Cargo.toml` enforces this.
 
+pub mod adapters;
 pub mod gateway;
 pub mod reply_sink;
 #[cfg(feature = "verify")]

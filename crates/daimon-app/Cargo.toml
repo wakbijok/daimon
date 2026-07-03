@@ -78,7 +78,7 @@ futures-util = { version = "0.3", optional = true }
 # P4: messaging gateways. The chat loop's ReplySink seam lives here (the browser
 # WsSink implements it); the Telegram (webhook) + Matrix (/sync poller) adapters
 # are behind this crate's own features. ssr-only — adapters pull tokio/reqwest.
-daimon-gateway = { path = "../daimon-gateway", features = ["telegram", "matrix"], optional = true }
+daimon-gateway = { path = "../daimon-gateway", features = ["telegram"], optional = true }
 
 [features]
 hydrate = [
