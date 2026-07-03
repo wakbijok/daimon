@@ -40,7 +40,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use daimon_broker::{
-    AuthScheme, Broker, ExecRequest, HttpMethod, Op, OpResult, TargetRef as InvTargetRef,
+    AuthScheme, Broker, ExecRequest, HttpMethod, Op, OpResult, SnmpValue,
+    TargetRef as InvTargetRef,
 };
 use daimon_core::{
     Agent, AgentContext, AgentEnvelope, AgentId, Capability, CompensatingCapability, CoreError,
@@ -143,6 +144,9 @@ pub enum ProfileTransport {
     Rest,
     /// SSH — the driver renders `Op::ShellCommand` from a `command` template.
     Ssh,
+    /// SNMP v2c (read-only) — the driver renders `Op::SnmpGet`/`SnmpWalk` from an
+    /// `oid` template.
+    Snmp,
 }
 
 /// One `[[capability]]` block.
@@ -241,6 +245,13 @@ pub struct ProfileOp {
     /// Optional SSH command timeout (seconds); defaults to 30.
     #[serde(default)]
     pub timeout_secs: Option<u32>,
+    /// SNMP OID template with `{param}` slots (a single OID for get, or the
+    /// subtree root for walk). Present for `transport = "snmp"` ops.
+    #[serde(default)]
+    pub oid: Option<String>,
+    /// For SNMP: walk the OID subtree instead of a single get.
+    #[serde(default)]
+    pub walk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -531,6 +542,7 @@ impl ConnectorDriver {
         let op = match d.transport {
             ProfileTransport::Rest => render_http_op(&decl.op, capability, &validated, &d.auth)?,
             ProfileTransport::Ssh => render_ssh_op(&decl.op, capability, &validated, timeout_secs)?,
+            ProfileTransport::Snmp => render_snmp_op(&decl.op, capability, &validated)?,
         };
 
         // Build + submit the ExecRequest through the broker (guard/vault/audit).
@@ -667,6 +679,24 @@ fn render_ssh_op(
     })
 }
 
+/// Render an `Op::SnmpGet`/`SnmpWalk` from an SNMP capability's `oid` template.
+/// Any `{param}` slot (e.g. an interface index) was validated first.
+fn render_snmp_op(
+    op: &ProfileOp,
+    capability: &str,
+    validated: &BTreeMap<String, String>,
+) -> Result<Op, ConnectorError> {
+    let template = op.oid.as_ref().ok_or_else(|| {
+        ConnectorError::BadProfile(format!("snmp capability `{capability}` has no `oid`"))
+    })?;
+    let oid = substitute(template, capability, validated)?;
+    Ok(if op.walk {
+        Op::SnmpWalk { oid_root: oid }
+    } else {
+        Op::SnmpGet { oid }
+    })
+}
+
 impl ProfileOp {
     fn op_method(&self) -> HttpMethod {
         self.method.into()
@@ -761,6 +791,21 @@ fn parse_result(
                 "exit_status": exit_status,
             }),
         )),
+        OpResult::Snmp { values } => {
+            // A read succeeds if it returned any binding. Map SnmpValue -> JSON.
+            let map: serde_json::Map<String, serde_json::Value> = values
+                .into_iter()
+                .map(|(oid, v)| {
+                    let jv = match v {
+                        SnmpValue::Int(i) => serde_json::json!(i),
+                        SnmpValue::String(s) => serde_json::json!(s),
+                        SnmpValue::Oid(o) => serde_json::json!(o),
+                    };
+                    (oid, jv)
+                })
+                .collect();
+            Ok((true, 0, serde_json::Value::Object(map)))
+        }
         other => Err(ConnectorError::WrongOpResult(format!("{other:?}"))),
     }
 }
@@ -1128,6 +1173,8 @@ mod tests {
             body: None,
             command: Some("systemctl restart {service} && systemctl is-active {service}".into()),
             timeout_secs: None,
+            oid: None,
+            walk: false,
         };
         let mut v = BTreeMap::new();
         v.insert("service".to_string(), "nginx".to_string());
@@ -1181,9 +1228,45 @@ mod tests {
             body: None,
             command: None,
             timeout_secs: None,
+            oid: None,
+            walk: false,
         };
         let err = render_ssh_op(&op, "c", &BTreeMap::new(), 30).unwrap_err();
         assert!(matches!(err, ConnectorError::BadProfile(_)));
+    }
+
+    #[test]
+    fn render_snmp_op_get_and_walk() {
+        // GET a single OID (with a validated {ifindex} param).
+        let get = ProfileOp {
+            method: ProfileHttpMethod::Get,
+            path: String::new(),
+            body: None,
+            command: None,
+            timeout_secs: None,
+            oid: Some("1.3.6.1.2.1.2.2.1.8.{ifindex}".into()),
+            walk: false,
+        };
+        let mut v = BTreeMap::new();
+        v.insert("ifindex".to_string(), "3".to_string());
+        match render_snmp_op(&get, "network.snmp.interface.status", &v).unwrap() {
+            Op::SnmpGet { oid } => assert_eq!(oid, "1.3.6.1.2.1.2.2.1.8.3"),
+            other => panic!("expected SnmpGet, got {other:?}"),
+        }
+        // WALK a subtree.
+        let walk = ProfileOp {
+            method: ProfileHttpMethod::Get,
+            path: String::new(),
+            body: None,
+            command: None,
+            timeout_secs: None,
+            oid: Some("1.3.6.1.2.1.2.2.1".into()),
+            walk: true,
+        };
+        match render_snmp_op(&walk, "network.snmp.interfaces", &BTreeMap::new()).unwrap() {
+            Op::SnmpWalk { oid_root } => assert_eq!(oid_root, "1.3.6.1.2.1.2.2.1"),
+            other => panic!("expected SnmpWalk, got {other:?}"),
+        }
     }
 
     #[test]

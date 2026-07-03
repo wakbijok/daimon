@@ -1,0 +1,67 @@
+# daimon connector profile — a generic SNMP v2c device (READ-ONLY telemetry).
+#
+# The DECLARATIVE SNMP transport (P5-4): the ConnectorDriver renders an
+# Op::SnmpGet / Op::SnmpWalk from each capability's `oid` template and submits it
+# via Broker.execute — same guard + vault + audit path as REST/SSH. Covers gear
+# that exposes SNMP but no REST/SSH API: switches, routers, PDUs, UPSes, NAS,
+# environmental sensors. Read-only by design (SNMP SET is refused by the
+# transport in this build), so every capability here bypasses policy via the
+# server-derived read-only bit.
+#
+# Auth: SNMP v2c community string — a Credential::ApiToken (the community) in the
+# vault, resolved by target_ref, never in this file.
+#
+# Class `network` -> a network class-driver (coexists with the RouterOS code
+# driver; routed by capability: network.snmp.* here, network.routeros.* there).
+
+name = "snmp-device"
+class = "network"
+transport = "snmp"
+
+# --- READ: system uptime (single GET) -------------------------------------
+[[capability]]
+name = "network.snmp.uptime"
+version = "1.0.0"
+description = "Read a device's sysUpTime (time since last re-init)."
+read_only = true
+
+[capability.op]
+oid = "1.3.6.1.2.1.1.3.0"
+
+# --- READ: the whole system group (WALK) ----------------------------------
+# sysDescr / sysUpTime / sysContact / sysName / sysLocation etc.
+[[capability]]
+name = "network.snmp.system"
+version = "1.0.0"
+description = "Walk the SNMP system group (description, name, contact, location, uptime)."
+read_only = true
+
+[capability.op]
+oid = "1.3.6.1.2.1.1"
+walk = true
+
+# --- READ: interface table (WALK) -----------------------------------------
+# ifTable — per-interface counters, admin/oper status, speed, octets in/out.
+[[capability]]
+name = "network.snmp.interfaces"
+version = "1.0.0"
+description = "Walk the SNMP interface table (per-interface status + counters)."
+read_only = true
+
+[capability.op]
+oid = "1.3.6.1.2.1.2.2.1"
+walk = true
+
+# --- READ: one interface's operational status (GET with a param) ----------
+# ifOperStatus.{ifindex}. {ifindex} is an int, validated at the chokepoint.
+[[capability]]
+name = "network.snmp.interface.status"
+version = "1.0.0"
+description = "Read one interface's operational status by ifIndex (up/down)."
+read_only = true
+
+[capability.params]
+ifindex = "int"
+
+[capability.op]
+oid = "1.3.6.1.2.1.2.2.1.8.{ifindex}"

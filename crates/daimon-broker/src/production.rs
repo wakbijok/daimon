@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use daimon_audit::{AuditSink, PostgresAuditSink};
 use daimon_inventory::{Inventory, PostgresRegistry};
-use daimon_transport::{RestTransport, SshTransport, Transport};
+use daimon_transport::{RestTransport, SnmpTransport, SshTransport, Transport};
 use daimon_vault::{MasterKey, PostgresVaultClient};
 use thiserror::Error;
 use tracing::info;
@@ -112,9 +112,13 @@ pub async fn build_production_broker(cfg: BootConfig) -> Result<Arc<Broker>, Boo
     // danger_accept_invalid_certs). Three of the four reference target classes
     // (Kubernetes / vCenter / cloud APIs) speak pure REST (FR-CON-15).
     let rest: Arc<dyn Transport> = Arc::new(RestTransport::new());
+    // SNMP v2c transport (read-only) — device telemetry from gear that speaks
+    // neither REST nor SSH (P5-4).
+    let snmp: Arc<dyn Transport> = Arc::new(SnmpTransport::new());
     let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
     transports.insert(TransportKind::Ssh, ssh);
     transports.insert(TransportKind::Rest, rest);
+    transports.insert(TransportKind::Snmp, snmp);
 
     // Phase 5 — assemble Guard.
     let kill_switch = daimon_guard::KillSwitch::new(cfg.kill_path.clone());
