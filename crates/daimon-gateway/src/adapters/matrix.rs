@@ -29,8 +29,8 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::gateway::{
-    ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler, InboundHttp,
-    InboundMessage, Ingress, PollingGateway,
+    AlertBody, ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler,
+    InboundHttp, InboundMessage, Ingress, PollingGateway, Recipient,
 };
 use crate::reply_sink::{BufferSink, OutboundChannel, ReplySink};
 
@@ -171,6 +171,34 @@ impl Gateway for MatrixAdapter {
             room_id: correlation.reply_to.clone(),
             txn: self.txn.clone(),
         }))
+    }
+
+    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+        // P6-9 (FR-GW-13): PUT the alert into the target room. The access token
+        // rides the bearer header (not the URL); `without_url()` is
+        // defence-in-depth for the logged error (FR-GW-17).
+        let txn = self.txn.fetch_add(1, Ordering::Relaxed);
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+            self.homeserver,
+            urlencode(&to.to),
+            txn
+        );
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .json(&serde_json::json!({ "msgtype": "m.text", "body": body.render() }))
+            .send()
+            .await
+            .map_err(|e| GatewayError::Channel(format!("matrix deliver_alert: {}", e.without_url())))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Channel(format!(
+                "matrix deliver_alert HTTP {}",
+                resp.status()
+            )));
+        }
+        Ok(())
     }
 }
 

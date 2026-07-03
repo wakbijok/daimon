@@ -127,6 +127,18 @@ pub struct AlertBody {
     pub body: String,
 }
 
+impl AlertBody {
+    /// Render to a single plain-text message (title, blank line, body). Both
+    /// Telegram and Matrix send plain text, so this is the shared wire form.
+    pub fn render(&self) -> String {
+        if self.body.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n\n{}", self.title, self.body)
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
     /// Verification failed — reject with HTTP 401, log, never reach the Harness.

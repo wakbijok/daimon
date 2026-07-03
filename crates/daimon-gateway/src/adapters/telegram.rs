@@ -19,8 +19,8 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::gateway::{
-    ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler, InboundHttp,
-    InboundMessage, Ingress, PollingGateway,
+    AlertBody, ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler,
+    InboundHttp, InboundMessage, Ingress, PollingGateway, Recipient,
 };
 use crate::reply_sink::{BufferSink, OutboundChannel, ReplySink};
 use crate::verify;
@@ -118,6 +118,33 @@ fn update_to_inbound(update: Update) -> Result<InboundMessage, GatewayError> {
     })
 }
 
+/// P6-9 (FR-GW-13): post a proactive alert to an explicit chat via `sendMessage`.
+/// Shared by both Telegram adapters' `deliver_alert`. The bot token rides in the
+/// URL path (Telegram's API design), so `without_url()` strips it from any
+/// transport-error Display before it can reach a log (FR-GW-17).
+async fn telegram_send_alert(
+    http: &reqwest::Client,
+    api_base: &str,
+    bot_token: &str,
+    chat_id: &str,
+    text: &str,
+) -> Result<(), GatewayError> {
+    let url = format!("{api_base}/bot{bot_token}/sendMessage");
+    let resp = http
+        .post(&url)
+        .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
+        .send()
+        .await
+        .map_err(|e| GatewayError::Channel(format!("telegram deliver_alert: {}", e.without_url())))?;
+    if !resp.status().is_success() {
+        return Err(GatewayError::Channel(format!(
+            "telegram deliver_alert HTTP {}",
+            resp.status()
+        )));
+    }
+    Ok(())
+}
+
 /// Build the batched reply sink that posts one `sendMessage` per turn to
 /// `reply_to`. Shared by both the webhook and poll adapters.
 fn telegram_sink(
@@ -142,6 +169,10 @@ impl Gateway for TelegramAdapter {
 
     fn ingress(&self) -> Ingress {
         Ingress::Webhook
+    }
+
+    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+        telegram_send_alert(&self.http, &self.api_base, &self.bot_token, &to.to, &body.render()).await
     }
 
     async fn verify_and_parse(&self, req: &InboundHttp) -> Result<InboundMessage, GatewayError> {
@@ -261,6 +292,10 @@ impl Gateway for TelegramPollAdapter {
             correlation.reply_to.clone(),
         )
     }
+
+    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+        telegram_send_alert(&self.http, &self.api_base, &self.bot_token, &to.to, &body.render()).await
+    }
 }
 
 #[async_trait]
@@ -375,6 +410,25 @@ mod tests {
         assert_eq!(msg.text, "show firewall rules");
         assert_eq!(msg.correlation.reply_to, "555"); // chat id, for reply
         assert_eq!(msg.correlation.session_id("telegram"), "gw:telegram:555");
+    }
+
+    #[tokio::test]
+    async fn deliver_alert_posts_to_recipient_chat() {
+        // P6-9 (FR-GW-13): deliver_alert sends one sendMessage to the explicit
+        // recipient chat with the rendered title+body.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/sendMessage")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let adapter = TelegramAdapter::with_api_base(TOKEN.into(), SECRET.into(), server.uri());
+        let to = Recipient { channel: "telegram".into(), to: "555".into() };
+        let body = AlertBody { title: "⚠ anomaly".into(), body: "cpu high on target://k3s-lab".into() };
+        adapter.deliver_alert(&to, &body).await.expect("alert delivered");
+        // The `.expect(1)` on the mock verifies exactly one sendMessage on drop.
     }
 
     #[tokio::test]
