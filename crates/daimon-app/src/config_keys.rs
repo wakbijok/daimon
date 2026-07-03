@@ -68,6 +68,57 @@ pub fn consumed_keys_under(prefix: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// The settings domains the boot config-coherence lint (FR-CFG-01) enforces:
+/// every `app_config` key under one of these prefixes MUST be either consumed by
+/// the runtime or read-only, else it is an orphan editable key (write-only
+/// theatre). Prefixes NOT listed here (`jwt_secret`, `update.*`, `rag.*` — the
+/// latter only partially wired) are exempt so the lint asserts only what we
+/// claim is wired.
+pub const MANAGED_LINT_PREFIXES: &[&str] = &[
+    "identity.",
+    "llm.",
+    "guard.",
+    "observer.",
+    "channels.",
+    "targets.",
+];
+
+/// Orphan editable keys: keys under a managed prefix that the runtime neither
+/// consumes nor renders read-only (FR-CFG-01). An empty result = coherent.
+pub fn orphan_keys<'a>(all_keys: impl Iterator<Item = &'a str>) -> Vec<String> {
+    all_keys
+        .filter(|k| {
+            MANAGED_LINT_PREFIXES.iter().any(|p| k.starts_with(p))
+                && !is_consumed(k)
+                && !is_read_only_key(k)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Render the code-derived configuration reference (FR-CFG-04): every consumed
+/// key + descriptor and the read-only domains, as Markdown. Derived from the
+/// registry, so it cannot drift from what the runtime actually reads.
+pub fn render_reference() -> String {
+    let mut out = String::from("# daimon configuration reference\n\n");
+    out.push_str(
+        "Resolution precedence for every key: **DB `app_config` (operator edit) → \
+         environment variable → compiled default** (FR-CFG-02). Bootstrap secrets \
+         (`DAIMON_PG_URL`, master key, `DAIMON_DATA_DIR`) are env/credential-sourced \
+         and never in `app_config` (FR-CFG-03).\n\n",
+    );
+    out.push_str("## Consumed keys (read by the runtime)\n\n");
+    out.push_str("| key | description |\n|-----|-------------|\n");
+    for (k, desc) in CONSUMED_KEYS {
+        out.push_str(&format!("| `{k}` | {desc} |\n"));
+    }
+    out.push_str("\n## Read-only domains (not runtime-consumed in this build)\n\n");
+    for p in READ_ONLY_PREFIXES {
+        out.push_str(&format!("- `{p}*`\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

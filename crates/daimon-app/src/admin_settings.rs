@@ -92,6 +92,15 @@ async fn intercept_secret(
     }
 }
 
+/// P6-13 (FR-CFG-04): the code-derived configuration reference (Markdown). Not
+/// secret — any authenticated operator may read it.
+#[server]
+pub async fn get_config_reference() -> Result<String, ServerFnError> {
+    use crate::auth_guard::require_authenticated;
+    require_authenticated().await?;
+    Ok(crate::config_keys::render_reference())
+}
+
 // ---- get / set / list -------------------------------------------------------
 
 #[server]

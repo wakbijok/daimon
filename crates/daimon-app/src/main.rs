@@ -73,6 +73,21 @@ async fn main() {
     let config = match daimon_app::config::ConfigResolver::load(&pool).await {
         Ok(c) => {
             log!("config resolver: loaded {} app_config key(s)", c.current().len());
+            // P6-13 (FR-CFG-01): config-coherence lint. Every app_config key under
+            // a managed settings prefix must be consumed or read-only; an orphan
+            // editable key is write-only theatre. WARN loudly (not fatal — a stray
+            // key must not brick boot) so it is visible and fixable.
+            let snap = c.current();
+            let orphans = daimon_app::config_keys::orphan_keys(snap.keys());
+            if orphans.is_empty() {
+                log!("config-coherence lint: OK (no orphan editable keys)");
+            } else {
+                eprintln!(
+                    "config-coherence lint: {} orphan editable key(s) — consumed by nothing and not read-only (FR-CFG-01): {}",
+                    orphans.len(),
+                    orphans.join(", ")
+                );
+            }
             std::sync::Arc::new(c)
         }
         Err(e) => {

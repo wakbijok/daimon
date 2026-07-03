@@ -129,6 +129,11 @@ impl ConfigSnapshot {
         self.map.iter().filter(move |(k, _)| k.starts_with(prefix))
     }
 
+    /// Every loaded key (for the boot config-coherence lint, P6-13).
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(String::as_str)
+    }
+
     /// Number of loaded keys (diagnostics / boot log).
     pub fn len(&self) -> usize {
         self.map.len()

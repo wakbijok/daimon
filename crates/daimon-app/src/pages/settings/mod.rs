@@ -20,8 +20,8 @@ use crate::admin_gateways::{
     add_gateway_binding, delete_gateway_binding, list_gateway_bindings, GatewayBindingDto,
 };
 use crate::admin_settings::{
-    apply_update, cancel_update, check_for_update, get_system_info, get_update_state,
-    list_settings, set_setting, SettingRow, SystemInfo, UpdateState,
+    apply_update, cancel_update, check_for_update, get_config_reference, get_system_info,
+    get_update_state, list_settings, set_setting, SettingRow, SystemInfo, UpdateState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -359,6 +359,8 @@ fn KvList(rows: Vec<SettingRow>) -> impl IntoView {
 #[component]
 fn SystemTab() -> impl IntoView {
     let info = Resource::new(|| (), |_| get_system_info());
+    // P6-13 (FR-CFG-04): the code-derived config reference, on demand.
+    let reference = Resource::new(|| (), |_| get_config_reference());
     view! {
         <div class="space-y-4 max-w-3xl">
             <h2 class="text-lg font-semibold text-text-primary">"System"</h2>
@@ -370,6 +372,22 @@ fn SystemTab() -> impl IntoView {
                     }.into_any(),
                 })}
             </Suspense>
+
+            <details class="rounded border border-border-primary bg-surface-secondary p-3">
+                <summary class="text-sm text-text-primary cursor-pointer">
+                    "Configuration reference (code-derived)"
+                </summary>
+                <Suspense fallback=|| view! { <div class="text-text-secondary text-sm mt-2">"loading…"</div> }>
+                    {move || reference.get().map(|res| match res {
+                        Ok(md) => view! {
+                            <pre class="text-[11px] font-mono text-text-secondary whitespace-pre-wrap mt-2 overflow-x-auto">{md}</pre>
+                        }.into_any(),
+                        Err(e) => view! {
+                            <div class="text-accent-danger text-sm">{format!("error: {e}")}</div>
+                        }.into_any(),
+                    })}
+                </Suspense>
+            </details>
         </div>
     }
 }
