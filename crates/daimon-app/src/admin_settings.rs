@@ -53,6 +53,23 @@ pub struct UpdateState {
     pub update_flag_path: String,
 }
 
+/// The scalar TEXT form of a secret value, or `None` when there is no valid
+/// secret payload (null / array / object). Load-bearing for the vault-interception
+/// chokepoint: the settings UI JSON-parses raw input, so a secret typed as
+/// all-digits or `true` arrives as a `Number`/`Bool`, not a `String`. Reducing to
+/// text here — and refusing (clearing) a structured value — guarantees a
+/// non-string secret can never slip past interception into `app_config` as
+/// plaintext (P6 review, HIGH).
+#[cfg(feature = "ssr")]
+fn secret_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// P6-3: store a settings secret in the vault THROUGH the broker (D21), keyed by
 /// a deterministic name. Create-or-update by name so re-saving a changed secret
 /// updates the same credential instead of erroring on a duplicate name. The
@@ -167,17 +184,26 @@ pub async fn set_setting(
     // operator did not change the secret, so we keep the ref untouched
     // (idempotent, no re-wrap, no spurious vault write).
     let persist_value: serde_json::Value = if is_secret {
-        match value.as_str() {
-            Some(existing) if existing.starts_with("vault://") => value.clone(),
+        // Reduce the incoming value to the secret's TEXT form BEFORE deciding.
+        // A secret is always a scalar, but the settings UI JSON-parses raw input,
+        // so a numeric/bool token (e.g. an all-digits API key) arrives as a
+        // `Number`/`Bool`, not a `String`. Normalising here — and CLEARING any
+        // array/object rather than persisting it — closes the plaintext-leak the
+        // old `_ => value.clone()` arm allowed (a non-string secret written to
+        // app_config in cleartext). Only a scalar ever reaches the vault.
+        match secret_text(&value) {
+            Some(existing) if existing.starts_with("vault://") => {
+                serde_json::Value::String(existing)
+            }
             Some(plaintext) if !plaintext.is_empty() => {
                 let vault_name = format!("settings.{key}");
-                intercept_secret(&state, &claims.sub, &vault_name, plaintext)
+                intercept_secret(&state, &claims.sub, &vault_name, &plaintext)
                     .await
                     .map_err(|e| ServerFnError::new(format!("vault store: {e}")))?;
                 serde_json::Value::String(format!("vault://{vault_name}"))
             }
-            // Empty or non-string secret clears the value; store as-is.
-            _ => value.clone(),
+            // Empty or non-scalar secret → store an empty string (cleared).
+            _ => serde_json::Value::String(String::new()),
         }
     } else {
         value.clone()
@@ -645,4 +671,24 @@ async fn latest_gitlab_release(http: &reqwest::Client) -> Result<Option<String>,
     Ok(releases.into_iter().next().and_then(|r| {
         r.get("tag_name").and_then(|v| v.as_str()).map(String::from)
     }))
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod secret_tests {
+    use super::secret_text;
+    use serde_json::json;
+
+    #[test]
+    fn non_string_secrets_reduce_to_text_not_bypass() {
+        // P6 review HIGH regression: a numeric/bool secret must reduce to a
+        // scalar STRING (so it is intercepted + vaulted), never fall through as
+        // a non-string Value that gets stored verbatim in plaintext.
+        assert_eq!(secret_text(&json!(1234567890)).as_deref(), Some("1234567890"));
+        assert_eq!(secret_text(&json!(true)).as_deref(), Some("true"));
+        assert_eq!(secret_text(&json!("sk-abc")).as_deref(), Some("sk-abc"));
+        // structured / null secrets have no valid payload → cleared, never stored
+        assert_eq!(secret_text(&json!(null)), None);
+        assert_eq!(secret_text(&json!({"k": "leaky"})), None);
+        assert_eq!(secret_text(&json!(["leaky"])), None);
+    }
 }
