@@ -81,6 +81,9 @@ futures-util = { version = "0.3", optional = true }
 daimon-gateway = { path = "../daimon-gateway", features = ["telegram", "matrix"], optional = true }
 # P5-5: skills are declarative plan templates parsed from deploy/skills/*.toml.
 toml = { version = "0.8", optional = true }
+# P6: ConfigResolver holds an ArcSwap of the app_config snapshot for lock-free
+# hot-reload — a settings write swaps a fresh snapshot in, readers never block.
+arc-swap = { version = "1", optional = true }
 
 [features]
 hydrate = [
@@ -128,4 +131,5 @@ ssr = [
     "dep:futures-util",
     "dep:daimon-gateway",
     "dep:toml",
+    "dep:arc-swap",
 ]

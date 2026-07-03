@@ -6,6 +6,8 @@ pub mod pages;
 pub mod db;
 pub mod auth;
 pub mod auth_guard;
+#[cfg(feature = "ssr")]
+pub mod config;
 pub mod state;
 #[cfg(feature = "ssr")]
 pub mod harness;
