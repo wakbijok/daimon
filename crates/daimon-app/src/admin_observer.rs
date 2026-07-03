@@ -34,6 +34,61 @@ pub struct MetricSummaryRow {
     pub sample_count: i64,
 }
 
+/// P7-9 (FR-UI-26): one recorded outbound alert delivery (the fail-soft trail
+/// the alert router writes). Surfaced on the Incidents view so an operator sees
+/// detection → delivery in one place.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertDeliveryRow {
+    pub alert_class: String,
+    pub severity: Option<String>,
+    pub signature: String,
+    pub channel: String,
+    pub recipient: String,
+    pub status: String,
+    pub detail: Option<String>,
+    pub created_at: String,
+}
+
+#[server]
+pub async fn list_alert_deliveries(limit: u32) -> Result<Vec<AlertDeliveryRow>, ServerFnError> {
+    use crate::auth_guard::require_admin;
+    use crate::state::AppState;
+
+    let _claims = require_admin().await?;
+    let state = expect_context::<AppState>();
+    let client = state
+        .db
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
+    let rows = client
+        .query(
+            "SELECT alert_class, severity, signature, channel, recipient, status, detail, created_at
+             FROM public.alert_deliveries
+             ORDER BY created_at DESC
+             LIMIT $1",
+            &[&(limit as i64)],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("query: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let created_at: chrono::DateTime<chrono::Utc> = r.get(7);
+            AlertDeliveryRow {
+                alert_class: r.get(0),
+                severity: r.get(1),
+                signature: r.get(2),
+                channel: r.get(3),
+                recipient: r.get(4),
+                status: r.get(5),
+                detail: r.get(6),
+                created_at: created_at.to_rfc3339(),
+            }
+        })
+        .collect())
+}
+
 #[server]
 pub async fn list_anomalies(limit: u32) -> Result<Vec<AnomalyRow>, ServerFnError> {
     use crate::auth_guard::require_admin;
