@@ -151,6 +151,14 @@ pub async fn set_setting(
         )
         .await;
 
+    // P6 (FR-CFG-14): hot-swap a fresh config snapshot so the edit is live for
+    // the next runtime read (LLM model, guard timeout, observer interval, alert
+    // routing). A reload failure is LOGGED, never fatal — the row is already
+    // saved; the worst case is the old snapshot lingers until the next write.
+    if let Err(e) = state.config.reload(&state.db).await {
+        tracing::warn!(error = %e, key = %key, "config reload after settings write failed");
+    }
+
     Ok(())
 }
 
@@ -187,6 +195,11 @@ pub async fn delete_setting(key: String) -> Result<(), ServerFnError> {
             meta,
         )
         .await;
+
+    // P6 (FR-CFG-14): reload so the deleted key reverts to its env/default.
+    if let Err(e) = state.config.reload(&state.db).await {
+        tracing::warn!(error = %e, key = %key, "config reload after settings delete failed");
+    }
     Ok(())
 }
 

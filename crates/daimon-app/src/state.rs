@@ -54,4 +54,10 @@ pub struct AppState {
     /// P5-5 — skills (workflow-templates). Loaded from `deploy/skills/*.toml` at
     /// boot; running one instantiates a plan through the orchestrator.
     pub skills: Arc<crate::skills::SkillLibrary>,
+    /// P6 — the single config source-of-truth resolver (FR-CFG-02). Every
+    /// runtime config read resolves through this (DB `app_config` → env →
+    /// default); a settings write calls `reload()` to hot-swap a fresh snapshot
+    /// (FR-CFG-14). Held as `Arc` so background tasks (observer, router) share
+    /// the same live handle.
+    pub config: Arc<crate::config::ConfigResolver>,
 }

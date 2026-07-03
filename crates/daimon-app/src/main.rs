@@ -66,6 +66,25 @@ async fn main() {
         }
     };
 
+    // P6 — the config resolver (FR-CFG-02). Load the initial app_config snapshot
+    // now that the pool is up. A load failure DEGRADES to an empty snapshot
+    // (every read then falls to env/default) rather than failing boot — config
+    // resolution must never be more fragile than the pre-P6 env-only path.
+    let config = match daimon_app::config::ConfigResolver::load(&pool).await {
+        Ok(c) => {
+            log!("config resolver: loaded {} app_config key(s)", c.current().len());
+            std::sync::Arc::new(c)
+        }
+        Err(e) => {
+            eprintln!(
+                "daimon-app: config resolver load failed ({e:#}) — degrading to env/default only"
+            );
+            std::sync::Arc::new(daimon_app::config::ConfigResolver::from_snapshot(
+                daimon_app::config::ConfigSnapshot::default(),
+            ))
+        }
+    };
+
     // Ensure JWT secret exists
     let jwt_secret = match db::get_config(&pool, "jwt_secret").await.unwrap_or(None) {
         Some(secret) => secret,
@@ -360,6 +379,7 @@ async fn main() {
         // spawned just below once AppState exists. Empty when nothing is enabled.
         gateways: std::sync::Arc::new(gateway_registry),
         skills,
+        config,
     };
 
     // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram
