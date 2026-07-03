@@ -202,6 +202,16 @@ pub trait PollingGateway: Gateway {
     async fn run_ingress(&self, handler: Arc<dyn InboundHandler>) -> Result<(), GatewayError>;
 }
 
+/// Persists a poller's resume cursor across restarts — Matrix's `/sync` `since`
+/// token, Telegram's `getUpdates` offset. daimon-gateway has no DB access (D21),
+/// so the store is injected; daimon-app backs it with `app_config`. A `None`
+/// load means "cold start" (the adapter seeds a fresh cursor).
+#[async_trait]
+pub trait CursorStore: Send + Sync {
+    async fn load(&self) -> Option<String>;
+    async fn save(&self, cursor: &str);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

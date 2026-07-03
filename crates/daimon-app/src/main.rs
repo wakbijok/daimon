@@ -331,7 +331,9 @@ async fn main() {
 
     // P4-7 — build the messaging-gateway registry from the channels.* config +
     // the vault-held bot secrets. Done before AppState moves `broker`/`pool`.
-    let (gateway_registry, matrix_adapter) = build_gateways(&broker, &pool).await;
+    // Webhook adapters land in the registry; pollers (Matrix /sync, Telegram
+    // getUpdates) are returned to spawn once AppState exists.
+    let (gateway_registry, gateway_pollers) = build_gateways(&broker, &pool).await;
 
     let app_state = AppState {
         db: pool,
@@ -350,12 +352,11 @@ async fn main() {
         gateways: std::sync::Arc::new(gateway_registry),
     };
 
-    // P4-7 (FR-GW-05): spawn the Matrix /sync poller only if the channel is
-    // enabled + its access token resolved. The poller needs the full AppState
-    // (for the shared inbound pipeline), so it is spawned after the struct.
-    if let Some(adapter) = matrix_adapter {
-        daimon_app::gw::spawn_matrix_poller(app_state.clone(), std::sync::Arc::new(adapter));
-        log!("gateway: matrix poller spawned");
+    // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram
+    // getUpdates). Pollers need the full AppState (for the shared inbound
+    // pipeline), so they are spawned after the struct.
+    for poller in gateway_pollers {
+        daimon_app::gw::spawn_poller(app_state.clone(), poller);
     }
 
     // Phase 7 — observer ingest. Only spawns if DAIMON_PROM_URL is set.
@@ -596,11 +597,16 @@ async fn build_gateways(
     pool: &daimon_db::Pool,
 ) -> (
     daimon_app::gw::GatewayRegistry,
-    Option<daimon_gateway::adapters::matrix::MatrixAdapter>,
+    Vec<std::sync::Arc<dyn daimon_gateway::PollingGateway>>,
 ) {
     use daimon_app::gw::{AppConfigCursor, GatewayRegistry};
-    use daimon_gateway::adapters::{matrix::MatrixAdapter, telegram::TelegramAdapter};
+    use daimon_gateway::PollingGateway;
+    use daimon_gateway::adapters::{
+        matrix::MatrixAdapter,
+        telegram::{TelegramAdapter, TelegramPollAdapter},
+    };
     use leptos::logging::log;
+    use std::sync::Arc;
 
     async fn truthy(pool: &daimon_db::Pool, key: &str) -> bool {
         match daimon_app::db::get_config_json(pool, key).await {
@@ -619,28 +625,47 @@ async fn build_gateways(
     }
 
     let mut registry = GatewayRegistry::new();
-    let mut matrix = None;
+    let mut pollers: Vec<Arc<dyn PollingGateway>> = Vec::new();
 
-    // --- Telegram (webhook) ---
+    // --- Telegram — poll (default) or webhook ---
     if truthy(pool, "channels.telegram.enabled").await {
-        let token_cred = cfg_str(pool, "channels.telegram.bot_token_cred").await;
-        let secret_cred = cfg_str(pool, "channels.telegram.webhook_secret_cred").await;
-        match (token_cred, secret_cred) {
-            (Some(tc), Some(sc)) => {
-                let token = resolve_vault_api_token(broker, &tc).await;
-                let secret = resolve_vault_api_token(broker, &sc).await;
-                match (token, secret) {
-                    (Some(token), Some(secret)) => {
-                        registry.register(std::sync::Arc::new(TelegramAdapter::new(token, secret)));
-                        log!("gateway: telegram ENABLED (webhook /api/v1/gw/telegram)");
+        let mode = cfg_str(pool, "channels.telegram.mode")
+            .await
+            .unwrap_or_else(|| "poll".to_string());
+        match cfg_str(pool, "channels.telegram.bot_token_cred").await {
+            Some(tc) => match resolve_vault_api_token(broker, &tc).await {
+                Some(token) => {
+                    if mode.eq_ignore_ascii_case("webhook") {
+                        // Webhook mode also needs the secret token.
+                        match cfg_str(pool, "channels.telegram.webhook_secret_cred").await {
+                            Some(sc) => match resolve_vault_api_token(broker, &sc).await {
+                                Some(secret) => {
+                                    registry.register(Arc::new(TelegramAdapter::new(token, secret)));
+                                    log!("gateway: telegram ENABLED (webhook /api/v1/gw/telegram)");
+                                }
+                                None => log!(
+                                    "gateway: telegram webhook secret credential did not resolve — skipping"
+                                ),
+                            },
+                            None => log!(
+                                "gateway: telegram mode=webhook but channels.telegram.webhook_secret_cred unset — skipping"
+                            ),
+                        }
+                    } else {
+                        // Poll (default) — getUpdates, no ingress. Reuses an
+                        // internal bot (e.g. John's) with no public endpoint.
+                        let cursor =
+                            Arc::new(AppConfigCursor::new(pool.clone(), "channels.telegram.offset"));
+                        pollers.push(Arc::new(TelegramPollAdapter::new(token, cursor)));
+                        log!("gateway: telegram ENABLED (getUpdates poller)");
                     }
-                    _ => log!(
-                        "gateway: telegram enabled but token/secret credential did not resolve — skipping"
-                    ),
                 }
-            }
-            _ => log!(
-                "gateway: telegram enabled but channels.telegram.{{bot_token_cred,webhook_secret_cred}} unset — skipping"
+                None => log!(
+                    "gateway: telegram bot_token credential did not resolve — skipping"
+                ),
+            },
+            None => log!(
+                "gateway: telegram enabled but channels.telegram.bot_token_cred unset — skipping"
             ),
         }
     }
@@ -652,11 +677,9 @@ async fn build_gateways(
         match (homeserver, token_cred) {
             (Some(hs), Some(tc)) => match resolve_vault_api_token(broker, &tc).await {
                 Some(token) => {
-                    matrix = Some(MatrixAdapter::new(
-                        hs,
-                        token,
-                        std::sync::Arc::new(AppConfigCursor::new(pool.clone())),
-                    ));
+                    let cursor =
+                        Arc::new(AppConfigCursor::new(pool.clone(), "channels.matrix.since"));
+                    pollers.push(Arc::new(MatrixAdapter::new(hs, token, cursor)));
                     log!("gateway: matrix ENABLED (/sync poller)");
                 }
                 None => log!(
@@ -669,7 +692,7 @@ async fn build_gateways(
         }
     }
 
-    (registry, matrix)
+    (registry, pollers)
 }
 
 #[cfg(feature = "ssr")]

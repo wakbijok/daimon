@@ -11,18 +11,24 @@
 //! from the vault by reference at boot and passed in by value here — never
 //! logged (FR-GW-17).
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 
 use crate::gateway::{
-    ChannelId, Correlation, Gateway, GatewayError, InboundHttp, InboundMessage, Ingress,
+    ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler, InboundHttp,
+    InboundMessage, Ingress, PollingGateway,
 };
 use crate::reply_sink::{BufferSink, OutboundChannel, ReplySink};
 use crate::verify;
 
 const DEFAULT_API_BASE: &str = "https://api.telegram.org";
 const SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
+const POLL_TIMEOUT_SECS: u64 = 30;
+const POLL_BACKOFF: Duration = Duration::from_secs(5);
 
 /// A Telegram bot as a daimon `Gateway`.
 pub struct TelegramAdapter {
@@ -54,6 +60,8 @@ impl TelegramAdapter {
 #[derive(Deserialize)]
 struct Update {
     #[serde(default)]
+    update_id: i64,
+    #[serde(default)]
     message: Option<TgMessage>,
 }
 
@@ -73,6 +81,57 @@ struct TgUser {
 #[derive(Deserialize)]
 struct TgChat {
     id: i64,
+}
+
+/// `getUpdates` response envelope (poller ingress).
+#[derive(Deserialize)]
+struct GetUpdates {
+    #[serde(default)]
+    result: Vec<Update>,
+}
+
+/// Normalise a Telegram `Update` to a canonical `InboundMessage`. Shared by the
+/// webhook adapter (`verify_and_parse`) and the poll adapter (`getUpdates`).
+/// Bind on the sender's numeric id; reply to the chat the message arrived in.
+/// A non-text / senderless update is `Ignored` (ack + skip, never an error).
+fn update_to_inbound(update: Update) -> Result<InboundMessage, GatewayError> {
+    let message = update
+        .message
+        .ok_or_else(|| GatewayError::Ignored("update has no message".into()))?;
+    let text = message
+        .text
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| GatewayError::Ignored("message has no text".into()))?;
+    let from = message
+        .from
+        .ok_or_else(|| GatewayError::Ignored("message has no sender".into()))?;
+    let chat_id = message.chat.id.to_string();
+    Ok(InboundMessage {
+        channel: "telegram".into(),
+        platform_handle: from.id.to_string(),
+        text,
+        correlation: Correlation {
+            thread: Some(chat_id.clone()),
+            reply_to: chat_id,
+        },
+        received_at: Utc::now(),
+    })
+}
+
+/// Build the batched reply sink that posts one `sendMessage` per turn to
+/// `reply_to`. Shared by both the webhook and poll adapters.
+fn telegram_sink(
+    http: reqwest::Client,
+    api_base: String,
+    bot_token: String,
+    reply_to: String,
+) -> Box<dyn ReplySink> {
+    Box::new(BufferSink::new(TelegramOutbound {
+        http,
+        api_base,
+        bot_token,
+        chat_id: reply_to,
+    }))
 }
 
 #[async_trait]
@@ -95,43 +154,148 @@ impl Gateway for TelegramAdapter {
         }
         let update: Update = serde_json::from_slice(req.body())
             .map_err(|e| GatewayError::BadRequest(format!("telegram update json: {e}")))?;
-
-        // A webhook fires for many update kinds (edits, joins, callbacks). We
-        // only act on a text message; everything else is acked-and-ignored.
-        let message = update
-            .message
-            .ok_or_else(|| GatewayError::Ignored("update has no message".into()))?;
-        let text = message
-            .text
-            .filter(|t| !t.trim().is_empty())
-            .ok_or_else(|| GatewayError::Ignored("message has no text".into()))?;
-        let from = message
-            .from
-            .ok_or_else(|| GatewayError::Ignored("message has no sender".into()))?;
-
-        // Bind on the sender's numeric user id (stable across username changes);
-        // reply to the chat the message arrived in (differs from the sender in a
-        // group chat — bind the person, answer the room).
-        let chat_id = message.chat.id.to_string();
-        Ok(InboundMessage {
-            channel: "telegram".into(),
-            platform_handle: from.id.to_string(),
-            text,
-            correlation: Correlation {
-                thread: Some(chat_id.clone()),
-                reply_to: chat_id,
-            },
-            received_at: Utc::now(),
-        })
+        // A webhook fires for many update kinds (edits, joins, callbacks). Only a
+        // text message dispatches; everything else is acked-and-ignored.
+        update_to_inbound(update)
     }
 
     fn reply_sink(&self, correlation: &Correlation) -> Box<dyn ReplySink> {
-        Box::new(BufferSink::new(TelegramOutbound {
-            http: self.http.clone(),
-            api_base: self.api_base.clone(),
-            bot_token: self.bot_token.clone(),
-            chat_id: correlation.reply_to.clone(),
-        }))
+        telegram_sink(
+            self.http.clone(),
+            self.api_base.clone(),
+            self.bot_token.clone(),
+            correlation.reply_to.clone(),
+        )
+    }
+}
+
+/// A Telegram bot as a **poller** `Gateway` (SDS §9.8 poller ingress). Instead of
+/// a public webhook, it long-polls `getUpdates` — no ingress, no `setWebhook`,
+/// runs anywhere (this is how daimon reuses an internal bot). Authenticity is the
+/// bot token on the connection; the update offset is persisted via [`CursorStore`]
+/// so a restart does not reprocess. `verify_and_parse` stays `NotImplemented`.
+pub struct TelegramPollAdapter {
+    bot_token: String,
+    api_base: String,
+    http: reqwest::Client,
+    cursor: Arc<dyn CursorStore>,
+}
+
+impl TelegramPollAdapter {
+    pub fn new(bot_token: String, cursor: Arc<dyn CursorStore>) -> Self {
+        Self::with_api_base(bot_token, DEFAULT_API_BASE.to_string(), cursor)
+    }
+
+    pub fn with_api_base(
+        bot_token: String,
+        api_base: String,
+        cursor: Arc<dyn CursorStore>,
+    ) -> Self {
+        // A client timeout slightly above the long-poll window so a hung
+        // connection cannot stall the loop forever.
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(POLL_TIMEOUT_SECS + 5))
+            .build()
+            .unwrap_or_default();
+        Self {
+            bot_token,
+            api_base: api_base.trim_end_matches('/').to_string(),
+            http,
+            cursor,
+        }
+    }
+
+    /// `getUpdates` fails (409) while a webhook is registered. Clear any webhook
+    /// once at startup so an inherited bot (e.g. one previously driven by a
+    /// webhook) can be polled. Best-effort.
+    async fn delete_webhook(&self) {
+        let url = format!("{}/bot{}/deleteWebhook", self.api_base, self.bot_token);
+        if let Err(e) = self.http.post(&url).send().await {
+            tracing::warn!(error = %e.without_url(), "telegram deleteWebhook failed (continuing)");
+        }
+    }
+
+    async fn get_updates(&self, offset: Option<i64>) -> Result<Vec<Update>, GatewayError> {
+        let url = format!("{}/bot{}/getUpdates", self.api_base, self.bot_token);
+        let timeout = POLL_TIMEOUT_SECS.to_string();
+        let mut query: Vec<(&str, String)> = vec![("timeout", timeout)];
+        if let Some(o) = offset {
+            query.push(("offset", o.to_string()));
+        }
+        let resp = self
+            .http
+            .get(&url)
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Channel(format!("getUpdates: {}", e.without_url())))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Channel(format!(
+                "getUpdates HTTP {}",
+                resp.status()
+            )));
+        }
+        let parsed: GetUpdates = resp
+            .json()
+            .await
+            .map_err(|e| GatewayError::Channel(format!("getUpdates decode: {e}")))?;
+        Ok(parsed.result)
+    }
+}
+
+#[async_trait]
+impl Gateway for TelegramPollAdapter {
+    fn channel(&self) -> ChannelId {
+        "telegram".into()
+    }
+
+    fn ingress(&self) -> Ingress {
+        Ingress::Poller
+    }
+
+    fn reply_sink(&self, correlation: &Correlation) -> Box<dyn ReplySink> {
+        telegram_sink(
+            self.http.clone(),
+            self.api_base.clone(),
+            self.bot_token.clone(),
+            correlation.reply_to.clone(),
+        )
+    }
+}
+
+#[async_trait]
+impl PollingGateway for TelegramPollAdapter {
+    async fn run_ingress(&self, handler: Arc<dyn InboundHandler>) -> Result<(), GatewayError> {
+        self.delete_webhook().await;
+        // Resume from the persisted offset (Telegram acks updates <= offset-1).
+        let mut offset: Option<i64> = self.cursor.load().await.and_then(|s| s.parse().ok());
+        tracing::info!(?offset, "telegram poller started (getUpdates)");
+
+        loop {
+            let updates = match self.get_updates(offset).await {
+                Ok(u) => u,
+                Err(e) => {
+                    tracing::warn!(error = %e, "telegram getUpdates failed — backing off");
+                    tokio::time::sleep(POLL_BACKOFF).await;
+                    continue;
+                }
+            };
+            for update in updates {
+                let next = update.update_id + 1;
+                match update_to_inbound(update) {
+                    Ok(msg) => {
+                        let sink = self.reply_sink(&msg.correlation);
+                        handler.handle(msg, sink).await;
+                    }
+                    Err(GatewayError::Ignored(_)) => {}
+                    Err(e) => tracing::warn!(error = %e, "telegram update parse error"),
+                }
+                // Advance + persist the offset AFTER handling so a crash mid-turn
+                // re-delivers the message rather than dropping it.
+                offset = Some(next);
+                self.cursor.save(&next.to_string()).await;
+            }
+        }
     }
 }
 
@@ -301,5 +465,50 @@ mod tests {
         let body: serde_json::Value = reqs[0].body_json().unwrap();
         assert_eq!(body["chat_id"], "555");
         assert_eq!(body["text"], "6 drop rules on the edge firewall.");
+    }
+
+    #[derive(Default)]
+    struct TestCursor {
+        v: std::sync::Mutex<Option<String>>,
+    }
+    #[async_trait]
+    impl CursorStore for TestCursor {
+        async fn load(&self) -> Option<String> {
+            self.v.lock().unwrap().clone()
+        }
+        async fn save(&self, c: &str) {
+            *self.v.lock().unwrap() = Some(c.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_get_updates_parses_and_normalises() {
+        // The poller ingress: getUpdates returns a text update → parses to an
+        // InboundMessage with the same handle/reply mapping as the webhook path,
+        // and the offset advances past the update_id.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/bot{TOKEN}/getUpdates")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": [
+                    { "update_id": 42, "message": {
+                        "message_id": 1, "from": { "id": 777 }, "chat": { "id": 555 }, "text": "list drop rules"
+                    } }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let store: std::sync::Arc<dyn CursorStore> = std::sync::Arc::new(TestCursor::default());
+        let a = TelegramPollAdapter::with_api_base(TOKEN.into(), server.uri(), store);
+        let updates = a.get_updates(None).await.unwrap();
+        assert_eq!(updates.len(), 1);
+        let next_offset = updates[0].update_id + 1;
+        assert_eq!(next_offset, 43);
+        let msg = update_to_inbound(updates.into_iter().next().unwrap()).unwrap();
+        assert_eq!(msg.channel, "telegram");
+        assert_eq!(msg.platform_handle, "777");
+        assert_eq!(msg.text, "list drop rules");
+        assert_eq!(msg.correlation.reply_to, "555");
     }
 }

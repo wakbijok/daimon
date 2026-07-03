@@ -26,7 +26,8 @@ use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use daimon_gateway::{
-    Gateway, GatewayError, InboundHandler, InboundHttp, InboundMessage, ReplySink, TurnEvent,
+    Gateway, GatewayError, InboundHandler, InboundHttp, InboundMessage, PollingGateway, ReplySink,
+    TurnEvent,
 };
 use tracing::{error, info, warn};
 
@@ -192,58 +193,54 @@ fn header_map_to_hashmap(h: &HeaderMap) -> HashMap<String, String> {
         .collect()
 }
 
-// ---- Matrix poller wiring (P4-5) --------------------------------------------
+// ---- Poller wiring (P4-5 Matrix /sync, P4-8 Telegram getUpdates) ------------
 
-/// The Matrix `/sync` resume cursor, persisted in `app_config` so a restart does
-/// not reprocess room history. Backs `daimon_gateway`'s `SyncCursorStore` (that
-/// crate has no DB access — D21).
+/// A poller's resume cursor, persisted in `app_config` under `key` so a restart
+/// does not reprocess history. Backs `daimon_gateway::CursorStore` for both
+/// Matrix (`channels.matrix.since`) and Telegram (`channels.telegram.offset`).
+/// daimon-gateway has no DB access (D21), so the store is injected here.
 pub struct AppConfigCursor {
     pool: daimon_db::Pool,
+    key: String,
 }
 
 impl AppConfigCursor {
-    const KEY: &'static str = "channels.matrix.since";
-
-    pub fn new(pool: daimon_db::Pool) -> Self {
-        Self { pool }
+    pub fn new(pool: daimon_db::Pool, key: impl Into<String>) -> Self {
+        Self {
+            pool,
+            key: key.into(),
+        }
     }
 }
 
 #[async_trait]
-impl daimon_gateway::adapters::matrix::SyncCursorStore for AppConfigCursor {
+impl daimon_gateway::CursorStore for AppConfigCursor {
     async fn load(&self) -> Option<String> {
-        crate::db::get_config(&self.pool, Self::KEY)
+        crate::db::get_config(&self.pool, &self.key)
             .await
             .ok()
             .flatten()
     }
 
     async fn save(&self, cursor: &str) {
-        if let Err(e) = crate::db::set_config(&self.pool, Self::KEY, cursor).await {
-            warn!(error = %e, "matrix: failed to persist /sync cursor");
+        if let Err(e) = crate::db::set_config(&self.pool, &self.key, cursor).await {
+            warn!(error = %e, key = %self.key, "failed to persist poller cursor");
         }
     }
 }
 
-/// Spawn the supervised Matrix poller. `run_ingress` only returns on a fatal
-/// error (bad token, decode failure); the wrapper restarts it after a backoff so
-/// a transient homeserver outage self-heals. Called at boot (P4-7) only when the
-/// `matrix` channel is enabled and its access token resolved.
-pub fn spawn_matrix_poller(
-    state: AppState,
-    adapter: Arc<daimon_gateway::adapters::matrix::MatrixAdapter>,
-) {
-    use daimon_gateway::PollingGateway;
+/// Spawn a supervised poller (Matrix `/sync` or Telegram `getUpdates`).
+/// `run_ingress` only returns on a fatal error; the wrapper restarts it after a
+/// backoff so a transient outage self-heals. Called at boot only when the
+/// channel is enabled + its token resolved.
+pub fn spawn_poller(state: AppState, adapter: Arc<dyn daimon_gateway::PollingGateway>) {
+    let ch = adapter.channel();
     let handler: Arc<dyn InboundHandler> = Arc::new(AppInboundHandler::new(state));
     tokio::spawn(async move {
         loop {
             match adapter.run_ingress(handler.clone()).await {
-                Ok(()) => {
-                    warn!("matrix poller returned cleanly — restarting in 10s");
-                }
-                Err(e) => {
-                    error!(error = %e, "matrix poller exited — restarting in 10s");
-                }
+                Ok(()) => warn!(channel = %ch, "poller returned cleanly — restarting in 10s"),
+                Err(e) => error!(channel = %ch, error = %e, "poller exited — restarting in 10s"),
             }
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }

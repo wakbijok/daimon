@@ -77,28 +77,36 @@ channel enabled, the `POST /api/v1/gw/{channel}` route 404s and no poller runs.
 `app_config` or a log — FR-GW-17). Create each bot secret as an `ApiToken`
 credential under **Settings → Vault & KMS**, then name it in the Channels tab.
 
-### Telegram (inbound webhook)
+### Telegram — two modes
 
-Needs a public HTTPS ingress (a reverse proxy terminating TLS in front of
-`:3000`). Telegram POSTs updates to `https://<host>/api/v1/gw/telegram`,
-authenticated by a secret token daimon verifies constant-time.
+**Poll (default, recommended for a self-hosted/internal bot).** daimon
+long-polls `getUpdates` — no public endpoint, no ingress, runs anywhere. This is
+how daimon reuses an internal bot.
 
-1. Create the bot via `@BotFather`; note the bot token.
-2. Store both as vault `ApiToken` credentials, e.g. `gw-telegram-bot-token` and
-   `gw-telegram-webhook-secret` (any random 32+ char string for the latter).
+1. Create the bot via `@BotFather` (or reuse an existing bot); note the token.
+2. Store it as a vault `ApiToken` credential, e.g. `gw-telegram-bot-token`.
 3. In **Channels**, set:
    `channels.telegram.enabled = true`,
-   `channels.telegram.bot_token_cred = gw-telegram-bot-token`,
-   `channels.telegram.webhook_secret_cred = gw-telegram-webhook-secret`.
-4. Register the webhook with Telegram (once), pinning the secret token:
+   `channels.telegram.mode = poll`,
+   `channels.telegram.bot_token_cred = gw-telegram-bot-token`.
+4. Restart daimon. It clears any stale webhook on the bot, then polls. Enrol the
+   operator's Telegram **numeric user id** → daimon username under
+   **Channels → Identity enrolment**. An unmapped handle is refused fail-closed.
+
+**Webhook (for a public deployment).** Needs a public HTTPS ingress in front of
+`:3000`; Telegram POSTs to `https://<host>/api/v1/gw/telegram`, verified by a
+secret token.
+
+1. Store the bot token + a random secret as vault credentials
+   (`gw-telegram-bot-token`, `gw-telegram-webhook-secret`).
+2. In **Channels**, set `channels.telegram.mode = webhook` plus
+   `channels.telegram.bot_token_cred` and `channels.telegram.webhook_secret_cred`.
+3. Register the webhook (once), pinning the secret:
    ```sh
    curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-     -d "url=https://<host>/api/v1/gw/telegram" \
-     -d "secret_token=<the webhook secret>"
+     -d "url=https://<host>/api/v1/gw/telegram" -d "secret_token=<secret>"
    ```
-5. Restart daimon. Enrol the operator's Telegram **numeric user id** →
-   daimon username under **Channels → Identity enrolment**. An unmapped handle
-   is refused fail-closed.
+4. Restart + enrol as above.
 
 ### Matrix (`/sync` poller)
 

@@ -385,10 +385,12 @@ fn ChannelsTab() -> impl IntoView {
                     <li>
                         <span class="font-mono">"channels.telegram.enabled"</span>
                         " = true, "
+                        <span class="font-mono">"channels.telegram.mode"</span>
+                        " = poll (default — getUpdates, no ingress) or webhook, "
                         <span class="font-mono">"channels.telegram.bot_token_cred"</span>
-                        " = <vault credential name>, "
+                        " = <vault credential name>. Webhook mode also needs "
                         <span class="font-mono">"channels.telegram.webhook_secret_cred"</span>
-                        " = <vault credential name>"
+                        "."
                     </li>
                     <li>
                         <span class="font-mono">"channels.matrix.enabled"</span>

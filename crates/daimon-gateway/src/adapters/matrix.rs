@@ -29,29 +29,22 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::gateway::{
-    ChannelId, Correlation, Gateway, GatewayError, InboundHandler, InboundHttp, InboundMessage,
-    Ingress, PollingGateway,
+    ChannelId, Correlation, CursorStore, Gateway, GatewayError, InboundHandler, InboundHttp,
+    InboundMessage, Ingress, PollingGateway,
 };
 use crate::reply_sink::{BufferSink, OutboundChannel, ReplySink};
 
 const SYNC_TIMEOUT_MS: u64 = 30_000;
 const BACKOFF: Duration = Duration::from_secs(5);
 
-/// Persists the `/sync` resume cursor across restarts. daimon-gateway has no DB
-/// access (D21), so the store is injected — daimon-app backs it with
-/// `app_config` key `channels.matrix.since`.
-#[async_trait]
-pub trait SyncCursorStore: Send + Sync {
-    async fn load(&self) -> Option<String>;
-    async fn save(&self, cursor: &str);
-}
-
-/// A Matrix bot as a daimon `Gateway` (poller ingress).
+/// A Matrix bot as a daimon `Gateway` (poller ingress). The `/sync` resume
+/// cursor is persisted via the injected [`CursorStore`] (backed by `app_config`
+/// key `channels.matrix.since` in daimon-app).
 pub struct MatrixAdapter {
     homeserver: String,
     access_token: String,
     http: reqwest::Client,
-    cursor: Arc<dyn SyncCursorStore>,
+    cursor: Arc<dyn CursorStore>,
     txn: Arc<AtomicU64>,
 }
 
@@ -59,7 +52,7 @@ impl MatrixAdapter {
     pub fn new(
         homeserver: String,
         access_token: String,
-        cursor: Arc<dyn SyncCursorStore>,
+        cursor: Arc<dyn CursorStore>,
     ) -> Self {
         Self {
             homeserver: homeserver.trim_end_matches('/').to_string(),
@@ -346,7 +339,7 @@ mod tests {
 
     struct NullCursor;
     #[async_trait]
-    impl SyncCursorStore for NullCursor {
+    impl CursorStore for NullCursor {
         async fn load(&self) -> Option<String> {
             None
         }
