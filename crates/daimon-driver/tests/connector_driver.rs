@@ -269,6 +269,37 @@ async fn proxmox_dispatch_sends_pveapitoken_header() {
     assert_eq!(doc.doc["result"]["data"]["status"], "running");
 }
 
+// P5 review fix: a REST write that returns a non-2xx status is a FAILURE —
+// remediate must Err (so the caller/saga rolls back), not return a clean Receipt.
+#[tokio::test]
+async fn remediate_errs_on_non_2xx_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/apis/apps/v1/namespaces/default/deployments/web"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let (host, port) = uri.strip_prefix("http://").unwrap().split_once(':').unwrap();
+    let (broker, inv, vault) = broker_with_rest(None).await;
+    seed_k8s_target(&inv, &vault, host, port.parse().unwrap()).await;
+    let d = connector(broker, vec![k8s_profile_at_base(&uri)]);
+
+    let err = d
+        .remediate(
+            "target://k3s-lab",
+            "orchestrator.k8s.deploy.restart",
+            json!({ "namespace": "default", "name": "web" }),
+        )
+        .await
+        .expect_err("a 500 from the API must be an error, not a clean Receipt");
+    assert!(
+        format!("{err}").to_lowercase().contains("fail"),
+        "expected a failure error, got: {err}"
+    );
+}
+
 // -------------------------------------------------------------------------
 // 3. Injection chokepoint (param::validate before any Op)
 // -------------------------------------------------------------------------

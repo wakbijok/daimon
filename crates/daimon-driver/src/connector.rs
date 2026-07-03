@@ -311,6 +311,8 @@ pub enum ConnectorError {
     WrongOpResult(String),
     #[error("malformed connector profile: {0}")]
     BadProfile(String),
+    #[error("capability `{capability}` failed (status {status})")]
+    CapabilityFailed { capability: String, status: i32 },
 }
 
 impl From<ConnectorError> for DriverError {
@@ -545,9 +547,10 @@ impl ConnectorDriver {
             .map_err(|e| ConnectorError::Broker(e.to_string()))?;
 
         // Run the parser over the OpResult, producing the reply payload.
-        let (status, payload) = parse_result(decl.parse, op_result)?;
+        let (success, status, payload) = parse_result(decl.parse, op_result)?;
         Ok(ConnectorOutput {
             capability: capability.to_string(),
+            success,
             status,
             payload,
         })
@@ -730,21 +733,27 @@ fn substitute_json(
     }
 }
 
-/// Turn the transport's `OpResult` into `(status, payload)`. REST returns
-/// `OpResult::Http`; the `json` parse hint (or the default) passes the response
-/// body straight through as a JSON document.
+/// Turn the transport's `OpResult` into `(success, status, payload)`. `success`
+/// is transport-aware — a REST call succeeds on 2xx, an SSH call on exit 0 — so
+/// a non-2xx HTTP response or a non-zero shell exit is honestly a FAILURE, not
+/// laundered into success on the bus reply (which the orchestrator saga keys off
+/// to decide whether to roll back). `status` stays raw (HTTP code / exit code).
 fn parse_result(
     _hint: Option<ParseHint>,
     result: OpResult,
-) -> Result<(i32, serde_json::Value), ConnectorError> {
+) -> Result<(bool, i32, serde_json::Value), ConnectorError> {
     match result {
-        OpResult::Http { status, body, .. } => Ok((status as i32, body)),
-        OpResult::Structured { doc } => Ok((0, doc)),
+        OpResult::Http { status, body, .. } => {
+            let success = (200..=299).contains(&status);
+            Ok((success, status as i32, body))
+        }
+        OpResult::Structured { doc } => Ok((true, 0, doc)),
         OpResult::ShellCommand {
             stdout,
             stderr,
             exit_status,
         } => Ok((
+            exit_status == 0,
             exit_status,
             serde_json::json!({
                 "stdout": stdout,
@@ -832,6 +841,15 @@ impl crate::Driver for ConnectorDriver {
         let out = self
             .dispatch(&self.actor_id, capability, target, &params, DEFAULT_TIMEOUT_SECS)
             .await?;
+        // A failed write is an ERROR to the caller — never a Receipt reporting a
+        // clean change. Saga rollback + the caller depend on this.
+        if !out.success {
+            return Err(ConnectorError::CapabilityFailed {
+                capability: capability.to_string(),
+                status: out.status,
+            }
+            .into());
+        }
         Ok(crate::Receipt {
             capability: capability.to_string(),
             changed: serde_json::json!({
@@ -883,19 +901,57 @@ struct ConnectorReplyOutput {
 }
 
 impl ConnectorReply {
-    fn ok(out: &ConnectorOutput) -> Self {
-        let stdout = match &out.payload {
-            serde_json::Value::String(s) => s.clone(),
-            other => serde_json::to_string(other).unwrap_or_default(),
+    /// Build the bus reply from a dispatch result, HONESTLY reflecting
+    /// success/failure. A non-2xx REST response or a non-zero SSH exit yields
+    /// `success:false` + a non-zero `exit_status` + an `error` — so chat surfaces
+    /// the failure and the orchestrator saga rolls back rather than recording a
+    /// failed remediation as a clean success.
+    fn from_output(out: &ConnectorOutput) -> Self {
+        // SSH payloads carry {stdout, stderr}; REST/structured put the whole doc
+        // in stdout.
+        let (stdout, stderr) = match &out.payload {
+            serde_json::Value::Object(o) if o.contains_key("stdout") || o.contains_key("stderr") => {
+                (
+                    o.get("stdout")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .unwrap_or_default(),
+                    o.get("stderr")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            }
+            serde_json::Value::String(s) => (s.clone(), String::new()),
+            other => (serde_json::to_string(other).unwrap_or_default(), String::new()),
+        };
+        // Normalise to shell semantics for the NetworkResponse contract: 0 on
+        // success, the raw code (or 1) on failure.
+        let exit_status = if out.success {
+            0
+        } else if out.status == 0 {
+            1
+        } else {
+            out.status
+        };
+        let error = if out.success {
+            None
+        } else if !stderr.trim().is_empty() {
+            Some(stderr.clone())
+        } else {
+            Some(format!(
+                "capability `{}` failed (status {})",
+                out.capability, out.status
+            ))
         };
         Self {
-            success: true,
+            success: out.success,
             output: Some(ConnectorReplyOutput {
                 stdout,
-                stderr: String::new(),
-                exit_status: 0,
+                stderr,
+                exit_status,
             }),
-            error: None,
+            error,
         }
     }
     fn err(msg: String) -> Self {
@@ -910,6 +966,9 @@ impl ConnectorReply {
 /// Internal dispatch result carried between `dispatch` and the reply builders.
 struct ConnectorOutput {
     capability: String,
+    /// Transport-aware success (REST 2xx / SSH exit 0). The bus reply + saga
+    /// key off this — a failed op must NOT be reported as success.
+    success: bool,
     status: i32,
     payload: serde_json::Value,
 }
@@ -951,7 +1010,7 @@ impl Agent for ConnectorDriver {
             .dispatch(actor_id, &req.capability, &req.target_ref, &params, timeout_secs)
             .await
         {
-            Ok(out) => ConnectorReply::ok(&out),
+            Ok(out) => ConnectorReply::from_output(&out),
             Err(e) => {
                 error!(error = %e, "connector capability failed");
                 ConnectorReply::err(e.to_string())
@@ -1082,6 +1141,36 @@ mod tests {
             }
             other => panic!("expected ShellCommand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reply_reflects_failure_honestly() {
+        // P5 review fix: a non-zero SSH exit -> success:false + non-zero
+        // exit_status + error (NOT laundered into a clean success on the bus).
+        let out = ConnectorOutput {
+            capability: "compute.host.service.restart".into(),
+            success: false,
+            status: 3,
+            payload: serde_json::json!({"stdout": "", "stderr": "Unit not found", "exit_status": 3}),
+        };
+        let reply = ConnectorReply::from_output(&out);
+        assert!(!reply.success);
+        let o = reply.output.as_ref().unwrap();
+        assert_eq!(o.exit_status, 3);
+        assert_eq!(o.stderr, "Unit not found");
+        assert_eq!(reply.error.as_deref(), Some("Unit not found"));
+
+        // A REST 2xx -> success:true, shell-normalised exit 0.
+        let ok = ConnectorOutput {
+            capability: "orchestrator.k8s.pod.status".into(),
+            success: true,
+            status: 200,
+            payload: serde_json::json!({"data": {}}),
+        };
+        let r = ConnectorReply::from_output(&ok);
+        assert!(r.success);
+        assert_eq!(r.output.unwrap().exit_status, 0);
+        assert!(r.error.is_none());
     }
 
     #[test]

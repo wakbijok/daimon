@@ -485,6 +485,24 @@ impl OrchestratorService {
             )
             .await
             .map_err(|e| Error::Dispatch(e.to_string()))?;
+
+        // The reply is a `NetworkResponse`-shaped body. A driver that RAN but
+        // reported failure (`success: false` — a non-2xx REST response, a
+        // non-zero SSH exit, a device error) is a STEP FAILURE, not a success:
+        // returning it verbatim would let run_plan mark the step Succeeded and
+        // skip the compensator, laundering a failed remediation into a clean run.
+        // Only an explicit `false` fails here — a reply without `success` (a
+        // driver not using this contract) proceeds unchanged.
+        if reply.get("success").and_then(|v| v.as_bool()) == Some(false) {
+            let detail = reply
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("capability reported failure");
+            return Err(Error::Dispatch(format!(
+                "step {} capability `{}` failed: {detail}",
+                step.id, step.capability_name
+            )));
+        }
         Ok(reply)
     }
 
