@@ -278,6 +278,11 @@ pub async fn handle_chat_send(
     };
     let working = state.working_memory.clone();
 
+    // P7-4 (FR-UI-18): resolve the durable-history owner ONCE. `None` (unknown
+    // user / db hiccup) keeps the pre-P7 behaviour: Redis-hot only, no durable
+    // persistence — the turn is never blocked on the durable write.
+    let history_owner = crate::db::user_id_for_actor(&state.db, actor_id).await;
+
     // Load (or start) the conversation history from the working memory tier.
     let recent = match working.conv_recent(&session_id, 64).await {
         Ok(r) => r,
@@ -294,6 +299,12 @@ pub async fn handle_chat_send(
     history.push(ChatMessage::user(user_message.clone()));
 
     // Persist the user turn right away — survives mid-turn crashes.
+    // P7-4: mirror into durable history (best-effort, off the latency path).
+    if let Some(owner) = history_owner {
+        let _ =
+            crate::db::append_chat_turn(&state.db, &session_id, owner, "user", &user_message, None)
+                .await;
+    }
     let _ = working
         .conv_push(
             &session_id,
@@ -453,6 +464,18 @@ pub async fn handle_chat_send(
             tool_calls: completed_tool_calls.clone(),
         };
         history.push(assistant_msg);
+        // P7-4: durable-history mirror (best-effort).
+        if let Some(owner) = history_owner {
+            let _ = crate::db::append_chat_turn(
+                &state.db,
+                &session_id,
+                owner,
+                "assistant",
+                &assistant_text,
+                None,
+            )
+            .await;
+        }
         let _ = working
             .conv_push(
                 &session_id,
@@ -567,6 +590,18 @@ pub async fn handle_chat_send(
                 })
                 .await;
                 history.push(ChatMessage::tool_result(&tc.id, output.clone()));
+                // P7-4: durable-history mirror (best-effort).
+                if let Some(owner) = history_owner {
+                    let _ = crate::db::append_chat_turn(
+                        &state.db,
+                        &session_id,
+                        owner,
+                        "tool",
+                        &output,
+                        Some(&tc.id),
+                    )
+                    .await;
+                }
                 let _ = working
                     .conv_push(
                         &session_id,

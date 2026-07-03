@@ -324,6 +324,60 @@ pub async fn resolve_approval_by_reply(
     }))
 }
 
+/// P7-4: resolve a chat actor id (`user:<username>`) to the owning user's UUID,
+/// for durable-history attribution. `None` (unknown user / db hiccup) → the
+/// caller skips durable persistence and stays Redis-only (fail-soft).
+#[cfg(feature = "ssr")]
+pub async fn user_id_for_actor(pool: &Pool, actor_id: &str) -> Option<Uuid> {
+    let username = actor_id.strip_prefix("user:").unwrap_or(actor_id);
+    let client = pool.get().await.ok()?;
+    let row = client
+        .query_opt("SELECT id FROM public.users WHERE username = $1", &[&username])
+        .await
+        .ok()??;
+    Some(row.get(0))
+}
+
+/// P7-4 (FR-UI-18): append one durable chat turn, upserting its session. The
+/// session title is seeded from the first user turn (kept on later turns); a
+/// re-save bumps `updated_at`. Best-effort at the call site — a DB hiccup must
+/// not abort the chat turn (the Redis hot tier already served the operator).
+#[cfg(feature = "ssr")]
+pub async fn append_chat_turn(
+    pool: &Pool,
+    session_id: &str,
+    owner_id: Uuid,
+    role: &str,
+    content: &str,
+    tool_use_id: Option<&str>,
+) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    // Seed the title only from the first user turn; ON CONFLICT keeps it.
+    let title: String = if role == "user" {
+        content.chars().take(60).collect()
+    } else {
+        String::new()
+    };
+    client
+        .execute(
+            "INSERT INTO public.chat_sessions (id, owner_id, title)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE SET updated_at = now()",
+            &[&session_id, &owner_id, &title],
+        )
+        .await
+        .context("upsert chat_session")?;
+    client
+        .execute(
+            "INSERT INTO public.chat_turns (session_id, role, content, tool_use_id)
+             VALUES ($1, $2, $3, $4)",
+            &[&session_id, &role, &content, &tool_use_id],
+        )
+        .await
+        .context("insert chat_turn")?;
+    Ok(())
+}
+
 /// A gateway identity binding row for the admin Channels surface.
 #[cfg(feature = "ssr")]
 #[derive(Debug, Clone)]
