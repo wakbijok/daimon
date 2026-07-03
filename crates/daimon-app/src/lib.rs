@@ -8,6 +8,8 @@ pub mod auth;
 pub mod auth_guard;
 #[cfg(feature = "ssr")]
 pub mod config;
+#[cfg(feature = "ssr")]
+pub mod secret_resolve;
 pub mod state;
 #[cfg(feature = "ssr")]
 pub mod harness;

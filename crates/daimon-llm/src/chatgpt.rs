@@ -106,6 +106,16 @@ impl ChatGptOAuthClient {
         })
     }
 
+    /// Override the model from config (P6 FR-CFG-05). `None` keeps the
+    /// env/default model resolved in `from_env`; `Some(m)` (a non-empty model
+    /// from `app_config`) wins.
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        if let Some(m) = model.filter(|s| !s.is_empty()) {
+            self.default_model = m;
+        }
+        self
+    }
+
     fn load_tokens(&self) -> Result<AuthTokens> {
         let raw = std::fs::read_to_string(&self.auth_path)
             .map_err(|e| Error::Other(format!("read {}: {e}", self.auth_path.display())))?;

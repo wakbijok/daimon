@@ -586,31 +586,9 @@ async fn resolve_vault_api_token(
     broker: &std::sync::Arc<daimon_broker::Broker>,
     cred_name: &str,
 ) -> Option<String> {
-    use daimon_broker::Credential;
-    use leptos::logging::log;
-    const ACTOR: &str = "system:boot";
-
-    match broker.vault_list_metadata(ACTOR).await {
-        Ok(metas) => {
-            if let Some(meta) = metas.into_iter().find(|m| m.name == cred_name) {
-                match broker.vault_reveal(ACTOR, meta.id).await {
-                    // `Credential` is ZeroizeOnDrop — match by ref, clone the secret.
-                    Ok(cred) => match &cred {
-                        Credential::ApiToken { token } => return Some(token.clone()),
-                        other => log!(
-                            "resolve_vault_api_token: '{cred_name}' is not an ApiToken (kind={:?})",
-                            other.kind()
-                        ),
-                    },
-                    Err(e) => log!("resolve_vault_api_token: reveal('{cred_name}') failed ({e})"),
-                }
-            } else {
-                log!("resolve_vault_api_token: credential '{cred_name}' not found in vault");
-            }
-        }
-        Err(e) => log!("resolve_vault_api_token: vault_list_metadata failed ({e})"),
-    }
-    None
+    // Delegate to the shared lib resolver (also used by the chat LLM selection,
+    // P6-4). Boot uses a fixed `system:boot` actor for the audit trail.
+    daimon_app::secret_resolve::resolve_vault_api_token(broker, cred_name, "system:boot").await
 }
 
 /// Build the gateway registry from the `channels.*` config (P4-7, FR-GW-05/16).

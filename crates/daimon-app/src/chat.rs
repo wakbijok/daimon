@@ -179,34 +179,76 @@ fn parse_typed_record(tool_name: &str, mut args: Json) -> std::result::Result<Ty
     serde_json::from_value::<TypedRecord>(args).map_err(|e| format!("invalid {kind} record: {e}"))
 }
 
-/// Select the LLM client by `DAIMON_LLM_PROVIDER` (default `anthropic`):
-/// - `chatgpt` — ChatGPT **subscription** via the codex OAuth session
-///   (`~/.codex/auth.json`); zero API charge. `DAIMON_CHATGPT_MODEL` (gpt-5.5).
-/// - `anthropic` — `api.anthropic.com`, `ANTHROPIC_API_KEY` (pay-per-token).
-/// - `openai` — OpenAI-compatible; `OPENAI_BASE_URL` (default `api.openai.com`),
-///   `OPENAI_API_KEY`, `OPENAI_MODEL`. Point the base URL at a local runtime or a
-///   subscription-fronting proxy for zero API charges.
-/// - `local` / `ollama` — native Ollama client, `DAIMON_LLM_LOCAL_URL`.
+/// Select the LLM client from `app_config` at runtime (P6-4, FR-CFG-05), with
+/// the standard precedence DB `app_config` → env → compiled default:
+/// - provider: `llm.provider` → `DAIMON_LLM_PROVIDER` → `anthropic`.
+/// - chat model: `llm.default_model.chat` → provider env → compiled default.
+/// - API keys (`llm.anthropic_key` / `llm.openai_key`): stored as `vault://`
+///   refs (P6-3), resolved through the broker; fall back to the provider env var.
 ///
-/// All return a boxed `LlmClient`, so the turn loop is provider-agnostic
-/// (SDS §8 AI Provider; the provider is config, not a compile-time constant).
-fn select_llm() -> std::result::Result<Box<dyn LlmClient>, String> {
-    let provider =
-        std::env::var("DAIMON_LLM_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
+/// `chatgpt` uses the codex OAuth session (no API key); `local`/`ollama` uses a
+/// base URL. All return a boxed `LlmClient`, so the turn loop stays
+/// provider-agnostic (the provider is config, not a compile-time constant). A
+/// model edit in `/settings` is live on the next turn via the ArcSwap snapshot;
+/// changing the *provider* is a restart-class change.
+async fn select_llm(state: &AppState) -> std::result::Result<Box<dyn LlmClient>, String> {
+    let cfg = state.config.current();
+    let provider = cfg.string("llm.provider", Some("DAIMON_LLM_PROVIDER"), "anthropic");
+    // The chat-role model, if the operator set one (no env fallback here — each
+    // provider branch applies its own env/default so the compiled default is
+    // provider-correct).
+    let chat_model = cfg.opt_string("llm.default_model.chat", None);
+
     match provider.to_ascii_lowercase().as_str() {
         "chatgpt" => ChatGptOAuthClient::from_env()
-            .map(|c| Box::new(c) as Box<dyn LlmClient>)
+            .map(|c| Box::new(c.with_model(chat_model)) as Box<dyn LlmClient>)
             .map_err(|e| e.to_string()),
-        "openai" => OpenAiClient::from_env()
+        "openai" => {
+            let key = resolve_llm_key(state, &cfg, "llm.openai_key", "OPENAI_API_KEY")
+                .await
+                .ok_or_else(|| "openai: no api key (llm.openai_key / OPENAI_API_KEY)".to_string())?;
+            let model = chat_model
+                .or_else(|| std::env::var("OPENAI_MODEL").ok())
+                .unwrap_or_else(|| "gpt-4o".to_string());
+            match std::env::var("OPENAI_BASE_URL").ok() {
+                Some(base) => OpenAiClient::with_base(key, base, model),
+                None => OpenAiClient::new(key, model),
+            }
             .map(|c| Box::new(c) as Box<dyn LlmClient>)
-            .map_err(|e| e.to_string()),
-        "local" | "ollama" => LocalClient::from_env()
-            .map(|c| Box::new(c) as Box<dyn LlmClient>)
-            .map_err(|e| e.to_string()),
-        _ => AnthropicClient::from_env()
-            .map(|c| Box::new(c) as Box<dyn LlmClient>)
-            .map_err(|e| e.to_string()),
+            .map_err(|e| e.to_string())
+        }
+        "local" | "ollama" => {
+            let base =
+                cfg.string("llm.ollama_url", Some("DAIMON_LLM_LOCAL_URL"), "http://localhost:11434");
+            let model = chat_model.unwrap_or_else(|| "llama3.2".to_string());
+            LocalClient::new(base, model)
+                .map(|c| Box::new(c) as Box<dyn LlmClient>)
+                .map_err(|e| e.to_string())
+        }
+        _ => {
+            let key = resolve_llm_key(state, &cfg, "llm.anthropic_key", "ANTHROPIC_API_KEY")
+                .await
+                .ok_or_else(|| "anthropic: no api key (llm.anthropic_key / ANTHROPIC_API_KEY)".to_string())?;
+            let model = chat_model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+            AnthropicClient::new(key, model)
+                .map(|c| Box::new(c) as Box<dyn LlmClient>)
+                .map_err(|e| e.to_string())
+        }
     }
+}
+
+/// Resolve an LLM API key with DB → env precedence. The DB value is a `vault://`
+/// ref (P6-3), resolved through the broker; a bare env var is dev plaintext.
+async fn resolve_llm_key(
+    state: &AppState,
+    cfg: &crate::config::ConfigSnapshot,
+    cfg_key: &str,
+    env_var: &str,
+) -> Option<String> {
+    if let Some(v) = cfg.opt_string(cfg_key, None) {
+        return crate::secret_resolve::resolve_maybe_ref(&state.broker, &v, "system:chat").await;
+    }
+    std::env::var(env_var).ok().filter(|s| !s.is_empty())
 }
 
 /// Entry point — handle a single ChatSend message from the client.
@@ -223,7 +265,7 @@ pub async fn handle_chat_send(
     // subscription-fronting proxy (the zero-API-charge paths); `local` is the
     // Ollama-style client. All three satisfy the same LlmClient trait, so the
     // turn loop is provider-agnostic.
-    let llm: Box<dyn LlmClient> = match select_llm() {
+    let llm: Box<dyn LlmClient> = match select_llm(state).await {
         Ok(c) => c,
         Err(e) => {
             sink.emit(TurnEvent::Error {
