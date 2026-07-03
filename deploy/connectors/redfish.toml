@@ -1,0 +1,54 @@
+# daimon connector profile — baremetal servers via Redfish (DMTF standard).
+#
+# Redfish is the vendor-NEUTRAL server-management REST API implemented by every
+# modern BMC — Dell iDRAC, HPE iLO, Lenovo XCC, Supermicro, and the IPMI/Redfish
+# on many mini-PCs. One connector reaches them all; the target's host + bearer
+# credential come from inventory (resolved by target_ref), never from this file.
+# This is how daimon covers "baremetal / mini-PC" as a first-class target type
+# alongside Kubernetes (orchestrator) and RouterOS (network) — the same
+# ConnectorDriver interprets all three, routed by capability, and every call
+# still traverses Broker.execute (guard + vault + audit) with `{param}` slots
+# passing through param::validate first.
+#
+# Class `compute` + transport `rest`.
+
+name = "redfish"
+class = "compute"
+transport = "rest"
+
+# --- READ: system power + health ------------------------------------------
+# GET the ComputerSystem resource — carries PowerState + Status.Health. The
+# `.status` name carries a read verb, so it bypasses policy (server-derived
+# read-only bit); no approval.
+[[capability]]
+name = "compute.redfish.system.status"
+version = "1.0.0"
+description = "Read a baremetal system's power state + health (GET the Redfish ComputerSystem)."
+read_only = true
+parse = "json"
+
+[capability.params]
+system = "identifier"
+
+[capability.op]
+method = "GET"
+path = "/redfish/v1/Systems/{system}"
+
+# --- WRITE: power action (reset) ------------------------------------------
+# POST the standard ComputerSystem.Reset action — a WRITE, so it is
+# approval-gated by the `compute.*` policy rule. ResetType is a fixed,
+# validated enum value (a declarative profile substitutes only validated
+# params; the action body is a constant here).
+[[capability]]
+name = "compute.redfish.system.reset"
+version = "1.0.0"
+description = "Force a graceful restart of a baremetal system (Redfish ComputerSystem.Reset)."
+irreversible = false
+
+[capability.params]
+system = "identifier"
+
+[capability.op]
+method = "POST"
+path = "/redfish/v1/Systems/{system}/Actions/ComputerSystem.Reset"
+body = { ResetType = "GracefulRestart" }

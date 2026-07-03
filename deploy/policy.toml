@@ -50,6 +50,15 @@ capability = "platform.workload.*"
 decision = "require_approval"
 description = "VM / workload lifecycle changes need approval."
 
+# Baremetal / compute actions — the Redfish connector (deploy/connectors/
+# redfish.toml). Power reset/on/off on a physical server is high-impact, so
+# every compute.* WRITE is approval-gated; the read (system.status) bypasses
+# policy via the server-derived read-only bit.
+[[rule]]
+capability = "compute.*"
+decision = "require_approval"
+description = "Baremetal / compute lifecycle actions (Redfish power reset, etc.) need operator approval."
+
 # Kubernetes (k3s) orchestrator writes — the declarative ConnectorDriver
 # (deploy/connectors/k8s.toml). Deploy restart/rollback are approval-gated; the
 # read (pod.status) bypasses policy via the server-derived read-only bit. This
