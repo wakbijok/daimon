@@ -358,15 +358,30 @@ pub async fn append_chat_turn(
     } else {
         String::new()
     };
-    client
-        .execute(
+    // P7 review (MEDIUM): bind the session to THIS owner. The `WHERE owner_id`
+    // guard on the conflict-update means an existing session owned by someone
+    // ELSE returns no row — so a client that sends another user's session_id
+    // cannot inject a turn into it (the RETURNING is empty → we refuse). A fresh
+    // session inserts and returns its id.
+    let owned = client
+        .query_opt(
             "INSERT INTO public.chat_sessions (id, owner_id, title)
              VALUES ($1, $2, $3)
-             ON CONFLICT (id) DO UPDATE SET updated_at = now()",
+             ON CONFLICT (id) DO UPDATE SET updated_at = now()
+               WHERE public.chat_sessions.owner_id = $2
+             RETURNING id",
             &[&session_id, &owner_id, &title],
         )
         .await
         .context("upsert chat_session")?;
+    if owned.is_none() {
+        // Session exists but is owned by another user — do NOT inject a turn.
+        tracing::warn!(
+            session = %session_id,
+            "chat turn refused — session owned by a different user"
+        );
+        return Ok(());
+    }
     client
         .execute(
             "INSERT INTO public.chat_turns (session_id, role, content, tool_use_id)

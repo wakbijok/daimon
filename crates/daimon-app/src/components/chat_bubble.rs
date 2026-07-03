@@ -594,6 +594,9 @@ pub fn ChatBubble() -> impl IntoView {
                         >
                             <option value="">"effort: default"</option>
                             <option value="fast">"fast"</option>
+                            <option value="low">"low"</option>
+                            <option value="medium">"medium"</option>
+                            <option value="high">"high"</option>
                             <option value="deliberate">"deliberate"</option>
                         </select>
                     </div>
