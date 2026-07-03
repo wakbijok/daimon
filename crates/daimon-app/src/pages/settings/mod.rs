@@ -27,6 +27,8 @@ use crate::admin_settings::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Identity,
+    Iam,
+    Targets,
     Connections,
     Llm,
     Guard,
@@ -42,6 +44,8 @@ impl Tab {
     fn label(self) -> &'static str {
         match self {
             Tab::Identity => "Identity",
+            Tab::Iam => "IAM",
+            Tab::Targets => "Targets",
             Tab::Connections => "Connections",
             Tab::Llm => "LLM Providers",
             Tab::Guard => "Guard",
@@ -56,6 +60,8 @@ impl Tab {
     fn prefix(self) -> &'static str {
         match self {
             Tab::Identity => "identity.",
+            Tab::Iam => "iam.",
+            Tab::Targets => "targets.",
             Tab::Connections => "connections.",
             Tab::Llm => "llm.",
             Tab::Guard => "guard.",
@@ -90,8 +96,10 @@ impl Tab {
     }
 }
 
-const TAB_ORDER: [Tab; 10] = [
+const TAB_ORDER: [Tab; 12] = [
     Tab::Identity,
+    Tab::Iam,
+    Tab::Targets,
     Tab::Connections,
     Tab::Llm,
     Tab::Guard,
@@ -139,6 +147,11 @@ pub fn Settings() -> impl IntoView {
                     Tab::System => view! { <SystemTab /> }.into_any(),
                     Tab::Update => view! { <UpdateTab /> }.into_any(),
                     Tab::Channels => view! { <ChannelsTab /> }.into_any(),
+                    // P6-7/P6-8: the Targets/Connectors + IAM domains reuse the
+                    // existing admin surfaces (inventory targets + IAM users are
+                    // already runtime-consumed) — no new consumption path.
+                    Tab::Targets => view! { <crate::pages::admin::targets::AdminTargets /> }.into_any(),
+                    Tab::Iam => view! { <crate::pages::admin::iam::AdminIam /> }.into_any(),
                     other => view! { <KvTab tab=other /> }.into_any(),
                 }}
             </div>
