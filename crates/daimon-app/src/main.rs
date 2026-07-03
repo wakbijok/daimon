@@ -197,6 +197,15 @@ async fn main() {
         }
     }
 
+    // P6-11: subscribe to the bus for the alert router BEFORE `bus` moves into
+    // the Harness. The InProcBus is a broadcast channel, so this receiver sees a
+    // COPY of every envelope (AnomalyDetected, AwaitingApproval) without stealing
+    // it from the TriageAgent. The router task is spawned once AppState exists.
+    let alert_rx = {
+        use daimon_runtime::AgentBus;
+        bus.subscribe_raw()
+    };
+
     let harness = daimon_app::harness::Harness::new(bus, registry, supervisor.clone());
     log!("harness ready — drivers spawned under supervision");
 
@@ -391,6 +400,11 @@ async fn main() {
     // timeout, observer poll interval) into the running subsystems now, so a
     // value set in `app_config` is honoured from the first request/tick.
     app_state.apply_runtime_tunables(&app_state.config.current());
+
+    // P6-11 (FR-GW-13/15): spawn the outbound alert router — a bus subscriber
+    // that fans AnomalyDetected + AwaitingApproval out to the configured
+    // channels via deliver_alert, fail-soft. No-op if no channel is enabled.
+    daimon_app::alert_router::spawn_alert_router(app_state.clone(), alert_rx);
 
     // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram
     // getUpdates). Pollers need the full AppState (for the shared inbound

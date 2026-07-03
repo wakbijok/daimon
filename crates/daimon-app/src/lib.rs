@@ -36,6 +36,8 @@ pub mod chat;
 #[cfg(feature = "ssr")]
 pub mod gw;
 #[cfg(feature = "ssr")]
+pub mod alert_router;
+#[cfg(feature = "ssr")]
 pub mod skills;
 
 #[cfg(feature = "hydrate")]
