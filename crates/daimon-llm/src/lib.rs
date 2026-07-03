@@ -17,12 +17,14 @@
 //! and to the audit log (Phase 2c) for compliance traceability.
 
 pub mod anthropic;
+pub mod chatgpt;
 pub mod error;
 pub mod local;
 pub mod openai;
 pub mod types;
 
 pub use anthropic::AnthropicClient;
+pub use chatgpt::ChatGptOAuthClient;
 pub use error::{Error, Result};
 pub use local::LocalClient;
 pub use openai::OpenAiClient;

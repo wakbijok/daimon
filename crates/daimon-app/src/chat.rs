@@ -28,8 +28,8 @@ use daimon_core::AgentId;
 use daimon_driver_firewall_routeros::{NetworkRequest, NetworkResponse};
 use daimon_gateway::{ReplySink, TurnEvent};
 use daimon_llm::{
-    AnthropicClient, AssistantContent, ChatMessage, CompletionRequest, ContentDelta, LlmClient,
-    LocalClient, OpenAiClient, Role, StopReason, ToolDefinition,
+    AnthropicClient, AssistantContent, ChatGptOAuthClient, ChatMessage, CompletionRequest,
+    ContentDelta, LlmClient, LocalClient, OpenAiClient, Role, StopReason, ToolDefinition,
 };
 use daimon_memory::{PreTurnContext, RecallBudget, TypedRecord};
 use daimon_redis::ConvMessage;
@@ -173,6 +173,8 @@ fn parse_typed_record(tool_name: &str, mut args: Json) -> std::result::Result<Ty
 }
 
 /// Select the LLM client by `DAIMON_LLM_PROVIDER` (default `anthropic`):
+/// - `chatgpt` — ChatGPT **subscription** via the codex OAuth session
+///   (`~/.codex/auth.json`); zero API charge. `DAIMON_CHATGPT_MODEL` (gpt-5.5).
 /// - `anthropic` — `api.anthropic.com`, `ANTHROPIC_API_KEY` (pay-per-token).
 /// - `openai` — OpenAI-compatible; `OPENAI_BASE_URL` (default `api.openai.com`),
 ///   `OPENAI_API_KEY`, `OPENAI_MODEL`. Point the base URL at a local runtime or a
@@ -185,6 +187,9 @@ fn select_llm() -> std::result::Result<Box<dyn LlmClient>, String> {
     let provider =
         std::env::var("DAIMON_LLM_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
     match provider.to_ascii_lowercase().as_str() {
+        "chatgpt" => ChatGptOAuthClient::from_env()
+            .map(|c| Box::new(c) as Box<dyn LlmClient>)
+            .map_err(|e| e.to_string()),
         "openai" => OpenAiClient::from_env()
             .map(|c| Box::new(c) as Box<dyn LlmClient>)
             .map_err(|e| e.to_string()),
