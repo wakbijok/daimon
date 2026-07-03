@@ -127,29 +127,36 @@ fn connector(broker: Arc<Broker>, profiles: Vec<ConnectorProfile>) -> ConnectorD
 async fn from_dir_loads_shipped_profiles_and_projects_caps() {
     let (broker, _, _) = broker_with_rest(None).await;
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/connectors");
-    let driver = ConnectorDriver::from_dir(
-        AgentId::new("agent:connector"),
-        broker,
-        &dir,
-        "agent:connector",
-    )
-    .expect("load ok")
-    .expect("dir present + non-empty");
+    let drivers = ConnectorDriver::from_dir("agent:connector", broker, &dir, "agent:connector")
+        .expect("load ok");
+    assert!(!drivers.is_empty(), "dir present + non-empty");
 
-    let names: Vec<&str> = driver.capabilities().iter().map(|c| c.name.as_str()).collect();
+    // One driver per class — the orchestrator (k8s) one.
+    let k8s = drivers
+        .iter()
+        .find(|d| d.class() == daimon_driver::TargetClass::Orchestrator)
+        .expect("an orchestrator (k8s) driver");
+    let names: Vec<&str> = k8s.capabilities().iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"orchestrator.k8s.pod.status"));
     assert!(names.contains(&"orchestrator.k8s.deploy.restart"));
     assert!(names.contains(&"orchestrator.k8s.deploy.rollback"));
-    assert_eq!(driver.class(), daimon_driver::TargetClass::Orchestrator);
+
+    // The compute (redfish) driver must ALSO load — heterogeneous classes
+    // coexist rather than one shadowing the other.
+    let compute = drivers
+        .iter()
+        .find(|d| d.class() == daimon_driver::TargetClass::Compute)
+        .expect("a compute (redfish) driver");
+    let cnames: Vec<&str> = compute.capabilities().iter().map(|c| c.name.as_str()).collect();
+    assert!(cnames.contains(&"compute.redfish.system.status"));
 }
 
 #[tokio::test]
-async fn from_dir_absent_returns_none() {
+async fn from_dir_absent_returns_empty() {
     let (broker, _, _) = broker_with_rest(None).await;
     let missing = std::path::Path::new("/nonexistent/daimon/connectors/dir");
-    let got =
-        ConnectorDriver::from_dir(AgentId::new("agent:connector"), broker, missing, "a").unwrap();
-    assert!(got.is_none(), "absent dir must skip gracefully (None)");
+    let got = ConnectorDriver::from_dir("agent:connector", broker, missing, "a").unwrap();
+    assert!(got.is_empty(), "absent dir must skip gracefully (empty)");
 }
 
 // -------------------------------------------------------------------------

@@ -29,6 +29,22 @@ impl RedisWorkingMemory {
         Ok(Self { pool })
     }
 
+    /// Actively verify the connection with a `PING`. `from_url` only builds a
+    /// LAZY deadpool — it returns `Ok` even when Redis is down, so the caller
+    /// MUST `ping()` before trusting it, else the first real op fails at request
+    /// time (connection refused) rather than falling back to in-process at boot.
+    pub async fn ping(&self) -> Result<()> {
+        let mut conn = self.pool.get().await?;
+        let pong: String = deadpool_redis::redis::cmd("PING")
+            .query_async(&mut conn)
+            .await?;
+        if pong.eq_ignore_ascii_case("PONG") {
+            Ok(())
+        } else {
+            Err(Error::Pool(format!("unexpected PING reply: {pong}")))
+        }
+    }
+
     fn conv_key(session_id: &str) -> String {
         format!("{CONV_KEY_PREFIX}{session_id}")
     }

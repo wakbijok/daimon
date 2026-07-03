@@ -295,19 +295,22 @@ pub struct ConnectorDriver {
 }
 
 impl ConnectorDriver {
-    /// Load every `.toml` profile from `dir` and build the driver. Returns
-    /// `Ok(None)` if the directory does not exist or contains no profiles (the
-    /// caller skips gracefully). Profiles whose class differs from the first
-    /// loaded profile's class are skipped with a warning.
+    /// Load every `.toml` profile from `dir`, grouped by target CLASS — one
+    /// `ConnectorDriver` per class (a driver instance is single-class by design).
+    /// A site drops the connectors its equipment needs (k8s→orchestrator,
+    /// redfish→compute, a firewall, …) and each class gets its own driver with a
+    /// distinct agent id (`{id_prefix}:{class}`), so heterogeneous targets
+    /// coexist rather than one class silently shadowing the rest. Returns an
+    /// empty Vec if the dir is absent or has no profiles (caller skips).
     pub fn from_dir(
-        id: AgentId,
+        id_prefix: &str,
         broker: Arc<Broker>,
         dir: &Path,
-        actor_id: impl Into<String>,
-    ) -> Result<Option<Self>, ConnectorError> {
+        actor_id: &str,
+    ) -> Result<Vec<Self>, ConnectorError> {
         if !dir.exists() {
             debug!(dir = %dir.display(), "connector dir absent — skipping");
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let mut profiles = Vec::new();
         let entries = std::fs::read_dir(dir).map_err(|e| ConnectorError::Io {
@@ -337,9 +340,26 @@ impl ConnectorDriver {
         }
         if profiles.is_empty() {
             debug!(dir = %dir.display(), "connector dir empty — skipping");
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(Self::from_profiles(id, broker, profiles, actor_id)))
+        // Group profiles by class — one driver per class.
+        let mut groups: Vec<(TargetClass, Vec<ConnectorProfile>)> = Vec::new();
+        for p in profiles {
+            let c: TargetClass = p.class.into();
+            if let Some(g) = groups.iter_mut().find(|(gc, _)| *gc == c) {
+                g.1.push(p);
+            } else {
+                groups.push((c, vec![p]));
+            }
+        }
+        let drivers = groups
+            .into_iter()
+            .map(|(class, profs)| {
+                let id = AgentId::new(format!("{id_prefix}:{}", class_slug(class)));
+                Self::from_profiles(id, broker.clone(), profs, actor_id.to_string())
+            })
+            .collect();
+        Ok(drivers)
     }
 
     /// Build from already-parsed profiles. The driver's class is taken from the
@@ -451,6 +471,18 @@ impl ConnectorDriver {
 
 /// Project a `[[capability]]` block into a `daimon_core::Capability`. This is
 /// what registers via `Agent::capabilities` and drives the server-side read-only
+/// A stable, lowercase slug for a target class — used to give each per-class
+/// `ConnectorDriver` a distinct agent id (`agent:connector:<slug>`).
+fn class_slug(c: TargetClass) -> &'static str {
+    match c {
+        TargetClass::Compute => "compute",
+        TargetClass::Network => "network",
+        TargetClass::Storage => "storage",
+        TargetClass::Orchestrator => "orchestrator",
+        TargetClass::Firewall => "firewall",
+    }
+}
+
 /// derivation. When `read_only = true` the capability is built via
 /// `read_only()`; otherwise the compensating/irreversible dispositions carry
 /// through and the name-verb heuristic decides `is_read()`.

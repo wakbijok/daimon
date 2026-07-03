@@ -138,28 +138,35 @@ async fn main() {
         std::env::var("DAIMON_CONNECTORS_DIR").unwrap_or_else(|_| "deploy/connectors".to_string()),
     );
     match daimon_driver::ConnectorDriver::from_dir(
-        daimon_core::AgentId::new("agent:connector"),
+        "agent:connector",
         broker.clone(),
         &connectors_dir,
         "agent:connector",
     ) {
-        Ok(Some(connector_driver)) => {
-            let cap_count = connector_driver.capabilities().len();
-            let connector_driver = Arc::new(connector_driver);
-            if let Err(e) = supervisor
-                .spawn(connector_driver as Arc<dyn daimon_core::Agent>)
-                .await
-            {
-                eprintln!("daimon-app: failed to spawn ConnectorDriver: {e:#}");
-                std::process::exit(1);
+        Ok(drivers) if !drivers.is_empty() => {
+            // One driver per target class (k8s→orchestrator, redfish→compute, …);
+            // spawn each so heterogeneous connectors all register.
+            let mut total_caps = 0usize;
+            let driver_count = drivers.len();
+            for driver in drivers {
+                total_caps += driver.capabilities().len();
+                let driver = Arc::new(driver);
+                if let Err(e) = supervisor
+                    .spawn(driver as Arc<dyn daimon_core::Agent>)
+                    .await
+                {
+                    eprintln!("daimon-app: failed to spawn ConnectorDriver: {e:#}");
+                    std::process::exit(1);
+                }
             }
             log!(
-                "connector driver spawned from {} — {} capabilities registered",
+                "connector drivers spawned from {} — {} capabilities across {} class-driver(s)",
                 connectors_dir.display(),
-                cap_count
+                total_caps,
+                driver_count
             );
         }
-        Ok(None) => {
+        Ok(_) => {
             log!(
                 "no connector profiles at {} — skipping ConnectorDriver",
                 connectors_dir.display()
@@ -186,32 +193,18 @@ async fn main() {
     log!("boot policy-coherence check passed — every write is deny/require_approval, no dangling compensators");
     // Phase 4 D4 — working memory tier. Redis when reachable; in-process
     // fallback otherwise. Set DAIMON_REDIS_URL=disabled to force in-process.
-    let working_memory: Arc<dyn daimon_redis::WorkingMemory> = match std::env::var("DAIMON_REDIS_URL") {
-        Ok(s) if s == "disabled" => {
-            log!("DAIMON_REDIS_URL=disabled — using in-process working memory");
-            Arc::new(daimon_redis::InProcWorkingMemory::new())
-        }
-        Ok(url) => match daimon_redis::RedisWorkingMemory::from_url(&url) {
-            Ok(c) => {
-                log!("connected to Redis at {}", url);
-                Arc::new(c)
-            }
-            Err(e) => {
-                log!("Redis connect failed ({e}) — falling back to in-process working memory");
+    // `from_url` builds only a LAZY pool (Ok even when Redis is down), so we
+    // MUST ping() to know if Redis is really reachable — otherwise the fallback
+    // never fires and every turn's conv load fails at request time.
+    let working_memory: Arc<dyn daimon_redis::WorkingMemory> =
+        match std::env::var("DAIMON_REDIS_URL") {
+            Ok(s) if s == "disabled" => {
+                log!("DAIMON_REDIS_URL=disabled — using in-process working memory");
                 Arc::new(daimon_redis::InProcWorkingMemory::new())
             }
-        },
-        Err(_) => match daimon_redis::RedisWorkingMemory::from_url("redis://localhost:6379") {
-            Ok(c) => {
-                log!("connected to Redis at redis://localhost:6379 (default)");
-                Arc::new(c)
-            }
-            Err(e) => {
-                log!("Redis default-connect failed ({e}) — using in-process working memory");
-                Arc::new(daimon_redis::InProcWorkingMemory::new())
-            }
-        },
-    };
+            Ok(url) => connect_working_memory(&url).await,
+            Err(_) => connect_working_memory("redis://localhost:6379").await,
+        };
 
     // Phase 8 — graph tier (NornicDB). Connect best-effort; if
     // DAIMON_GRAPH_URL isn't set or the daemon is unreachable, the
@@ -632,40 +625,54 @@ async fn build_gateways(
         let mode = cfg_str(pool, "channels.telegram.mode")
             .await
             .unwrap_or_else(|| "poll".to_string());
-        match cfg_str(pool, "channels.telegram.bot_token_cred").await {
-            Some(tc) => match resolve_vault_api_token(broker, &tc).await {
-                Some(token) => {
-                    if mode.eq_ignore_ascii_case("webhook") {
-                        // Webhook mode also needs the secret token.
-                        match cfg_str(pool, "channels.telegram.webhook_secret_cred").await {
-                            Some(sc) => match resolve_vault_api_token(broker, &sc).await {
-                                Some(secret) => {
-                                    registry.register(Arc::new(TelegramAdapter::new(token, secret)));
-                                    log!("gateway: telegram ENABLED (webhook /api/v1/gw/telegram)");
-                                }
-                                None => log!(
-                                    "gateway: telegram webhook secret credential did not resolve — skipping"
-                                ),
-                            },
-                            None => log!(
-                                "gateway: telegram mode=webhook but channels.telegram.webhook_secret_cred unset — skipping"
-                            ),
-                        }
-                    } else {
-                        // Poll (default) — getUpdates, no ingress. Reuses an
-                        // internal bot (e.g. John's) with no public endpoint.
-                        let cursor =
-                            Arc::new(AppConfigCursor::new(pool.clone(), "channels.telegram.offset"));
-                        pollers.push(Arc::new(TelegramPollAdapter::new(token, cursor)));
-                        log!("gateway: telegram ENABLED (getUpdates poller)");
+        // Bot token: vault credential (by name) OR the DAIMON_GW_TELEGRAM_TOKEN
+        // dev env fallback (loud — production should use the vault, FR-GW-17).
+        let token = match cfg_str(pool, "channels.telegram.bot_token_cred").await {
+            Some(tc) => resolve_vault_api_token(broker, &tc).await,
+            None => None,
+        }
+        .or_else(|| {
+            std::env::var("DAIMON_GW_TELEGRAM_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .inspect(|_| {
+                    log!(
+                        "gateway: telegram using DAIMON_GW_TELEGRAM_TOKEN env fallback (dev) — production should hold the bot token in the vault (FR-GW-17)"
+                    );
+                })
+        });
+        match token {
+            Some(token) => {
+                if mode.eq_ignore_ascii_case("webhook") {
+                    let secret = match cfg_str(pool, "channels.telegram.webhook_secret_cred").await {
+                        Some(sc) => resolve_vault_api_token(broker, &sc).await,
+                        None => None,
                     }
+                    .or_else(|| {
+                        std::env::var("DAIMON_GW_TELEGRAM_WEBHOOK_SECRET")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                    });
+                    match secret {
+                        Some(secret) => {
+                            registry.register(Arc::new(TelegramAdapter::new(token, secret)));
+                            log!("gateway: telegram ENABLED (webhook /api/v1/gw/telegram)");
+                        }
+                        None => log!(
+                            "gateway: telegram mode=webhook but no webhook secret (vault cred + DAIMON_GW_TELEGRAM_WEBHOOK_SECRET both unset) — skipping"
+                        ),
+                    }
+                } else {
+                    // Poll (default) — getUpdates, no ingress. Reuses an internal
+                    // bot (e.g. John's) with no public endpoint.
+                    let cursor =
+                        Arc::new(AppConfigCursor::new(pool.clone(), "channels.telegram.offset"));
+                    pollers.push(Arc::new(TelegramPollAdapter::new(token, cursor)));
+                    log!("gateway: telegram ENABLED (getUpdates poller)");
                 }
-                None => log!(
-                    "gateway: telegram bot_token credential did not resolve — skipping"
-                ),
-            },
+            }
             None => log!(
-                "gateway: telegram enabled but channels.telegram.bot_token_cred unset — skipping"
+                "gateway: telegram enabled but no bot token (channels.telegram.bot_token_cred + DAIMON_GW_TELEGRAM_TOKEN both unset) — skipping"
             ),
         }
     }
@@ -693,6 +700,33 @@ async fn build_gateways(
     }
 
     (registry, pollers)
+}
+
+/// Build the working-memory tier: Redis if it PINGs, else in-process. The ping
+/// is load-bearing — `RedisWorkingMemory::from_url` only lazily configures a
+/// pool and returns Ok even against a dead Redis (deadpool connects on first
+/// use), so without an active ping the in-process fallback would never trigger
+/// and the first chat turn would fail with connection-refused.
+#[cfg(feature = "ssr")]
+async fn connect_working_memory(url: &str) -> std::sync::Arc<dyn daimon_redis::WorkingMemory> {
+    use leptos::logging::log;
+    use std::sync::Arc;
+    match daimon_redis::RedisWorkingMemory::from_url(url) {
+        Ok(c) => match c.ping().await {
+            Ok(()) => {
+                log!("connected to Redis at {url}");
+                Arc::new(c)
+            }
+            Err(e) => {
+                log!("Redis at {url} unreachable ({e}) — using in-process working memory");
+                Arc::new(daimon_redis::InProcWorkingMemory::new())
+            }
+        },
+        Err(e) => {
+            log!("Redis config for {url} failed ({e}) — using in-process working memory");
+            Arc::new(daimon_redis::InProcWorkingMemory::new())
+        }
+    }
 }
 
 #[cfg(feature = "ssr")]
