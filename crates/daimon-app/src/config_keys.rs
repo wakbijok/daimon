@@ -141,4 +141,22 @@ mod tests {
         assert!(is_read_only_key("vault.kms_path"));
         assert!(!is_read_only_key("llm.provider"));
     }
+
+    /// P7-10 (FR-CFG-04): the committed config reference must match the
+    /// code-derived render — CI drift gate. Regenerate with:
+    ///   DAIMON_UPDATE_DOCS=1 cargo test -p daimon-app config_reference_doc_is_current
+    #[test]
+    fn config_reference_doc_is_current() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/config-reference.md");
+        let expected = super::render_reference();
+        if std::env::var("DAIMON_UPDATE_DOCS").is_ok() {
+            std::fs::write(path, &expected).expect("write config-reference.md");
+            return;
+        }
+        let actual = std::fs::read_to_string(path).unwrap_or_default();
+        assert_eq!(
+            actual, expected,
+            "docs/config-reference.md is stale — regenerate: DAIMON_UPDATE_DOCS=1 cargo test -p daimon-app config_reference_doc_is_current"
+        );
+    }
 }
