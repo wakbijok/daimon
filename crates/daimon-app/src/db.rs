@@ -296,6 +296,34 @@ pub async fn resolve_gateway_identity(
     }))
 }
 
+/// P7-2 (FR-GW-14): resolve an inbound reply to the approval it decides. Given
+/// the channel + the provider id of the message being replied to, return the
+/// approval id (the delivery row's `signature`) of the approval ALERT that was
+/// sent as that message. `None` when the reply is not to a known approval alert.
+#[cfg(feature = "ssr")]
+pub async fn resolve_approval_by_reply(
+    pool: &Pool,
+    channel: &str,
+    provider_message_id: &str,
+) -> Result<Option<Uuid>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT signature
+               FROM public.alert_deliveries
+              WHERE channel = $1 AND provider_message_id = $2 AND alert_class = 'approval'
+              ORDER BY created_at DESC
+              LIMIT 1",
+            &[&channel, &provider_message_id],
+        )
+        .await
+        .context("resolve_approval_by_reply")?;
+    Ok(row.and_then(|r| {
+        let sig: String = r.get(0);
+        Uuid::parse_str(&sig).ok()
+    }))
+}
+
 /// A gateway identity binding row for the admin Channels surface.
 #[cfg(feature = "ssr")]
 #[derive(Debug, Clone)]

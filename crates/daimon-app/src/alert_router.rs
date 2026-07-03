@@ -187,16 +187,18 @@ async fn route(state: &AppState, alert: &Alert) {
             tracing::warn!(channel = %r.channel, "alert recipient channel not enabled — skipped");
             continue;
         };
-        let (status, detail) = match adapter.deliver_alert(&r, &alert.body).await {
-            Ok(()) => ("delivered", None),
+        let (status, detail, provider_msg_id) = match adapter.deliver_alert(&r, &alert.body).await {
+            // P7-2: capture the sent message id so an approve/deny reply to this
+            // alert can be correlated back to the approval.
+            Ok(msg_id) => ("delivered", None, msg_id),
             // FR-GW-15: log + record, never propagate — the originating loop is
             // already done; a down channel must not stall anything.
             Err(e) => {
                 tracing::warn!(channel = %r.channel, error = %e, "alert delivery failed (fail-soft)");
-                ("failed", Some(e.to_string()))
+                ("failed", Some(e.to_string()), None)
             }
         };
-        record_delivery(state, alert, &r, status, detail.as_deref()).await;
+        record_delivery(state, alert, &r, status, detail.as_deref(), provider_msg_id.as_deref()).await;
     }
 }
 
@@ -263,6 +265,7 @@ async fn record_delivery(
     r: &Recipient,
     status: &str,
     detail: Option<&str>,
+    provider_message_id: Option<&str>,
 ) {
     let client = match state.db.get().await {
         Ok(c) => c,
@@ -275,8 +278,8 @@ async fn record_delivery(
     if let Err(e) = client
         .execute(
             "INSERT INTO public.alert_deliveries
-               (alert_class, severity, signature, channel, recipient, status, detail)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+               (alert_class, severity, signature, channel, recipient, status, detail, provider_message_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
                 &alert.class,
                 &severity,
@@ -285,6 +288,7 @@ async fn record_delivery(
                 &r.to,
                 &status,
                 &detail,
+                &provider_message_id,
             ],
         )
         .await

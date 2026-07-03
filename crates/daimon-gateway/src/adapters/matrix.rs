@@ -126,7 +126,7 @@ impl MatrixAdapter {
         bot_id: &str,
         handler: &Arc<dyn InboundHandler>,
     ) {
-        for (room_id, text, sender) in sync.text_messages() {
+        for (room_id, text, sender, reply_to_message_id) in sync.text_messages() {
             if sender == bot_id {
                 continue; // skip self-echo
             }
@@ -138,6 +138,7 @@ impl MatrixAdapter {
                     thread: Some(room_id.clone()),
                     reply_to: room_id,
                 },
+                reply_to_message_id,
                 received_at: Utc::now(),
             };
             let sink = self.reply_sink(&msg.correlation);
@@ -173,7 +174,11 @@ impl Gateway for MatrixAdapter {
         }))
     }
 
-    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+    async fn deliver_alert(
+        &self,
+        to: &Recipient,
+        body: &AlertBody,
+    ) -> Result<Option<String>, GatewayError> {
         // P6-9 (FR-GW-13): PUT the alert into the target room. The access token
         // rides the bearer header (not the URL); `without_url()` is
         // defence-in-depth for the logged error (FR-GW-17).
@@ -198,7 +203,14 @@ impl Gateway for MatrixAdapter {
                 resp.status()
             )));
         }
-        Ok(())
+        // P7-2: the room-send response returns the sent `event_id` for reply
+        // correlation. A parse miss is non-fatal (the alert still delivered).
+        let event_id = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("event_id").and_then(|e| e.as_str()).map(String::from));
+        Ok(event_id)
     }
 }
 
@@ -329,11 +341,30 @@ struct EventContent {
     msgtype: Option<String>,
     #[serde(default)]
     body: Option<String>,
+    /// P7-2: `m.relates_to` → `m.in_reply_to` → `event_id`, present when this
+    /// message replies to another (used to correlate an approve/deny back to
+    /// the approval alert).
+    #[serde(rename = "m.relates_to", default)]
+    relates_to: Option<RelatesTo>,
+}
+
+#[derive(Deserialize, Default)]
+struct RelatesTo {
+    #[serde(rename = "m.in_reply_to", default)]
+    in_reply_to: Option<InReplyTo>,
+}
+
+#[derive(Deserialize, Default)]
+struct InReplyTo {
+    #[serde(default)]
+    event_id: Option<String>,
 }
 
 impl SyncResponse {
-    /// `(room_id, text, sender)` for every `m.room.message` / `m.text` event.
-    fn text_messages(&self) -> Vec<(String, String, String)> {
+    /// `(room_id, text, sender, reply_to_event_id)` for every `m.room.message` /
+    /// `m.text` event. `reply_to_event_id` is `Some` when the message replies to
+    /// another (P7-2).
+    fn text_messages(&self) -> Vec<(String, String, String, Option<String>)> {
         let mut out = Vec::new();
         for (room_id, room) in &self.rooms.join {
             for ev in &room.timeline.events {
@@ -345,7 +376,13 @@ impl SyncResponse {
                 }
                 if let Some(body) = ev.content.body.as_deref() {
                     if !body.trim().is_empty() {
-                        out.push((room_id.clone(), body.to_string(), ev.sender.clone()));
+                        let reply_to = ev
+                            .content
+                            .relates_to
+                            .as_ref()
+                            .and_then(|r| r.in_reply_to.as_ref())
+                            .and_then(|ir| ir.event_id.clone());
+                        out.push((room_id.clone(), body.to_string(), ev.sender.clone(), reply_to));
                     }
                 }
             }

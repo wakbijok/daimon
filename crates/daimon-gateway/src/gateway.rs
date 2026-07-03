@@ -48,6 +48,12 @@ pub struct InboundMessage {
     pub text: String,
     /// How to address the reply back to the originating conversation.
     pub correlation: Correlation,
+    /// P7-2 (FR-GW-14): if this message is a REPLY to an earlier message, the
+    /// provider's id of the message being replied to (Telegram
+    /// `reply_to_message.message_id`, Matrix `m.in_reply_to.event_id`). Used to
+    /// correlate an inbound `approve`/`deny` back to the approval alert it
+    /// replies to. `None` for a normal (non-reply) message.
+    pub reply_to_message_id: Option<String>,
     /// When the adapter received/normalised the message.
     pub received_at: DateTime<Utc>,
 }
@@ -191,13 +197,16 @@ pub trait Gateway: Send + Sync {
     /// Streaming capability is per-adapter (Telegram/Matrix batch).
     fn reply_sink(&self, correlation: &Correlation) -> Box<dyn ReplySink>;
 
-    /// Proactive outbound (alerts) to an explicit recipient. Alert routing is
-    /// deferred to a later phase; P4 adapters return `NotImplemented`.
+    /// Proactive outbound (alerts) to an explicit recipient. Returns the
+    /// provider's id of the SENT message (Telegram `message_id`, Matrix
+    /// `event_id`) when available, so the caller can correlate a reply back to
+    /// this alert (P7-2, FR-GW-14); `None` if the provider gives no id. Adapters
+    /// that do not implement outbound return `NotImplemented`.
     async fn deliver_alert(
         &self,
         _to: &Recipient,
         _body: &AlertBody,
-    ) -> Result<(), GatewayError> {
+    ) -> Result<Option<String>, GatewayError> {
         Err(GatewayError::NotImplemented)
     }
 }

@@ -71,6 +71,14 @@ struct TgMessage {
     text: Option<String>,
     from: Option<TgUser>,
     chat: TgChat,
+    /// P7-2: present when this message replies to another; we only need the id.
+    #[serde(default)]
+    reply_to_message: Option<TgReplyRef>,
+}
+
+#[derive(Deserialize)]
+struct TgReplyRef {
+    message_id: i64,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +110,10 @@ fn update_to_inbound(update: Update) -> Result<InboundMessage, GatewayError> {
         .text
         .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| GatewayError::Ignored("message has no text".into()))?;
+    let reply_to_message_id = message
+        .reply_to_message
+        .as_ref()
+        .map(|r| r.message_id.to_string());
     let from = message
         .from
         .ok_or_else(|| GatewayError::Ignored("message has no sender".into()))?;
@@ -114,6 +126,7 @@ fn update_to_inbound(update: Update) -> Result<InboundMessage, GatewayError> {
             thread: Some(chat_id.clone()),
             reply_to: chat_id,
         },
+        reply_to_message_id,
         received_at: Utc::now(),
     })
 }
@@ -128,7 +141,7 @@ async fn telegram_send_alert(
     bot_token: &str,
     chat_id: &str,
     text: &str,
-) -> Result<(), GatewayError> {
+) -> Result<Option<String>, GatewayError> {
     let url = format!("{api_base}/bot{bot_token}/sendMessage");
     let resp = http
         .post(&url)
@@ -142,7 +155,15 @@ async fn telegram_send_alert(
             resp.status()
         )));
     }
-    Ok(())
+    // P7-2: return the sent message_id so a reply can be correlated. A parse
+    // miss is non-fatal — the alert still delivered, we just cannot correlate.
+    let msg_id = resp
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v.get("result").and_then(|r| r.get("message_id")).and_then(|m| m.as_i64()))
+        .map(|id| id.to_string());
+    Ok(msg_id)
 }
 
 /// Build the batched reply sink that posts one `sendMessage` per turn to
@@ -171,7 +192,11 @@ impl Gateway for TelegramAdapter {
         Ingress::Webhook
     }
 
-    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+    async fn deliver_alert(
+        &self,
+        to: &Recipient,
+        body: &AlertBody,
+    ) -> Result<Option<String>, GatewayError> {
         telegram_send_alert(&self.http, &self.api_base, &self.bot_token, &to.to, &body.render()).await
     }
 
@@ -293,7 +318,11 @@ impl Gateway for TelegramPollAdapter {
         )
     }
 
-    async fn deliver_alert(&self, to: &Recipient, body: &AlertBody) -> Result<(), GatewayError> {
+    async fn deliver_alert(
+        &self,
+        to: &Recipient,
+        body: &AlertBody,
+    ) -> Result<Option<String>, GatewayError> {
         telegram_send_alert(&self.http, &self.api_base, &self.bot_token, &to.to, &body.render()).await
     }
 }
@@ -419,7 +448,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(format!("/bot{TOKEN}/sendMessage")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"ok": true, "result": {"message_id": 4242}}),
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -427,8 +458,9 @@ mod tests {
         let adapter = TelegramAdapter::with_api_base(TOKEN.into(), SECRET.into(), server.uri());
         let to = Recipient { channel: "telegram".into(), to: "555".into() };
         let body = AlertBody { title: "⚠ anomaly".into(), body: "cpu high on target://k3s-lab".into() };
-        adapter.deliver_alert(&to, &body).await.expect("alert delivered");
-        // The `.expect(1)` on the mock verifies exactly one sendMessage on drop.
+        let msg_id = adapter.deliver_alert(&to, &body).await.expect("alert delivered");
+        // P7-2: the sent message_id is returned for reply correlation.
+        assert_eq!(msg_id.as_deref(), Some("4242"));
     }
 
     #[tokio::test]

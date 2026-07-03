@@ -133,10 +133,35 @@ impl InboundHandler for AppInboundHandler {
             "gateway turn dispatched (same Harness/Guard path as a browser turn)"
         );
 
+        // P7-2 (FR-GW-14): reply-to correlation. If this message REPLIES to an
+        // approval alert and its body is a bare approve/deny, resolve the approval
+        // id from the persisted delivery correlation and decide — the approver
+        // never needs to type the id. Same server-side authority check applies.
+        if let Some(reply_id) = msg.reply_to_message_id.as_deref() {
+            if let Some(approved) = parse_bare_decision(&msg.text) {
+                match crate::db::resolve_approval_by_reply(&self.state.db, &msg.channel, reply_id)
+                    .await
+                {
+                    Ok(Some(approval_id)) => {
+                        self.decide_over_chat(&actor, approved, approval_id, &session_id, &mut sink)
+                            .await;
+                        sink.finish().await;
+                        return;
+                    }
+                    // Reply to a non-approval message → fall through to normal chat.
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!(error = %e, "approve-over-chat: reply correlation lookup failed");
+                    }
+                }
+            }
+        }
+
         // P6-12 (FR-GW-14): approve-over-chat. If the message is an approve/deny
-        // command, apply the decision through the SAME server-side role check as
-        // the console (approver/admin) — the bound channel identity NEVER grants
-        // authority — instead of dispatching it to the LLM.
+        // command WITH an explicit id, apply the decision through the SAME
+        // server-side role check as the console (approver/admin) — the bound
+        // channel identity NEVER grants authority — instead of dispatching it to
+        // the LLM.
         if let Some((approved, approval_id)) = parse_approval_command(&msg.text) {
             self.decide_over_chat(&actor, approved, approval_id, &session_id, &mut sink)
                 .await;
@@ -233,6 +258,24 @@ fn parse_approval_command(text: &str) -> Option<(bool, uuid::Uuid)> {
     };
     let id = uuid::Uuid::parse_str(rest.trim()).ok()?;
     Some((approved, id))
+}
+
+/// Parse a BARE approve/deny reply (no id — the id comes from reply correlation,
+/// P7-2). Strips a Matrix reply-quote fallback (`> …` lines) before matching, so
+/// `> <@daimon> approval required\n\napprove` reads as `approve`. Returns
+/// `Some(true/false)` or `None` if the reply is not a decision.
+fn parse_bare_decision(text: &str) -> Option<bool> {
+    let cleaned: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('>'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let first = cleaned.split_whitespace().next()?;
+    match first.to_ascii_lowercase().as_str() {
+        "approve" | "/approve" | "approved" => Some(true),
+        "deny" | "/deny" | "denied" => Some(false),
+        _ => None,
+    }
 }
 
 /// Emit a single-message reply through a batched sink (one `TokenDelta`).
@@ -346,7 +389,23 @@ pub fn spawn_poller(state: AppState, adapter: Arc<dyn daimon_gateway::PollingGat
 
 #[cfg(test)]
 mod tests {
-    use super::parse_approval_command;
+    use super::{parse_approval_command, parse_bare_decision};
+
+    #[test]
+    fn bare_decision_strips_matrix_quote_and_matches() {
+        // plain reply
+        assert_eq!(parse_bare_decision("approve"), Some(true));
+        assert_eq!(parse_bare_decision("/deny"), Some(false));
+        assert_eq!(parse_bare_decision("Approved please"), Some(true));
+        // Matrix reply-quote fallback is stripped before matching
+        assert_eq!(
+            parse_bare_decision("> <@daimon:hs> 🔐 approval required\n\napprove"),
+            Some(true)
+        );
+        // not a decision
+        assert_eq!(parse_bare_decision("what does this do?"), None);
+        assert_eq!(parse_bare_decision("> only a quote"), None);
+    }
 
     #[test]
     fn parses_approve_and_deny_with_uuid() {
