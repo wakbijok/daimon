@@ -378,6 +378,28 @@ pub async fn append_chat_turn(
     Ok(())
 }
 
+/// P7-6 (FR-UI-20): prune chat history older than the retention window (by last
+/// activity, `updated_at`). Returns the number of sessions removed (turns cascade).
+/// `retention_days == 0` means RETAIN FOREVER — a mis-set/unset window must never
+/// wipe everything. Independent of the auth-session TTL and the Redis TTL.
+#[cfg(feature = "ssr")]
+pub async fn prune_chat_history(pool: &Pool, retention_days: u64) -> Result<u64> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+    let client = pool.get().await.context("pg client")?;
+    let days = retention_days.min(i32::MAX as u64) as i32;
+    let n = client
+        .execute(
+            "DELETE FROM public.chat_sessions
+              WHERE updated_at < now() - make_interval(days => $1)",
+            &[&days],
+        )
+        .await
+        .context("prune chat history")?;
+    Ok(n)
+}
+
 /// A gateway identity binding row for the admin Channels surface.
 #[cfg(feature = "ssr")]
 #[derive(Debug, Clone)]

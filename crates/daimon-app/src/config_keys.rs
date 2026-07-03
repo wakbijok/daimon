@@ -36,6 +36,8 @@ pub const CONSUMED_KEYS: &[(&str, &str)] = &[
     ("channels.alerts.", "Outbound alert routing rules (by class + severity → recipient)"),
     // Targets/Connectors (P6-7)
     ("targets.", "Registered managed targets (target://<name>) + driver/connector binding"),
+    // Chat history retention (P7-6)
+    ("chat.history_retention_days", "Days to retain chat transcripts (0 = forever); independent of the auth-session TTL"),
 ];
 
 /// Config-tab prefixes whose keys are NOT consumed by the runtime in this build

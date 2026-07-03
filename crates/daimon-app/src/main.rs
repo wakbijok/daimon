@@ -430,6 +430,33 @@ async fn main() {
     // channels via deliver_alert, fail-soft. No-op if no channel is enabled.
     daimon_app::alert_router::spawn_alert_router(app_state.clone(), alert_rx);
 
+    // P7-6 (FR-UI-20): chat-history retention sweep — deletes transcripts older
+    // than `chat.history_retention_days` (config; 0/unset = retain forever),
+    // independent of the auth-session/Redis TTLs. Hourly; re-reads config each
+    // pass so a settings change applies.
+    {
+        let sweeper = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                let days = sweeper.config.current().u64(
+                    "chat.history_retention_days",
+                    Some("DAIMON_CHAT_HISTORY_RETENTION_DAYS"),
+                    0,
+                );
+                if days > 0 {
+                    match daimon_app::db::prune_chat_history(&sweeper.db, days).await {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(pruned = n, days, "chat history retention sweep")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "chat history prune failed"),
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+    }
+
     // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram
     // getUpdates). Pollers need the full AppState (for the shared inbound
     // pipeline), so they are spawned after the struct.
