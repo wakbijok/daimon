@@ -20,6 +20,7 @@
 //! The Responses SSE event stream is mapped to daimon's provider-agnostic
 //! `ContentDelta`, so the chat turn loop is unchanged.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
 
@@ -190,7 +191,8 @@ impl ChatGptOAuthClient {
                         input.push(json!({
                             "type": "function_call",
                             "call_id": tc.id,
-                            "name": tc.name,
+                            // OpenAI requires ^[A-Za-z0-9_-]+$; daimon caps use dots.
+                            "name": sanitize_tool_name(&tc.name),
                             "arguments": serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".into()),
                         }));
                     }
@@ -219,7 +221,11 @@ impl ChatGptOAuthClient {
                     .iter()
                     .map(|t| json!({
                         "type": "function",
-                        "name": t.name,
+                        // OpenAI function names must match ^[A-Za-z0-9_-]+$; daimon
+                        // capability names use dots. Sanitize here; the reply's
+                        // tool-call name is mapped back to the real capability in
+                        // complete_stream (so dispatch hits the right cap).
+                        "name": sanitize_tool_name(&t.name),
                         "description": t.description,
                         "parameters": t.input_schema,
                     }))
@@ -341,10 +347,17 @@ impl LlmClient for ChatGptOAuthClient {
                 body,
             });
         }
+        // Map sanitized tool names back to the real dotted capability names so
+        // the chat loop dispatches to the correct capability.
+        let name_map: HashMap<String, String> = req
+            .tools
+            .iter()
+            .map(|t| (sanitize_tool_name(&t.name), t.name.clone()))
+            .collect();
         let events = resp.bytes_stream().eventsource();
-        let mapped = events.flat_map(|item| {
+        let mapped = events.flat_map(move |item| {
             let deltas: Vec<Result<ContentDelta>> = match item {
-                Ok(ev) => parse_event(&ev.data),
+                Ok(ev) => parse_event(&ev.data, &name_map),
                 Err(e) => vec![Err(Error::Stream(format!("sse: {e}")))],
             };
             futures::stream::iter(deltas)
@@ -353,8 +366,23 @@ impl LlmClient for ChatGptOAuthClient {
     }
 }
 
+/// Sanitize a tool name to OpenAI's `^[A-Za-z0-9_-]+$` (daimon caps use dots).
+/// The reverse map (sanitized → original) is applied on the tool-call reply.
+fn sanitize_tool_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Map one Responses SSE event to zero or more daimon `ContentDelta`s.
-fn parse_event(data: &str) -> Vec<Result<ContentDelta>> {
+/// `name_map` maps a sanitized tool name back to the real dotted capability.
+fn parse_event(data: &str, name_map: &HashMap<String, String>) -> Vec<Result<ContentDelta>> {
     if data.trim().is_empty() || data == "[DONE]" {
         return vec![];
     }
@@ -371,7 +399,8 @@ fn parse_event(data: &str) -> Vec<Result<ContentDelta>> {
             let item = &v["item"];
             if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
                 let id = call_id(item);
-                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let raw = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let name = name_map.get(raw).cloned().unwrap_or_else(|| raw.to_string());
                 vec![Ok(ContentDelta::ToolUseStart { id, name })]
             } else {
                 vec![]
@@ -483,27 +512,49 @@ mod tests {
         assert_eq!(input[1]["call_id"], "call_1");
         assert_eq!(input[2]["type"], "function_call_output");
         assert_eq!(input[2]["call_id"], "call_1");
-        assert_eq!(body["tools"][0]["name"], "fw.list");
+        // tool name is sanitized for OpenAI (fw.list -> fw_list); the history
+        // function_call name is sanitized to match.
+        assert_eq!(body["tools"][0]["name"], "fw_list");
+        assert_eq!(input[1]["name"], "fw_list");
+    }
+
+    #[test]
+    fn sanitize_maps_dots_to_underscores() {
+        assert_eq!(
+            sanitize_tool_name("network.routeros.firewall_list"),
+            "network_routeros_firewall_list"
+        );
+        assert_eq!(sanitize_tool_name("memory.log_decision"), "memory_log_decision");
+        assert_eq!(sanitize_tool_name("already_ok-1"), "already_ok-1");
     }
 
     #[test]
     fn parse_text_delta() {
-        let d = parse_event(r#"{"type":"response.output_text.delta","delta":"Hel"}"#);
+        let d = parse_event(
+            r#"{"type":"response.output_text.delta","delta":"Hel"}"#,
+            &HashMap::new(),
+        );
         assert!(matches!(&d[0], Ok(ContentDelta::TextDelta { text }) if text == "Hel"));
     }
 
     #[test]
-    fn parse_tool_call_flow() {
+    fn parse_tool_call_flow_unmaps_name() {
+        // The model returns the sanitized name; the map restores the real cap.
+        let mut map = HashMap::new();
+        map.insert("fw_list".to_string(), "network.routeros.fw.list".to_string());
         let start = parse_event(
-            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"fw.list"}}"#,
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"fw_list"}}"#,
+            &map,
         );
-        assert!(matches!(&start[0], Ok(ContentDelta::ToolUseStart { id, name }) if id=="call_9" && name=="fw.list"));
+        assert!(matches!(&start[0], Ok(ContentDelta::ToolUseStart { id, name }) if id=="call_9" && name=="network.routeros.fw.list"));
         let arg = parse_event(
             r#"{"type":"response.function_call_arguments.delta","delta":"{\"t\":1}"}"#,
+            &map,
         );
         assert!(matches!(&arg[0], Ok(ContentDelta::ToolUseInputDelta { partial_json }) if partial_json == r#"{"t":1}"#));
         let done = parse_event(
             r#"{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_9"}}"#,
+            &map,
         );
         assert!(matches!(&done[0], Ok(ContentDelta::ToolUseStop { id }) if id == "call_9"));
     }
@@ -540,10 +591,12 @@ mod tests {
     fn parse_completed_stop_reason() {
         let end = parse_event(
             r#"{"type":"response.completed","response":{"output":[{"type":"message"}],"usage":{"input_tokens":10,"output_tokens":3}}}"#,
+            &HashMap::new(),
         );
         assert!(matches!(&end[0], Ok(ContentDelta::MessageStop { stop_reason, usage }) if *stop_reason==StopReason::EndTurn && usage.input_tokens==10));
         let tool = parse_event(
             r#"{"type":"response.completed","response":{"output":[{"type":"function_call"}],"usage":{}}}"#,
+            &HashMap::new(),
         );
         assert!(matches!(&tool[0], Ok(ContentDelta::MessageStop { stop_reason, .. }) if *stop_reason==StopReason::ToolUse));
     }
