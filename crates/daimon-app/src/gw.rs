@@ -191,3 +191,61 @@ fn header_map_to_hashmap(h: &HeaderMap) -> HashMap<String, String> {
         .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_string(), vs.to_string())))
         .collect()
 }
+
+// ---- Matrix poller wiring (P4-5) --------------------------------------------
+
+/// The Matrix `/sync` resume cursor, persisted in `app_config` so a restart does
+/// not reprocess room history. Backs `daimon_gateway`'s `SyncCursorStore` (that
+/// crate has no DB access — D21).
+pub struct AppConfigCursor {
+    pool: daimon_db::Pool,
+}
+
+impl AppConfigCursor {
+    const KEY: &'static str = "channels.matrix.since";
+
+    pub fn new(pool: daimon_db::Pool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl daimon_gateway::adapters::matrix::SyncCursorStore for AppConfigCursor {
+    async fn load(&self) -> Option<String> {
+        crate::db::get_config(&self.pool, Self::KEY)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn save(&self, cursor: &str) {
+        if let Err(e) = crate::db::set_config(&self.pool, Self::KEY, cursor).await {
+            warn!(error = %e, "matrix: failed to persist /sync cursor");
+        }
+    }
+}
+
+/// Spawn the supervised Matrix poller. `run_ingress` only returns on a fatal
+/// error (bad token, decode failure); the wrapper restarts it after a backoff so
+/// a transient homeserver outage self-heals. Called at boot (P4-7) only when the
+/// `matrix` channel is enabled and its access token resolved.
+pub fn spawn_matrix_poller(
+    state: AppState,
+    adapter: Arc<daimon_gateway::adapters::matrix::MatrixAdapter>,
+) {
+    use daimon_gateway::PollingGateway;
+    let handler: Arc<dyn InboundHandler> = Arc::new(AppInboundHandler::new(state));
+    tokio::spawn(async move {
+        loop {
+            match adapter.run_ingress(handler.clone()).await {
+                Ok(()) => {
+                    warn!("matrix poller returned cleanly — restarting in 10s");
+                }
+                Err(e) => {
+                    error!(error = %e, "matrix poller exited — restarting in 10s");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    });
+}
