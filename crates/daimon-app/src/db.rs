@@ -239,6 +239,136 @@ pub async fn enabled_admin_count_excluding(pool: &Pool, user_id: Uuid) -> Result
     Ok(row.get(0))
 }
 
+// ---- gateway identities (P4, FR-GW-08) --------------------------------------
+
+/// A gateway identity binding resolved to its IAM actor + roles. This is the
+/// actor a channel-originated turn runs under — the same shape a browser turn's
+/// `Claims` yields, so a gateway turn traverses the identical Harness/Guard path
+/// (FR-GW-09/10).
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone)]
+pub struct GatewayActor {
+    pub user_id: Uuid,
+    pub username: String,
+    pub roles: Vec<String>,
+}
+
+/// Resolve a `(channel, platform_handle)` to its bound IAM user + roles.
+///
+/// **FAIL-CLOSED (FR-GW-08).** A handle with no binding — or one bound to a
+/// non-`active` account — resolves to `None`, and the caller MUST refuse the
+/// message without dispatching any capability. Roles come from the same
+/// `role_grants` join the console uses (`find_user`), never from the inbound
+/// payload, so a channel cannot elevate an actor (FR-GW-10).
+#[cfg(feature = "ssr")]
+pub async fn resolve_gateway_identity(
+    pool: &Pool,
+    channel: &str,
+    platform_handle: &str,
+) -> Result<Option<GatewayActor>> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_opt(
+            "SELECT u.id, u.username,
+                    COALESCE(
+                        ARRAY(
+                            SELECT r.slug
+                            FROM public.role_grants rg
+                            JOIN public.roles r ON r.id = rg.role_id
+                            WHERE rg.user_id = u.id
+                            ORDER BY r.is_system DESC, r.slug
+                        ),
+                        ARRAY[]::TEXT[]
+                    ) AS roles
+             FROM public.gateway_identities gi
+             JOIN public.users u ON u.id = gi.user_id
+             WHERE gi.channel = $1 AND gi.platform_handle = $2
+               AND u.status = 'active'
+             LIMIT 1",
+            &[&channel, &platform_handle],
+        )
+        .await
+        .context("resolve_gateway_identity")?;
+    Ok(row.map(|r| GatewayActor {
+        user_id: r.get(0),
+        username: r.get(1),
+        roles: r.get(2),
+    }))
+}
+
+/// A gateway identity binding row for the admin Channels surface.
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone)]
+pub struct GatewayIdentityRow {
+    pub id: Uuid,
+    pub channel: String,
+    pub platform_handle: String,
+    pub user_id: Uuid,
+    pub username: String,
+    pub enrolled_at: DateTime<Utc>,
+}
+
+/// Enrol a handle → user binding (admin-gated; the Channels tab). Returns the
+/// new binding id. `UNIQUE(channel, platform_handle)` rejects a duplicate.
+#[cfg(feature = "ssr")]
+pub async fn create_gateway_identity(
+    pool: &Pool,
+    channel: &str,
+    platform_handle: &str,
+    user_id: Uuid,
+    enrolled_by: Option<Uuid>,
+) -> Result<Uuid> {
+    let client = pool.get().await.context("pg client")?;
+    let row = client
+        .query_one(
+            "INSERT INTO public.gateway_identities (channel, platform_handle, user_id, enrolled_by)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id",
+            &[&channel, &platform_handle, &user_id, &enrolled_by],
+        )
+        .await
+        .context("create_gateway_identity")?;
+    Ok(row.get(0))
+}
+
+/// List all bindings (admin surface), most-recent first.
+#[cfg(feature = "ssr")]
+pub async fn list_gateway_identities(pool: &Pool) -> Result<Vec<GatewayIdentityRow>> {
+    let client = pool.get().await.context("pg client")?;
+    let rows = client
+        .query(
+            "SELECT gi.id, gi.channel, gi.platform_handle, gi.user_id, u.username, gi.enrolled_at
+             FROM public.gateway_identities gi
+             JOIN public.users u ON u.id = gi.user_id
+             ORDER BY gi.enrolled_at DESC",
+            &[],
+        )
+        .await
+        .context("list_gateway_identities")?;
+    Ok(rows
+        .into_iter()
+        .map(|r| GatewayIdentityRow {
+            id: r.get(0),
+            channel: r.get(1),
+            platform_handle: r.get(2),
+            user_id: r.get(3),
+            username: r.get(4),
+            enrolled_at: r.get(5),
+        })
+        .collect())
+}
+
+/// Revoke a binding by id (admin surface).
+#[cfg(feature = "ssr")]
+pub async fn delete_gateway_identity(pool: &Pool, id: Uuid) -> Result<()> {
+    let client = pool.get().await.context("pg client")?;
+    client
+        .execute("DELETE FROM public.gateway_identities WHERE id = $1", &[&id])
+        .await
+        .context("delete_gateway_identity")?;
+    Ok(())
+}
+
 // ---- sessions ---------------------------------------------------------------
 
 #[cfg(feature = "ssr")]
