@@ -53,6 +53,45 @@ pub struct UpdateState {
     pub update_flag_path: String,
 }
 
+/// P6-3: store a settings secret in the vault THROUGH the broker (D21), keyed by
+/// a deterministic name. Create-or-update by name so re-saving a changed secret
+/// updates the same credential instead of erroring on a duplicate name. The
+/// plaintext is wrapped as an `ApiToken` credential; it is never returned,
+/// logged, or written to `app_config` — only the `vault://` ref is.
+#[cfg(feature = "ssr")]
+async fn intercept_secret(
+    state: &crate::state::AppState,
+    actor: &str,
+    vault_name: &str,
+    plaintext: &str,
+) -> Result<(), String> {
+    use crate::admin_credentials::CredentialDto;
+
+    let dto = CredentialDto::ApiToken {
+        token: plaintext.to_string(),
+    };
+    // Look up an existing credential of this name to decide create vs update.
+    let existing = state
+        .broker
+        .vault_list_metadata(actor)
+        .await
+        .map_err(|e| e.to_string())?;
+    match existing.into_iter().find(|m| m.name == vault_name) {
+        Some(m) => state
+            .broker
+            .vault_update(actor, m.id, dto.into())
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        None => state
+            .broker
+            .vault_create(actor, vault_name, dto.into())
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+    }
+}
+
 // ---- get / set / list -------------------------------------------------------
 
 #[server]
@@ -111,10 +150,30 @@ pub async fn set_setting(
         .await
         .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
 
-    // Secrets land as vault:// refs. The current cut treats `value` as the
-    // already-resolved ref string for is_secret=true; future iteration
-    // intercepts plaintext, stores via daimon-vault, and replaces value
-    // with the new ref.
+    // P6-3 (FR-CFG-11/12, FR-GW-17): server-side vault interception. For a
+    // secret field, PLAINTEXT never reaches app_config or the logs — it is
+    // stored in the vault via the broker (D21: daimon-app never touches
+    // daimon-vault directly) and only the `vault://settings.<key>` ref is
+    // persisted. A re-save whose value is already a `vault://` ref means the
+    // operator did not change the secret, so we keep the ref untouched
+    // (idempotent, no re-wrap, no spurious vault write).
+    let persist_value: serde_json::Value = if is_secret {
+        match value.as_str() {
+            Some(existing) if existing.starts_with("vault://") => value.clone(),
+            Some(plaintext) if !plaintext.is_empty() => {
+                let vault_name = format!("settings.{key}");
+                intercept_secret(&state, &claims.sub, &vault_name, plaintext)
+                    .await
+                    .map_err(|e| ServerFnError::new(format!("vault store: {e}")))?;
+                serde_json::Value::String(format!("vault://{vault_name}"))
+            }
+            // Empty or non-string secret clears the value; store as-is.
+            _ => value.clone(),
+        }
+    } else {
+        value.clone()
+    };
+
     client
         .execute(
             "INSERT INTO public.app_config (key, value, is_secret, updated_by)
@@ -126,7 +185,7 @@ pub async fn set_setting(
                    updated_at = now()",
             &[
                 &key,
-                &value,
+                &persist_value,
                 &is_secret,
                 &Some(claims.user_id),
             ],
