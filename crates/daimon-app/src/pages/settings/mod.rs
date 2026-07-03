@@ -67,6 +67,27 @@ impl Tab {
             Tab::Update => "update.",
         }
     }
+
+    /// P6-6 (FR-CFG-01/03/10): a tab whose keys the runtime does NOT consume in
+    /// this build renders READ-ONLY — the editor is hidden and a banner explains
+    /// why — so a field can never claim to change behaviour that nothing reads.
+    /// `Connections` is bootstrap/env-sourced (FR-CFG-03); `Vault & KMS` is
+    /// KMS-dead in revival scope (FR-CFG-10).
+    fn read_only(self) -> bool {
+        matches!(self, Tab::Connections | Tab::Vault)
+    }
+
+    /// Why a read-only tab is read-only (shown in the banner).
+    fn read_only_reason(self) -> &'static str {
+        match self {
+            Tab::Connections => "Backend connection settings are sourced from the environment / \
+                systemd unit at boot (DAIMON_PG_URL, master key, DAIMON_DATA_DIR) and cannot be \
+                edited here (FR-CFG-03).",
+            Tab::Vault => "KMS / DEK-rotation wiring is out of revival scope; these values are \
+                shown for reference only (FR-CFG-10).",
+            _ => "",
+        }
+    }
 }
 
 const TAB_ORDER: [Tab; 10] = [
@@ -187,6 +208,17 @@ fn KvTab(tab: Tab) -> impl IntoView {
                 })}
             </div>
 
+            {if tab.read_only() {
+                view! {
+                    <div class="rounded border border-border-primary bg-surface-secondary p-3 text-xs text-text-secondary">
+                        <span class="font-semibold text-accent-amber">"Read-only. "</span>
+                        {tab.read_only_reason()}
+                    </div>
+                }.into_any()
+            } else {
+                view! {}.into_any()
+            }}
+
             <Suspense fallback=|| view! { <div class="text-text-secondary text-sm">"loading…"</div> }>
                 {move || settings.get().map(|res| match res {
                     Ok(rows) => view! { <KvList rows=rows /> }.into_any(),
@@ -196,42 +228,70 @@ fn KvTab(tab: Tab) -> impl IntoView {
                 })}
             </Suspense>
 
-            <div class="rounded border border-border-primary p-3 bg-surface-secondary">
-                <h3 class="text-xs uppercase tracking-wider text-text-secondary mb-2">
-                    {format!("Add / update setting under '{prefix}'")}
-                </h3>
-                <div class="grid grid-cols-12 gap-2 items-center">
-                    <input
-                        class="col-span-4 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
-                        placeholder=format!("{prefix}your.key")
-                        prop:value=move || new_key.get()
-                        on:input=move |ev| set_new_key.set(event_target_value(&ev))
-                    />
-                    <input
-                        class="col-span-6 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
-                        placeholder="value (raw → JSON parsed if possible, otherwise string)"
-                        prop:value=move || new_val.get()
-                        on:input=move |ev| set_new_val.set(event_target_value(&ev))
-                    />
-                    <label class="col-span-1 flex items-center text-xs text-text-secondary gap-1">
-                        <input
-                            type="checkbox"
-                            prop:checked=move || new_secret.get()
-                            on:change=move |ev| set_new_secret.set(event_target_checked(&ev))
-                        />
-                        "Secret"
-                    </label>
-                    <button
-                        on:click=on_save_new
-                        class="col-span-1 px-2 py-1 bg-accent-amber text-surface-primary font-medium rounded text-sm"
-                    >
-                        "Save"
-                    </button>
-                </div>
-                <p class="text-[10px] text-text-muted mt-2">
-                    "Secret values must be vault:// references (e.g. `vault://settings/anthropic_key`). The raw value field is JSON-parsed when possible — strings stay strings."
-                </p>
-            </div>
+            // P6-6: consumed-key reference — an editable tab shows exactly which
+            // keys the runtime reads, so no field is mistaken for live when it is
+            // not. Read-only tabs skip the editor entirely.
+            {if tab.read_only() {
+                view! {}.into_any()
+            } else {
+                let consumed = crate::config_keys::consumed_keys_under(prefix);
+                view! {
+                    {if consumed.is_empty() { view! {}.into_any() } else {
+                        view! {
+                            <div class="rounded border border-border-primary p-3 bg-surface-secondary/40">
+                                <h3 class="text-xs uppercase tracking-wider text-text-secondary mb-2">
+                                    "Consumed by the runtime"
+                                </h3>
+                                <ul class="space-y-1">
+                                    {consumed.into_iter().map(|(k, desc)| view! {
+                                        <li class="text-xs">
+                                            <code class="text-accent-amber">{k}</code>
+                                            <span class="text-text-muted">" — "{desc}</span>
+                                        </li>
+                                    }).collect_view()}
+                                </ul>
+                            </div>
+                        }.into_any()
+                    }}
+
+                    <div class="rounded border border-border-primary p-3 bg-surface-secondary">
+                        <h3 class="text-xs uppercase tracking-wider text-text-secondary mb-2">
+                            {format!("Add / update setting under '{prefix}'")}
+                        </h3>
+                        <div class="grid grid-cols-12 gap-2 items-center">
+                            <input
+                                class="col-span-4 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
+                                placeholder=format!("{prefix}your.key")
+                                prop:value=move || new_key.get()
+                                on:input=move |ev| set_new_key.set(event_target_value(&ev))
+                            />
+                            <input
+                                class="col-span-6 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
+                                placeholder="value (raw → JSON parsed if possible, otherwise string)"
+                                prop:value=move || new_val.get()
+                                on:input=move |ev| set_new_val.set(event_target_value(&ev))
+                            />
+                            <label class="col-span-1 flex items-center text-xs text-text-secondary gap-1">
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || new_secret.get()
+                                    on:change=move |ev| set_new_secret.set(event_target_checked(&ev))
+                                />
+                                "Secret"
+                            </label>
+                            <button
+                                on:click=on_save_new
+                                class="col-span-1 px-2 py-1 bg-accent-amber text-surface-primary font-medium rounded text-sm"
+                            >
+                                "Save"
+                            </button>
+                        </div>
+                        <p class="text-[10px] text-text-muted mt-2">
+                            "Secret values (checkbox) are intercepted server-side: the plaintext is stored in the vault and only a vault:// reference is persisted. The raw value field is JSON-parsed when possible — strings stay strings."
+                        </p>
+                    </div>
+                }.into_any()
+            }}
         </div>
     }
 }
