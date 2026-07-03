@@ -51,4 +51,7 @@ pub struct AppState {
     /// Populated at boot from the Channels config (`build_registry`, P4-7); empty
     /// when no channel is enabled — the route then 404s and no adapter runs.
     pub gateways: Arc<crate::gw::GatewayRegistry>,
+    /// P5-5 — skills (workflow-templates). Loaded from `deploy/skills/*.toml` at
+    /// boot; running one instantiates a plan through the orchestrator.
+    pub skills: Arc<crate::skills::SkillLibrary>,
 }

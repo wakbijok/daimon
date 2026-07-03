@@ -1,0 +1,49 @@
+# daimon skill — restart-k8s-workload (P5-5).
+#
+# A skill is a DECLARATIVE plan template, not a new executor. At run time the
+# operator supplies { target, namespace, deployment }; each value is validated
+# against its declared param class (the SAME injection chokepoint the connector
+# uses) BEFORE it is substituted into a step, then the concrete steps are handed
+# to the orchestrator's create_plan + run_plan — inheriting the exact
+# saga / approval / audit engine an admin- or chat-authored plan uses.
+#
+# This template composes two capabilities from the kubernetes connector:
+#   step 0  orchestrator.k8s.deploy.restart  (WRITE  — approval-gated, compensated)
+#   step 1  orchestrator.k8s.pod.status      (READ   — verify, runs after step 0)
+#
+# Because step 0 is a WRITE, running this skill parks in the approvals inbox until
+# a human approves; a failure rolls back via the capability's declared
+# compensator (orchestrator.k8s.deploy.rollback). Nothing here bypasses that.
+
+name = "restart-k8s-workload"
+description = "Roll-restart a Kubernetes deployment, then read back a pod's status to verify."
+
+[[param]]
+name = "target"
+class = "safe_text"
+description = "Target ref of the cluster, e.g. target://k3s-lab"
+
+[[param]]
+name = "namespace"
+class = "identifier"
+description = "Kubernetes namespace of the deployment"
+
+[[param]]
+name = "deployment"
+class = "identifier"
+description = "Deployment name to roll-restart (also used as the pod name to verify)"
+
+# --- step 0: WRITE — trigger the rolling restart --------------------------
+[[step]]
+capability = "orchestrator.k8s.deploy.restart"
+version = "1.0.0"
+target = "{target}"
+params = { namespace = "{namespace}", name = "{deployment}" }
+
+# --- step 1: READ — verify the workload came back -------------------------
+[[step]]
+capability = "orchestrator.k8s.pod.status"
+version = "1.0.0"
+target = "{target}"
+params = { namespace = "{namespace}", name = "{deployment}" }
+depends_on = [0]

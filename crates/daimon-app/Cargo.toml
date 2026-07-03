@@ -79,6 +79,8 @@ futures-util = { version = "0.3", optional = true }
 # WsSink implements it); the Telegram (webhook) + Matrix (/sync poller) adapters
 # are behind this crate's own features. ssr-only — adapters pull tokio/reqwest.
 daimon-gateway = { path = "../daimon-gateway", features = ["telegram", "matrix"], optional = true }
+# P5-5: skills are declarative plan templates parsed from deploy/skills/*.toml.
+toml = { version = "0.8", optional = true }
 
 [features]
 hydrate = [
@@ -125,4 +127,5 @@ ssr = [
     "dep:reqwest",
     "dep:futures-util",
     "dep:daimon-gateway",
+    "dep:toml",
 ]

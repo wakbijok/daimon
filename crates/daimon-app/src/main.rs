@@ -328,6 +328,22 @@ async fn main() {
     // getUpdates) are returned to spawn once AppState exists.
     let (gateway_registry, gateway_pollers) = build_gateways(&broker, &pool).await;
 
+    // P5-5 — load skills (workflow-templates) from $DAIMON_SKILLS_DIR
+    // (default deploy/skills). A malformed skill fails boot loudly.
+    let skills_dir = std::path::PathBuf::from(
+        std::env::var("DAIMON_SKILLS_DIR").unwrap_or_else(|_| "deploy/skills".to_string()),
+    );
+    let skills = match daimon_app::skills::SkillLibrary::from_dir(&skills_dir) {
+        Ok(s) => {
+            log!("loaded {} skill(s) from {}", s.len(), skills_dir.display());
+            std::sync::Arc::new(s)
+        }
+        Err(e) => {
+            eprintln!("daimon-app: failed to load skills from {}: {e}", skills_dir.display());
+            std::process::exit(1);
+        }
+    };
+
     let app_state = AppState {
         db: pool,
         jwt_secret,
@@ -343,6 +359,7 @@ async fn main() {
         // webhook adapters (Telegram) registered here; the Matrix poller is
         // spawned just below once AppState exists. Empty when nothing is enabled.
         gateways: std::sync::Arc::new(gateway_registry),
+        skills,
     };
 
     // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram

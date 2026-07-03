@@ -23,12 +23,15 @@ pub mod admin_memory;
 pub mod admin_observer;
 pub mod admin_plans;
 pub mod admin_settings;
+pub mod admin_skills;
 pub mod admin_targets;
 pub mod iam;
 #[cfg(feature = "ssr")]
 pub mod chat;
 #[cfg(feature = "ssr")]
 pub mod gw;
+#[cfg(feature = "ssr")]
+pub mod skills;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
