@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-anchor"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-app"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-audit"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-broker"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-cli"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-core"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1015,11 +1015,12 @@ dependencies = [
 
 [[package]]
 name = "daimon-db"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
  "deadpool-postgres",
+ "openssl",
  "refinery",
  "serde",
  "thiserror 2.0.18",
@@ -1032,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-driver"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1058,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-driver-firewall-routeros"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "daimon-broker",
@@ -1077,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-gateway"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1097,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-graph"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1113,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-guard"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1134,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-inventory"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1153,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-kms"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1169,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-llm"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1188,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-memory"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1206,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-migrate-data"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1226,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-observer"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1247,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-orchestrator"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1277,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-redis"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1292,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-runtime"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -1311,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-transport"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1332,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-triage"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1354,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "daimon-vault"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chacha20poly1305",
@@ -3137,6 +3138,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "openssl-src"
+version = "300.6.0+3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8e8cbfd3a4a8c8f089147fd7aaa33cf8c7450c4d09f8f80698a0cf093abeff4"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3144,6 +3154,7 @@ checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
 dependencies = [
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -3840,13 +3851,11 @@ dependencies = [
  "native-tls",
  "postgres-native-tls",
  "regex",
- "serde",
  "siphasher",
  "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-postgres",
- "toml 0.8.23",
  "url",
  "walkdir",
 ]
