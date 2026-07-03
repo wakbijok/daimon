@@ -62,6 +62,20 @@ pub async fn list_my_sessions() -> Result<Vec<SessionSummaryDto>, ServerFnError>
         .collect())
 }
 
+/// P7-7 (FR-UI-05/15): the models the operator may select for a chat session —
+/// the SAME permitted set the server-side turn validation enforces, so the
+/// picker can only offer what will actually be honoured. Sourced from config at
+/// runtime, never a compile-time list.
+#[server]
+pub async fn list_available_models() -> Result<Vec<String>, ServerFnError> {
+    use crate::auth_guard::require_authenticated;
+    use crate::state::AppState;
+
+    require_authenticated().await?;
+    let state = expect_context::<AppState>();
+    Ok(crate::chat::permitted_models(&state.config.current()))
+}
+
 /// Owner of a session, or `None` if the session does not exist.
 #[cfg(feature = "ssr")]
 async fn session_owner(

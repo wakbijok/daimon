@@ -191,17 +191,23 @@ fn parse_typed_record(tool_name: &str, mut args: Json) -> std::result::Result<Ty
 /// provider-agnostic (the provider is config, not a compile-time constant). A
 /// model edit in `/settings` is live on the next turn via the ArcSwap snapshot;
 /// changing the *provider* is a restart-class change.
-async fn select_llm(state: &AppState) -> std::result::Result<Box<dyn LlmClient>, String> {
+async fn select_llm(
+    state: &AppState,
+    effort: Option<&str>,
+) -> std::result::Result<Box<dyn LlmClient>, String> {
     let cfg = state.config.current();
     let provider = cfg.string("llm.provider", Some("DAIMON_LLM_PROVIDER"), "anthropic");
     // The chat-role model, if the operator set one (no env fallback here — each
     // provider branch applies its own env/default so the compiled default is
     // provider-correct).
     let chat_model = cfg.opt_string("llm.default_model.chat", None);
+    let effort = effort.filter(|e| !e.is_empty()).map(String::from);
 
     match provider.to_ascii_lowercase().as_str() {
+        // ChatGPT (the demo provider) supports a per-turn reasoning effort; other
+        // providers ignore it (default-through, FR-UI-16). Already validated.
         "chatgpt" => ChatGptOAuthClient::from_env()
-            .map(|c| Box::new(c.with_model(chat_model)) as Box<dyn LlmClient>)
+            .map(|c| Box::new(c.with_model(chat_model).with_effort(effort)) as Box<dyn LlmClient>)
             .map_err(|e| e.to_string()),
         "openai" => {
             let key = resolve_llm_key(state, &cfg, "llm.openai_key", "OPENAI_API_KEY")
@@ -251,6 +257,52 @@ async fn resolve_llm_key(
     std::env::var(env_var).ok().filter(|s| !s.is_empty())
 }
 
+/// The reasoning-effort tiers an operator may request (P7-7). A value outside
+/// this set is rejected server-side.
+pub(crate) const ALLOWED_EFFORTS: &[&str] = &["fast", "low", "medium", "high", "deliberate"];
+
+/// The models an operator is PERMITTED to select (P7-7, FR-UI-17). Sourced from
+/// `llm.available_models` (comma-separated); when unset, the permit set is just
+/// the single configured default — so no arbitrary model override is possible.
+/// Shared by the picker (`list_available_models`) and the server-side validation,
+/// so the offered set and the enforced set are identical.
+pub(crate) fn permitted_models(cfg: &crate::config::ConfigSnapshot) -> Vec<String> {
+    if let Some(list) = cfg.opt_string("llm.available_models", None) {
+        let v: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    cfg.opt_string("llm.default_model.chat", None).into_iter().collect()
+}
+
+/// P7-7 (FR-UI-17): validate an operator's model/effort selection SERVER-SIDE.
+/// A non-empty model must be in the permitted set; a non-empty effort must be a
+/// known tier. Fails closed — an unpermitted/unknown selection is rejected, not
+/// substituted. `Ok(())` when the selection is empty (use the default) or valid.
+fn validate_model_effort(
+    state: &AppState,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> std::result::Result<(), String> {
+    let cfg = state.config.current();
+    if let Some(m) = model.filter(|m| !m.is_empty()) {
+        if !permitted_models(&cfg).iter().any(|p| p == m) {
+            return Err(format!("model '{m}' is not permitted for this operator"));
+        }
+    }
+    if let Some(e) = effort.filter(|e| !e.is_empty()) {
+        if !ALLOWED_EFFORTS.contains(&e) {
+            return Err(format!("effort '{e}' is not a permitted tier"));
+        }
+    }
+    Ok(())
+}
+
 /// Entry point — handle a single ChatSend message from the client.
 pub async fn handle_chat_send(
     sink: &mut dyn ReplySink,
@@ -259,13 +311,25 @@ pub async fn handle_chat_send(
     session_id: String,
     user_message: String,
     model: Option<String>,
+    effort: Option<String>,
 ) {
+    // P7-7 (FR-UI-17): validate the operator's model/effort selection SERVER-SIDE
+    // before anything runs. The client must NOT be able to pick a costlier or
+    // unpermitted model, or an unbounded effort — an unavailable selection is
+    // REJECTED with a surfaced error and the turn does NOT run (never silently
+    // substituted). This is the anti-privilege-escalation chokepoint.
+    if let Err(msg) = validate_model_effort(state, model.as_deref(), effort.as_deref()) {
+        sink.emit(TurnEvent::Error { message: msg }).await;
+        sink.finish().await;
+        return;
+    }
+
     // Resolve the LLM client by provider (DAIMON_LLM_PROVIDER; default anthropic).
     // `openai` honours OPENAI_BASE_URL, so it also reaches a local runtime or a
     // subscription-fronting proxy (the zero-API-charge paths); `local` is the
     // Ollama-style client. All three satisfy the same LlmClient trait, so the
     // turn loop is provider-agnostic.
-    let llm: Box<dyn LlmClient> = match select_llm(state).await {
+    let llm: Box<dyn LlmClient> = match select_llm(state, effort.as_deref()).await {
         Ok(c) => c,
         Err(e) => {
             sink.emit(TurnEvent::Error {
@@ -736,3 +800,33 @@ struct PendingToolCall {
 }
 
 fn _unused_assistant_content(_: AssistantContent) {}
+
+#[cfg(test)]
+mod model_tests {
+    use super::{permitted_models, ALLOWED_EFFORTS};
+    use crate::config::ConfigSnapshot;
+    use serde_json::json;
+
+    #[test]
+    fn permitted_from_list_then_default_then_empty() {
+        // an explicit list is the permit set
+        let s = ConfigSnapshot::from_pairs([("llm.available_models".to_string(), json!("a, b ,c"))]);
+        assert_eq!(permitted_models(&s), vec!["a", "b", "c"]);
+        // no list → the single configured default (no arbitrary override)
+        let s2 = ConfigSnapshot::from_pairs([(
+            "llm.default_model.chat".to_string(),
+            json!("only-default"),
+        )]);
+        assert_eq!(permitted_models(&s2), vec!["only-default"]);
+        // nothing configured → empty, so a non-empty requested model fails closed
+        let s3 = ConfigSnapshot::from_pairs(Vec::<(String, serde_json::Value)>::new());
+        assert!(permitted_models(&s3).is_empty());
+    }
+
+    #[test]
+    fn effort_tiers_are_bounded() {
+        assert!(ALLOWED_EFFORTS.contains(&"fast"));
+        assert!(ALLOWED_EFFORTS.contains(&"deliberate"));
+        assert!(!ALLOWED_EFFORTS.contains(&"unbounded"));
+    }
+}

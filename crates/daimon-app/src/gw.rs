@@ -178,6 +178,7 @@ impl InboundHandler for AppInboundHandler {
             session_id,
             msg.text,
             None,
+            None,
         )
         .await;
     }

@@ -48,6 +48,8 @@ struct ChatSendMsg<'a> {
     user_message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +98,13 @@ pub fn ChatBubble() -> impl IntoView {
 
     let sessions = RwSignal::new(Vec::<SessionMeta>::new());
     let current_session = RwSignal::new(String::new());
+
+    // P7-7 (FR-UI-05/15/16): the operator's model/effort selection (empty = use
+    // the server default). The offered models come from the server's permitted
+    // set — the SAME set it enforces — so a pick is always honourable.
+    let selected_model = RwSignal::new(String::new());
+    let selected_effort = RwSignal::new(String::new());
+    let available_models = RwSignal::new(Vec::<String>::new());
 
     #[cfg(feature = "hydrate")]
     let socket = StoredValue::new(Option::<web_sys::WebSocket>::None);
@@ -169,6 +178,21 @@ pub fn ChatBubble() -> impl IntoView {
                 }
                 sessions.set(mapped);
             }
+        }
+    });
+
+    // ---- P7-7: fetch the permitted model set for the picker ----
+    let refresh_models = Action::new(move |_: &()| async move {
+        crate::admin_chat_sessions::list_available_models().await
+    });
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        refresh_models.dispatch(());
+    });
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        if let Some(Ok(m)) = refresh_models.value().get() {
+            available_models.set(m);
         }
     });
 
@@ -398,11 +422,13 @@ pub fn ChatBubble() -> impl IntoView {
                 set_busy.set(false);
                 return;
             };
+            let pick = |v: String| if v.is_empty() { None } else { Some(v) };
             let payload = ChatSendMsg {
                 ty: "ChatSend",
                 session_id: current_session.get_untracked(),
                 user_message: text,
-                model: None,
+                model: pick(selected_model.get_untracked()),
+                effort: pick(selected_effort.get_untracked()),
             };
             let json = serde_json::to_string(&payload).unwrap_or_default();
             let _ = ws.send_with_str(&json);
@@ -545,6 +571,32 @@ pub fn ChatBubble() -> impl IntoView {
                 </div>
 
                 <div class="border-t border-border-primary px-3 py-2 bg-surface-secondary shrink-0">
+                    // P7-7: model + effort picker (server-permitted set; unpermitted
+                    // picks are rejected server-side, never silently substituted).
+                    <div class="flex gap-2 mb-2">
+                        <Show when=move || !available_models.get().is_empty()>
+                            <select
+                                class="flex-1 min-w-0 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-secondary text-[11px] font-mono"
+                                on:change=move |ev| selected_model.set(event_target_value(&ev))
+                                prop:value=move || selected_model.get()
+                            >
+                                <option value="">"model: default"</option>
+                                {move || available_models.get().into_iter().map(|m| {
+                                    let label = m.clone();
+                                    view! { <option value=m>{label}</option> }
+                                }).collect_view()}
+                            </select>
+                        </Show>
+                        <select
+                            class="px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-secondary text-[11px] font-mono"
+                            on:change=move |ev| selected_effort.set(event_target_value(&ev))
+                            prop:value=move || selected_effort.get()
+                        >
+                            <option value="">"effort: default"</option>
+                            <option value="fast">"fast"</option>
+                            <option value="deliberate">"deliberate"</option>
+                        </select>
+                    </div>
                     <div class="flex gap-2">
                         <textarea
                             class="flex-1 px-2 py-1.5 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm focus:outline-none focus:border-accent-amber resize-none"

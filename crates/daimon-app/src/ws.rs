@@ -21,9 +21,15 @@ pub enum WsClientMsg {
         session_id: String,
         user_message: String,
         /// Optional model override (e.g. "claude-opus-4-7"); otherwise the
-        /// LLM client's default applies.
+        /// LLM client's default applies. VALIDATED server-side against the
+        /// permitted set (P7-7) — an unpermitted model is rejected, not honoured.
         #[serde(default)]
         model: Option<String>,
+        /// P7-7 (FR-UI-16): optional reasoning-effort tier (e.g. "fast" /
+        /// "deliberate"); validated server-side, applied where the provider
+        /// supports it, default-through otherwise.
+        #[serde(default)]
+        effort: Option<String>,
     },
 }
 
@@ -224,7 +230,7 @@ async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState, actor: 
                                     let pong = serde_json::to_string(&WsServerMsg::Pong).unwrap_or_default();
                                     let _ = socket.send(Message::Text(pong.into())).await;
                                 }
-                                WsClientMsg::ChatSend { session_id, user_message, model } => {
+                                WsClientMsg::ChatSend { session_id, user_message, model, effort } => {
                                     // Real authenticated operator (C4/AC-P1-07),
                                     // not the old hardcoded "operator". P4: the
                                     // browser socket is now one `ReplySink` among
@@ -239,6 +245,7 @@ async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState, actor: 
                                         session_id,
                                         user_message,
                                         model,
+                                        effort,
                                     )
                                     .await;
                                 }

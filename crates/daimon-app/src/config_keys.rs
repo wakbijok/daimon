@@ -19,6 +19,7 @@ pub const CONSUMED_KEYS: &[(&str, &str)] = &[
     // LLM (P6-4)
     ("llm.provider", "Active LLM provider: anthropic | openai | chatgpt | local"),
     ("llm.default_model.chat", "Model for the chat/worker role"),
+    ("llm.available_models", "Comma-separated models an operator may pick in chat (unset = default only)"),
     ("llm.anthropic_key", "Anthropic API key (secret → vault ref)"),
     ("llm.openai_key", "OpenAI API key (secret → vault ref)"),
     ("llm.ollama_url", "Base URL for the local/Ollama provider"),

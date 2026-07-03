@@ -116,6 +116,15 @@ impl ChatGptOAuthClient {
         self
     }
 
+    /// Override the reasoning effort per turn (P7-7 FR-UI-16). `None`/empty keeps
+    /// the env/default effort; the caller has already validated the value.
+    pub fn with_effort(mut self, effort: Option<String>) -> Self {
+        if let Some(e) = effort.filter(|s| !s.is_empty()) {
+            self.effort = e;
+        }
+        self
+    }
+
     fn load_tokens(&self) -> Result<AuthTokens> {
         let raw = std::fs::read_to_string(&self.auth_path)
             .map_err(|e| Error::Other(format!("read {}: {e}", self.auth_path.display())))?;
