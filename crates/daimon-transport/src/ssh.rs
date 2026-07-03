@@ -473,6 +473,7 @@ mod tests {
                     path: "/".into(),
                     headers: BTreeMap::new(),
                     body: None,
+                    auth: crate::op::AuthScheme::Bearer,
                 },
                 &fake_cred(),
             )

@@ -33,5 +33,5 @@ pub use daimon_inventory::{
     Inventory, ManagedTarget, RefParseError as TargetRefParseError, TargetKind, TargetMetadata,
     TargetRef, TransportKind,
 };
-pub use daimon_transport::{HttpMethod, Op, OpResult, SnmpValue};
+pub use daimon_transport::{AuthScheme, HttpMethod, Op, OpResult, SnmpValue};
 pub use daimon_vault::{Credential, CredentialKind, CredentialMetadata, CredentialRef};

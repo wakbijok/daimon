@@ -39,7 +39,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
 use tracing::{debug, instrument};
 
-use crate::op::{HttpMethod, Op, OpResult, TransportError};
+use crate::op::{AuthScheme, HttpMethod, Op, OpResult, TransportError};
 use crate::transport::{Transport, TransportTarget};
 
 const TRANSPORT_ID: &str = "rest";
@@ -89,7 +89,7 @@ impl RestTransport {
         }
     }
 
-    #[instrument(skip(self, cred, headers, body), fields(host = %target.host, port = target.port, method = ?method))]
+    #[instrument(skip(self, cred, headers, body, auth), fields(host = %target.host, port = target.port, method = ?method))]
     async fn exec_http(
         &self,
         target: &TransportTarget,
@@ -97,6 +97,7 @@ impl RestTransport {
         path: &str,
         headers: &std::collections::BTreeMap<String, String>,
         body: &Option<serde_json::Value>,
+        auth: &AuthScheme,
         cred: &Credential,
     ) -> Result<OpResult, TransportError> {
         let url = Self::full_url(target, path);
@@ -112,15 +113,29 @@ impl RestTransport {
         }
 
         // Inject auth from the borrowed credential — built per-request, never
-        // stored on the client. Non-token kinds are a transport/credential
-        // mismatch (mirrors ssh.rs's kind check).
+        // stored on the client. The token stays in the vault Credential; the
+        // AuthScheme only decides the header NAME + FORMAT (the `{token}` slot).
+        // Non-token kinds are a transport/credential mismatch (mirrors ssh.rs).
         match cred {
-            Credential::ApiToken { token } => {
-                let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|e| TransportError::Auth(format!("invalid bearer token: {e}")))?;
-                auth.set_sensitive(true);
-                builder = builder.header(AUTHORIZATION, auth);
-            }
+            Credential::ApiToken { token } => match auth {
+                AuthScheme::None => {}
+                AuthScheme::Bearer => {
+                    let mut val = HeaderValue::from_str(&format!("Bearer {token}"))
+                        .map_err(|e| TransportError::Auth(format!("invalid bearer token: {e}")))?;
+                    val.set_sensitive(true);
+                    builder = builder.header(AUTHORIZATION, val);
+                }
+                AuthScheme::Header { header, value } => {
+                    let rendered = value.replace("{token}", token);
+                    let mut val = HeaderValue::from_str(&rendered).map_err(|e| {
+                        TransportError::Auth(format!("invalid auth header value: {e}"))
+                    })?;
+                    val.set_sensitive(true);
+                    let name = reqwest::header::HeaderName::from_bytes(header.as_bytes())
+                        .map_err(|e| TransportError::Auth(format!("invalid auth header name: {e}")))?;
+                    builder = builder.header(name, val);
+                }
+            },
             other => {
                 return Err(TransportError::OpMismatch {
                     op: "http".into(),
@@ -182,7 +197,11 @@ impl Transport for RestTransport {
                 path,
                 headers,
                 body,
-            } => self.exec_http(target, method, path, headers, body, cred).await,
+                auth,
+            } => {
+                self.exec_http(target, method, path, headers, body, auth, cred)
+                    .await
+            }
             other => Err(TransportError::OpMismatch {
                 op: op_name(other).into(),
                 transport: TRANSPORT_ID.into(),
@@ -300,6 +319,7 @@ mod tests {
                     path: full,
                     headers: BTreeMap::new(),
                     body: None,
+                    auth: AuthScheme::Bearer,
                 },
                 &token_cred(),
             )
@@ -311,6 +331,43 @@ mod tests {
                 assert_eq!(status, 200);
                 assert_eq!(body["data"]["version"], "8.1");
             }
+            other => panic!("expected Http result, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn header_auth_scheme_sends_custom_header() {
+        // AC-P5-01: a Header auth scheme fills {token} from the vault credential
+        // into a custom header (Proxmox PVEAPIToken), NOT Bearer.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api2/json/version"))
+            .and(header("authorization", "PVEAPIToken s3cr3t-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {}})))
+            .mount(&server)
+            .await;
+
+        let (target, base) = target_for(&server);
+        let full = format!("{base}/api2/json/version");
+        let result = RestTransport::new()
+            .execute(
+                &target,
+                &Op::Http {
+                    method: HttpMethod::Get,
+                    path: full,
+                    headers: BTreeMap::new(),
+                    body: None,
+                    auth: AuthScheme::Header {
+                        header: "Authorization".into(),
+                        value: "PVEAPIToken {token}".into(),
+                    },
+                },
+                &token_cred(),
+            )
+            .await
+            .expect("GET with header auth should succeed");
+        match result {
+            OpResult::Http { status, .. } => assert_eq!(status, 200),
             other => panic!("expected Http result, got {other:?}"),
         }
     }
@@ -355,6 +412,7 @@ mod tests {
                     path: full,
                     headers: BTreeMap::new(),
                     body: None,
+                    auth: AuthScheme::Bearer,
                 },
                 &ssh_cred(),
             )

@@ -39,7 +39,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use daimon_broker::{Broker, ExecRequest, HttpMethod, Op, OpResult, TargetRef as InvTargetRef};
+use daimon_broker::{
+    AuthScheme, Broker, ExecRequest, HttpMethod, Op, OpResult, TargetRef as InvTargetRef,
+};
 use daimon_core::{
     Agent, AgentContext, AgentEnvelope, AgentId, Capability, CompensatingCapability, CoreError,
 };
@@ -65,9 +67,48 @@ pub struct ConnectorProfile {
     pub class: ProfileClass,
     /// The transport kind. Currently only `rest` is interpreted.
     pub transport: ProfileTransport,
+    /// How the REST transport authenticates to this target. Omitted = Bearer
+    /// (back-compat). A non-Bearer API (Proxmox `PVEAPIToken`, etc.) sets an
+    /// `[auth]` block. The secret token still comes from the vault; this only
+    /// names the header + value format.
+    #[serde(default)]
+    pub auth: Option<ProfileAuth>,
     /// The capabilities this profile declares.
     #[serde(default, rename = "capability")]
     pub capabilities: Vec<ProfileCapability>,
+}
+
+/// The `[auth]` sub-table of a connector profile.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileAuth {
+    /// `"bearer"` (default) | `"header"` | `"none"`.
+    #[serde(default)]
+    pub scheme: Option<String>,
+    /// For `scheme = "header"`: the header name, e.g. `"Authorization"`.
+    #[serde(default)]
+    pub header: Option<String>,
+    /// For `scheme = "header"`: the value template with a `{token}` slot, e.g.
+    /// `"PVEAPIToken {token}"`.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl ProfileAuth {
+    /// Resolve to the transport `AuthScheme`. A `header` scheme needs both
+    /// `header` + `value`; anything malformed falls back to `Bearer`.
+    fn to_scheme(&self) -> AuthScheme {
+        match self.scheme.as_deref() {
+            Some("none") => AuthScheme::None,
+            Some("header") => match (&self.header, &self.value) {
+                (Some(h), Some(v)) => AuthScheme::Header {
+                    header: h.clone(),
+                    value: v.clone(),
+                },
+                _ => AuthScheme::Bearer,
+            },
+            _ => AuthScheme::Bearer,
+        }
+    }
 }
 
 /// Profile `class` — mirrors [`TargetClass`] but is a profile-schema type so the
@@ -288,7 +329,7 @@ pub struct ConnectorDriver {
     /// Projected capabilities (registered via `Agent::capabilities`).
     capabilities: Vec<Capability>,
     /// The declared capabilities, indexed by name, for dispatch.
-    declared: BTreeMap<String, ProfileCapability>,
+    declared: BTreeMap<String, (ProfileCapability, AuthScheme)>,
     /// Fallback audit identity for the synchronous entrypoints. The bus adapter
     /// always overrides this with `env.from` (FR-HAR-17).
     actor_id: String,
@@ -386,9 +427,17 @@ impl ConnectorDriver {
                 );
                 continue;
             }
+            // Resolve the profile's auth scheme once and denormalise it onto each
+            // declared cap, so dispatch knows how to authenticate without
+            // re-finding the source profile.
+            let auth = profile
+                .auth
+                .as_ref()
+                .map(|a| a.to_scheme())
+                .unwrap_or_default();
             for cap in profile.capabilities {
                 capabilities.push(project_capability(&cap));
-                declared.insert(cap.name.clone(), cap);
+                declared.insert(cap.name.clone(), (cap, auth.clone()));
             }
         }
 
@@ -420,7 +469,7 @@ impl ConnectorDriver {
         params: &serde_json::Value,
         timeout_secs: u32,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        let decl = self
+        let (decl, auth) = self
             .declared
             .get(capability)
             .ok_or_else(|| ConnectorError::UnknownCapability(capability.to_string()))?;
@@ -443,7 +492,7 @@ impl ConnectorDriver {
         }
 
         // Render the Op::Http from the template using ONLY validated params.
-        let op = render_http_op(&decl.op, capability, &validated)?;
+        let op = render_http_op(&decl.op, capability, &validated, auth)?;
 
         // Build + submit the ExecRequest through the broker (guard/vault/audit).
         let target =
@@ -541,6 +590,7 @@ fn render_http_op(
     op: &ProfileOp,
     capability: &str,
     validated: &BTreeMap<String, String>,
+    auth: &AuthScheme,
 ) -> Result<Op, ConnectorError> {
     let path = substitute(&op.path, capability, validated)?;
     let body = match &op.body {
@@ -552,6 +602,7 @@ fn render_http_op(
         path,
         headers: BTreeMap::new(),
         body,
+        auth: auth.clone(),
     })
 }
 
@@ -960,7 +1011,7 @@ mod tests {
         // a clean value passes and renders.
         validated.insert("namespace".to_string(), "default".to_string());
         validated.insert("name".to_string(), "web-0".to_string());
-        let op = render_http_op(&status.op, &status.name, &validated).unwrap();
+        let op = render_http_op(&status.op, &status.name, &validated, &AuthScheme::Bearer).unwrap();
         match op {
             Op::Http { path, .. } => {
                 assert_eq!(path, "/api/v1/namespaces/default/pods/web-0")

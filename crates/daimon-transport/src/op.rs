@@ -26,6 +26,11 @@ pub enum Op {
         headers: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<serde_json::Value>,
+        /// How the transport formats the auth header from the resolved vault
+        /// credential. Defaults to `Bearer` (back-compat) — a connector sets
+        /// `Header{..}` for a non-Bearer API (Proxmox `PVEAPIToken`, etc.).
+        #[serde(default)]
+        auth: AuthScheme,
     },
     /// SNMP GET — returns a value.
     SnmpGet { oid: String },
@@ -37,6 +42,24 @@ pub enum Op {
 
 fn default_shell_timeout_secs() -> u32 {
     30
+}
+
+/// How the REST transport injects auth from the resolved credential. The secret
+/// token is NEVER in this enum — it stays in the vault `Credential` and is
+/// substituted per-request into the `{token}` slot by the transport; a connector
+/// supplies only the *format*.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scheme", rename_all = "snake_case")]
+pub enum AuthScheme {
+    /// `Authorization: Bearer <token>` — the default (Kubernetes, most APIs).
+    #[default]
+    Bearer,
+    /// A custom header whose value template carries a `{token}` slot, e.g.
+    /// `header = "Authorization", value = "PVEAPIToken {token}"` (Proxmox VE),
+    /// or `header = "X-Auth-Token", value = "{token}"`.
+    Header { header: String, value: String },
+    /// No auth header injected (a public / unauthenticated endpoint).
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

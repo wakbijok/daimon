@@ -25,7 +25,7 @@ pub mod stub;
 pub mod transport;
 
 #[cfg(feature = "for-broker")]
-pub use op::{HttpMethod, Op, OpResult, SnmpValue, TransportError};
+pub use op::{AuthScheme, HttpMethod, Op, OpResult, SnmpValue, TransportError};
 #[cfg(feature = "for-broker")]
 pub use rest::RestTransport;
 #[cfg(feature = "for-broker")]
