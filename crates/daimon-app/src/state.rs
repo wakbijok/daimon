@@ -60,4 +60,36 @@ pub struct AppState {
     /// (FR-CFG-14). Held as `Arc` so background tasks (observer, router) share
     /// the same live handle.
     pub config: Arc<crate::config::ConfigResolver>,
+    /// P6 (FR-CFG-10) — the observer poll interval (seconds), shared live with
+    /// the observer ingest loop. `apply_runtime_tunables` writes it from config;
+    /// the loop re-reads it each tick.
+    pub observer_interval_secs: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(feature = "ssr")]
+impl AppState {
+    /// P6 (FR-CFG-06/10): push the live-tunable config values into the running
+    /// subsystems — the guard's approval timeout (via the broker) and the
+    /// observer poll interval (via the shared atomic). Called at boot and at the
+    /// tail of every settings write, so an operator edit applies without a
+    /// restart. Safety-critical guard flags (is_read_only / irreversible /
+    /// compensating) are deliberately NOT here — they are server-derived, never
+    /// config (FR-CFG-06).
+    pub fn apply_runtime_tunables(&self, cfg: &crate::config::ConfigSnapshot) {
+        use std::sync::atomic::Ordering;
+        let timeout = cfg.u64(
+            "guard.approval_timeout_secs",
+            Some("DAIMON_APPROVAL_TIMEOUT_SECS"),
+            daimon_guard::DEFAULT_APPROVAL_TIMEOUT_SECS,
+        );
+        if let Some(g) = self.broker.guard() {
+            g.set_approval_timeout_secs(timeout);
+        }
+        let interval = cfg.u64(
+            "observer.prom_poll_interval_secs",
+            Some("DAIMON_PROM_POLL_INTERVAL_SECS"),
+            30,
+        );
+        self.observer_interval_secs.store(interval, Ordering::Relaxed);
+    }
 }

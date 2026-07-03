@@ -217,6 +217,9 @@ pub async fn set_setting(
     if let Err(e) = state.config.reload(&state.db).await {
         tracing::warn!(error = %e, key = %key, "config reload after settings write failed");
     }
+    // P6 (FR-CFG-06/10): push the refreshed live tunables (guard timeout,
+    // observer interval) into the running subsystems.
+    state.apply_runtime_tunables(&state.config.current());
 
     Ok(())
 }
@@ -259,6 +262,7 @@ pub async fn delete_setting(key: String) -> Result<(), ServerFnError> {
     if let Err(e) = state.config.reload(&state.db).await {
         tracing::warn!(error = %e, key = %key, "config reload after settings delete failed");
     }
+    state.apply_runtime_tunables(&state.config.current());
     Ok(())
 }
 

@@ -63,6 +63,13 @@ impl Broker {
         self
     }
 
+    /// The attached Guard, if any. Exposed so the app can push live tunables
+    /// (P6 FR-CFG-06: `guard.approval_timeout_secs`) into the running guard on a
+    /// settings write, without threading a separate handle through boot.
+    pub fn guard(&self) -> Option<&Arc<daimon_guard::Guard>> {
+        self.guard.as_ref()
+    }
+
     /// Production constructor (D22 in-tree vault + D23 audit log + D24 admin).
     ///
     /// `vault` is the concrete `Arc<PostgresVaultClient>` — used both as the

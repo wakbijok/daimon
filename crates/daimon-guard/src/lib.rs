@@ -32,8 +32,13 @@ pub use error::{Error, Result};
 pub use kill_switch::{KillState, KillSwitch};
 pub use policy::{Decision, PolicyEngine, PolicyRule, PolicyVerdict};
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Compiled default for the approval wait before an unattended require_approval
+/// capability is denied (P6 FR-CFG-06; overridable live from `app_config`).
+pub const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 /// Guard facade — the single struct the broker holds for kill / policy /
 /// approval checks. Cheap to clone (Arc-internal).
@@ -43,8 +48,10 @@ pub struct Guard {
     policy: Arc<PolicyEngine>,
     approvals: Arc<ApprovalQueue>,
     /// How long broker.execute will wait for an operator approval before
-    /// failing.
-    approval_timeout: Duration,
+    /// failing. Held as a live `Arc<AtomicU64>` (seconds) so an operator edit
+    /// in `/settings` (guard.approval_timeout_secs) applies to the NEXT gated
+    /// request with no restart (P6 FR-CFG-06). Cloned handles share the atomic.
+    approval_timeout_secs: Arc<AtomicU64>,
 }
 
 impl Guard {
@@ -53,7 +60,17 @@ impl Guard {
             kill,
             policy: Arc::new(policy),
             approvals: Arc::new(approvals),
-            approval_timeout: Duration::from_secs(300),
+            approval_timeout_secs: Arc::new(AtomicU64::new(DEFAULT_APPROVAL_TIMEOUT_SECS)),
+        }
+    }
+
+    /// Update the approval timeout live (seconds). The next `pre_flight` that
+    /// waits for a decision uses the new value. A zero is ignored (a zero
+    /// timeout would deny every gated request instantly — a config typo must
+    /// not silently break approvals); the previous value is kept.
+    pub fn set_approval_timeout_secs(&self, secs: u64) {
+        if secs > 0 {
+            self.approval_timeout_secs.store(secs, Ordering::Relaxed);
         }
     }
 
@@ -70,7 +87,7 @@ impl Guard {
     }
 
     pub fn approval_timeout(&self) -> Duration {
-        self.approval_timeout
+        Duration::from_secs(self.approval_timeout_secs.load(Ordering::Relaxed))
     }
 
     /// Pre-flight a capability invocation. Returns Ok(()) if the broker may
@@ -117,7 +134,7 @@ impl Guard {
                 );
                 let rec = self
                     .approvals
-                    .wait_for_decision(id, self.approval_timeout, Duration::from_secs(2))
+                    .wait_for_decision(id, self.approval_timeout(), Duration::from_secs(2))
                     .await?;
                 match rec.status {
                     ApprovalStatus::Approved => Ok(()),

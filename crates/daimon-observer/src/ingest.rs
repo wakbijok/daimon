@@ -52,6 +52,11 @@ pub struct ObserverIngest {
     /// dependency on the app's `SelfMetrics` type. `None` (the `new()` default)
     /// keeps the pre-P3 behaviour: no counting.
     metrics: Option<ObserverMetrics>,
+    /// P6 (FR-CFG-10): optional live poll-interval handle (seconds). When the
+    /// app wires this, the loop re-reads it EACH tick, so an operator edit of
+    /// `observer.prom_poll_interval_secs` in `/settings` applies on the next
+    /// cycle with no restart. `None` keeps the fixed `cfg.interval`.
+    interval_secs: Option<Arc<AtomicU64>>,
 }
 
 /// The three self-metric counter handles the app shares with the observer.
@@ -81,7 +86,15 @@ impl ObserverIngest {
             library,
             bus: None,
             metrics: None,
+            interval_secs: None,
         })
+    }
+
+    /// P6 (FR-CFG-10): wire a live poll-interval handle (seconds). The loop
+    /// re-reads it each tick, so a `/settings` edit applies on the next cycle.
+    pub fn with_interval_handle(mut self, interval_secs: Arc<AtomicU64>) -> Self {
+        self.interval_secs = Some(interval_secs);
+        self
     }
 
     /// Wire the agent bus so persisted anomalies also emit an `AnomalyDetected`
@@ -115,14 +128,25 @@ impl ObserverIngest {
     /// until the runtime exits.
     pub fn spawn(self) {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(self.cfg.interval);
+            let fixed = self.cfg.interval;
             info!(
                 prom = %self.cfg.prom_url,
                 queries = self.library.queries.len(),
                 "observer ingest spawned"
             );
             loop {
-                interval.tick().await;
+                // P6: when a live interval handle is wired, re-read it each cycle
+                // so a settings edit applies on the next tick; otherwise use the
+                // fixed boot interval. A zero/absent live value falls back to the
+                // fixed interval (never a busy-loop).
+                let period = match &self.interval_secs {
+                    Some(h) => {
+                        let s = h.load(Ordering::Relaxed);
+                        if s == 0 { fixed } else { Duration::from_secs(s) }
+                    }
+                    None => fixed,
+                };
+                tokio::time::sleep(period).await;
                 if let Err(e) = self.run_once().await {
                     error!(error = %e, "observer ingest cycle failed");
                 }

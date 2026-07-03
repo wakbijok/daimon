@@ -51,15 +51,22 @@ pub async fn list_pending_approvals_with_blast_radius(
         .await
         .map_err(|e| ServerFnError::new(format!("list_pending: {e}")))?;
 
+    // P6 (FR-CFG-06): the blast-radius traversal depth is an operator tunable
+    // read live from config (guard.blast_radius_depth), DB → env → compiled
+    // default. Read once per render, so a settings edit applies on the next
+    // inbox load without a restart.
+    let blast_depth = state.config.current().u64(
+        "guard.blast_radius_depth",
+        Some("DAIMON_BLAST_RADIUS_DEPTH"),
+        daimon_guard::DEFAULT_BLAST_RADIUS_DEPTH as u64,
+    ) as u32;
+
     let mut out = Vec::with_capacity(approvals.len());
     for a in approvals {
         let params_pretty = serde_json::to_string_pretty(&a.params).unwrap_or_default();
         let blast_radius = match (state.graph.as_ref(), a.target_ref.as_deref()) {
             (Some(g), Some(tref)) => match g
-                .blast_radius(
-                    &GraphTargetRef::from(tref),
-                    daimon_guard::DEFAULT_BLAST_RADIUS_DEPTH,
-                )
+                .blast_radius(&GraphTargetRef::from(tref), blast_depth)
                 .await
             {
                 Ok(entries) => entries

@@ -363,6 +363,10 @@ async fn main() {
         }
     };
 
+    // P6 (FR-CFG-10): the live observer poll-interval handle, shared with the
+    // observer loop below and written from config by `apply_runtime_tunables`.
+    let observer_interval_secs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(30));
+
     let app_state = AppState {
         db: pool,
         jwt_secret,
@@ -380,7 +384,13 @@ async fn main() {
         gateways: std::sync::Arc::new(gateway_registry),
         skills,
         config,
+        observer_interval_secs,
     };
+
+    // P6 (FR-CFG-06/10): push the live-tunable config values (guard approval
+    // timeout, observer poll interval) into the running subsystems now, so a
+    // value set in `app_config` is honoured from the first request/tick.
+    app_state.apply_runtime_tunables(&app_state.config.current());
 
     // P4-7 (FR-GW-05): spawn each enabled poller (Matrix /sync, Telegram
     // getUpdates). Pollers need the full AppState (for the shared inbound
@@ -428,6 +438,9 @@ async fn main() {
                 ingest
                     .with_bus(bus_handle.clone())
                     .with_metrics(m_ingest, m_anomalies, m_failures)
+                    // P6 (FR-CFG-10): share the live poll-interval handle so a
+                    // `/settings` edit applies on the next cycle.
+                    .with_interval_handle(app_state.observer_interval_secs.clone())
                     .spawn();
             }
             Err(e) => {
