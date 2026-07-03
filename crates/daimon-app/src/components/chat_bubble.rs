@@ -139,6 +139,39 @@ pub fn ChatBubble() -> impl IntoView {
         }
     });
 
+    // ---- P7-5 (FR-UI-19): source the durable, owner-scoped session list from
+    // the server so it follows the user across browsers. When the server has
+    // sessions, it is authoritative over the localStorage cache. ----
+    let refresh_sessions = Action::new(move |_: &()| async move {
+        crate::admin_chat_sessions::list_my_sessions().await
+    });
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        // dispatch once on mount (no tracked deps → runs a single time)
+        refresh_sessions.dispatch(());
+    });
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        if let Some(Ok(server)) = refresh_sessions.value().get() {
+            if !server.is_empty() {
+                let mapped: Vec<SessionMeta> = server
+                    .into_iter()
+                    .map(|s| SessionMeta {
+                        id: s.id,
+                        title: s.title,
+                        created_at: 0,
+                    })
+                    .collect();
+                if !mapped.iter().any(|m| m.id == current_session.get_untracked()) {
+                    if let Some(first) = mapped.first() {
+                        current_session.set(first.id.clone());
+                    }
+                }
+                sessions.set(mapped);
+            }
+        }
+    });
+
     // ---- Persist on changes ----
     #[cfg(feature = "hydrate")]
     Effect::new(move |_| {
