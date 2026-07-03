@@ -91,6 +91,89 @@ pub enum WsScope {
     Placeholder,
 }
 
+// ---- Browser ReplySink (SSR only) ----
+
+/// The browser WebSocket as a `daimon_gateway::ReplySink` (FR-GW-01). This is the
+/// streaming impl: every `TurnEvent` maps 1:1 to the `WsServerMsg` the turn used
+/// to send directly, so the wire output on `/api/v1/ws` is unchanged — the
+/// `chat_bubble.rs` client parses the identical JSON. `agent_id` is `"chat"`,
+/// matching the pre-refactor emissions.
+#[cfg(feature = "ssr")]
+pub struct WsSink<'a> {
+    pub socket: &'a mut WebSocket,
+}
+
+#[cfg(feature = "ssr")]
+impl WsSink<'_> {
+    async fn send_msg(&mut self, msg: WsServerMsg) {
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = self.socket.send(Message::Text(json.into())).await;
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
+#[async_trait::async_trait]
+impl daimon_gateway::ReplySink for WsSink<'_> {
+    fn streams(&self) -> bool {
+        true
+    }
+
+    async fn emit(&mut self, event: daimon_gateway::TurnEvent) {
+        use daimon_gateway::TurnEvent;
+        let msg = match event {
+            TurnEvent::TokenDelta {
+                session_id,
+                content,
+            } => WsServerMsg::AgentTokenDelta {
+                agent_id: "chat".into(),
+                session_id,
+                content_delta: content,
+            },
+            TurnEvent::ToolUse {
+                session_id,
+                tool,
+                params,
+            } => WsServerMsg::AgentToolUse {
+                agent_id: "chat".into(),
+                session_id,
+                tool,
+                params,
+            },
+            TurnEvent::ToolResult {
+                session_id,
+                tool,
+                output,
+                is_error,
+            } => WsServerMsg::AgentToolResult {
+                agent_id: "chat".into(),
+                session_id,
+                tool,
+                output,
+                is_error,
+            },
+            TurnEvent::Done {
+                session_id,
+                stop_reason,
+                input_tokens,
+                output_tokens,
+            } => WsServerMsg::AgentDone {
+                agent_id: "chat".into(),
+                session_id,
+                stop_reason,
+                input_tokens,
+                output_tokens,
+            },
+            TurnEvent::Error { message } => WsServerMsg::Error { message },
+        };
+        self.send_msg(msg).await;
+    }
+
+    async fn finish(&mut self) {
+        // Streaming sink — `AgentDone` was already emitted; nothing to flush.
+    }
+}
+
 // ---- WebSocket handler (SSR only) ----
 
 #[cfg(feature = "ssr")]
@@ -143,9 +226,14 @@ async fn handle_ws(mut socket: WebSocket, state: crate::state::AppState, actor: 
                                 }
                                 WsClientMsg::ChatSend { session_id, user_message, model } => {
                                     // Real authenticated operator (C4/AC-P1-07),
-                                    // not the old hardcoded "operator".
+                                    // not the old hardcoded "operator". P4: the
+                                    // browser socket is now one `ReplySink` among
+                                    // many — the turn loop writes into `WsSink`,
+                                    // which reproduces today's `WsServerMsg` wire
+                                    // output byte-for-byte (FR-GW-01/03).
+                                    let mut sink = WsSink { socket: &mut socket };
                                     crate::chat::handle_chat_send(
-                                        &mut socket,
+                                        &mut sink,
                                         &state,
                                         &actor,
                                         session_id,

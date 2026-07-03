@@ -1,25 +1,32 @@
 //! Phase 4 D3 — chat surface backed by daimon-llm + tool-use dispatch.
 //!
-//! Flow on `WsClientMsg::ChatSend`:
+//! Flow (per inbound turn — from the browser WS or a messaging gateway):
 //! 1. Load conversation from working memory (in-process for now; Redis in 4.1)
 //! 2. Append user message
 //! 3. Stream-completion against the LLM with tool definitions injected
-//! 4. As deltas arrive, emit `AgentTokenDelta` to the WS
+//! 4. As deltas arrive, emit `TurnEvent::TokenDelta` into the `ReplySink`
 //! 5. If the LLM emits tool_use blocks, dispatch each over the harness bus via
 //!    `harness.dispatch()` (capability-routed, versioned, fail-closed),
 //!    append the tool result, and re-prompt — loop until `stop_reason != ToolUse`
-//! 6. Emit `AgentDone` with usage; persist final conversation
+//! 6. Emit `TurnEvent::Done` with usage; `sink.finish()`; persist conversation
+//!
+//! P4 (FR-GW-01/03): the turn is transport-agnostic — it writes every emission
+//! into a `&mut dyn ReplySink` (daimon-gateway) rather than a concrete
+//! `WebSocket`. The browser socket is one sink (`ws::WsSink`); a Telegram/Matrix
+//! adapter is another. The sink abstracts *delivery* only — Harness dispatch,
+//! Guard gating, and the audit append are identical for a browser turn and a
+//! gateway turn, so no channel is a privilege side-channel.
 //!
 //! Every LLM call + tool dispatch lands an audit event via the broker (inside
 //! the worker's `broker.execute`, reached over the bus).
 
 #![cfg(feature = "ssr")]
 
-use axum::extract::ws::{Message, WebSocket};
 use chrono::Utc;
 use daimon_broker::ActionKind;
 use daimon_core::AgentId;
 use daimon_driver_firewall_routeros::{NetworkRequest, NetworkResponse};
+use daimon_gateway::{ReplySink, TurnEvent};
 use daimon_llm::{
     AnthropicClient, AssistantContent, ChatMessage, CompletionRequest, ContentDelta, LlmClient,
     Role, StopReason, ToolDefinition,
@@ -32,7 +39,6 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
 
 use crate::state::AppState;
-use crate::ws::WsServerMsg;
 
 const SYSTEM_PROMPT: &str = "\
 You are dAImon — an operator-facing infrastructure agent. You can read \
@@ -168,7 +174,7 @@ fn parse_typed_record(tool_name: &str, mut args: Json) -> std::result::Result<Ty
 
 /// Entry point — handle a single ChatSend message from the client.
 pub async fn handle_chat_send(
-    socket: &mut WebSocket,
+    sink: &mut dyn ReplySink,
     state: &AppState,
     actor_id: &str,
     session_id: String,
@@ -179,7 +185,11 @@ pub async fn handle_chat_send(
     let llm = match AnthropicClient::from_env() {
         Ok(c) => c,
         Err(e) => {
-            send_err(socket, format!("llm init: {e}")).await;
+            sink.emit(TurnEvent::Error {
+                message: format!("llm init: {e}"),
+            })
+            .await;
+            sink.finish().await;
             return;
         }
     };
@@ -189,7 +199,11 @@ pub async fn handle_chat_send(
     let recent = match working.conv_recent(&session_id, 64).await {
         Ok(r) => r,
         Err(e) => {
-            send_err(socket, format!("conv_recent: {e}")).await;
+            sink.emit(TurnEvent::Error {
+                message: format!("conv_recent: {e}"),
+            })
+            .await;
+            sink.finish().await;
             return;
         }
     };
@@ -251,7 +265,10 @@ pub async fn handle_chat_send(
     'outer: loop {
         loop_count += 1;
         if loop_count > max_loops {
-            send_err(socket, "tool-use loop budget exhausted".into()).await;
+            sink.emit(TurnEvent::Error {
+                message: "tool-use loop budget exhausted".into(),
+            })
+            .await;
             break;
         }
 
@@ -269,7 +286,10 @@ pub async fn handle_chat_send(
         let mut stream = match llm.complete_stream(req).await {
             Ok(s) => s,
             Err(e) => {
-                send_err(socket, format!("llm stream: {e}")).await;
+                sink.emit(TurnEvent::Error {
+                    message: format!("llm stream: {e}"),
+                })
+                .await;
                 break;
             }
         };
@@ -286,14 +306,10 @@ pub async fn handle_chat_send(
                 Ok(delta) => match delta {
                     ContentDelta::TextDelta { text } => {
                         accumulated_text.push_str(&text);
-                        send_ws(
-                            socket,
-                            WsServerMsg::AgentTokenDelta {
-                                agent_id: "chat".into(),
-                                session_id: session_id.clone(),
-                                content_delta: text,
-                            },
-                        )
+                        sink.emit(TurnEvent::TokenDelta {
+                            session_id: session_id.clone(),
+                            content: text,
+                        })
                         .await;
                     }
                     ContentDelta::ToolUseStart { id, name } => {
@@ -316,15 +332,11 @@ pub async fn handle_chat_send(
                                     json!({})
                                 },
                             );
-                            send_ws(
-                                socket,
-                                WsServerMsg::AgentToolUse {
-                                    agent_id: "chat".into(),
-                                    session_id: session_id.clone(),
-                                    tool: p.name.clone(),
-                                    params: input.clone(),
-                                },
-                            )
+                            sink.emit(TurnEvent::ToolUse {
+                                session_id: session_id.clone(),
+                                tool: p.name.clone(),
+                                params: input.clone(),
+                            })
                             .await;
                             completed_tool_calls.push(daimon_llm::ToolCall {
                                 id: p.id,
@@ -340,7 +352,10 @@ pub async fn handle_chat_send(
                 },
                 Err(e) => {
                     error!(error = %e, "llm stream error");
-                    send_err(socket, format!("stream: {e}")).await;
+                    sink.emit(TurnEvent::Error {
+                        message: format!("stream: {e}"),
+                    })
+                    .await;
                     break 'outer;
                 }
             }
@@ -391,16 +406,12 @@ pub async fn handle_chat_send(
 
         if !matches!(final_stop, StopReason::ToolUse) {
             // No tool use → conversation closes for this turn.
-            send_ws(
-                socket,
-                WsServerMsg::AgentDone {
-                    agent_id: "chat".into(),
-                    session_id: session_id.clone(),
-                    stop_reason: format!("{:?}", final_stop).to_lowercase(),
-                    input_tokens: final_usage.input_tokens,
-                    output_tokens: final_usage.output_tokens,
-                },
-            )
+            sink.emit(TurnEvent::Done {
+                session_id: session_id.clone(),
+                stop_reason: format!("{:?}", final_stop).to_lowercase(),
+                input_tokens: final_usage.input_tokens,
+                output_tokens: final_usage.output_tokens,
+            })
             .await;
             break;
         }
@@ -465,16 +476,12 @@ pub async fn handle_chat_send(
                     }
                     Err(e) => (format!("memory tool error: {e}"), true),
                 };
-                send_ws(
-                    socket,
-                    WsServerMsg::AgentToolResult {
-                        agent_id: "chat".into(),
-                        session_id: session_id.clone(),
-                        tool: tc.name.clone(),
-                        output: output.clone(),
-                        is_error,
-                    },
-                )
+                sink.emit(TurnEvent::ToolResult {
+                    session_id: session_id.clone(),
+                    tool: tc.name.clone(),
+                    output: output.clone(),
+                    is_error,
+                })
                 .await;
                 history.push(ChatMessage::tool_result(&tc.id, output.clone()));
                 let _ = working
@@ -560,16 +567,12 @@ pub async fn handle_chat_send(
                 },
                 Err(e) => (format!("tool dispatch error: {e}"), true),
             };
-            send_ws(
-                socket,
-                WsServerMsg::AgentToolResult {
-                    agent_id: "chat".into(),
-                    session_id: session_id.clone(),
-                    tool: tc.name.clone(),
-                    output: output.clone(),
-                    is_error,
-                },
-            )
+            sink.emit(TurnEvent::ToolResult {
+                session_id: session_id.clone(),
+                tool: tc.name.clone(),
+                output: output.clone(),
+                is_error,
+            })
             .await;
             history.push(ChatMessage::tool_result(&tc.id, output.clone()));
             let _ = working
@@ -586,6 +589,10 @@ pub async fn handle_chat_send(
         }
     }
 
+    // Flush the sink once per turn. Streaming sinks (browser `WsSink`) already
+    // delivered everything and `finish` is a no-op; batched sinks (Telegram /
+    // Matrix `BufferSink`) post their single coalesced reply here (FR-GW-02).
+    sink.finish().await;
     info!(session = %session_id, "chat session updated");
 }
 
@@ -611,19 +618,3 @@ struct PendingToolCall {
 }
 
 fn _unused_assistant_content(_: AssistantContent) {}
-
-async fn send_ws(socket: &mut WebSocket, msg: WsServerMsg) {
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = socket.send(Message::Text(json.into())).await;
-    }
-}
-
-async fn send_err(socket: &mut WebSocket, message: String) {
-    let _ = socket
-        .send(Message::Text(
-            serde_json::to_string(&WsServerMsg::Error { message })
-                .unwrap_or_default()
-                .into(),
-        ))
-        .await;
-}

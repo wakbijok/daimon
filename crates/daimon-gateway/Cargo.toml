@@ -1,0 +1,47 @@
+[package]
+name = "daimon-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Messaging gateways (SRS §4.8 FR-GW-*): the transport-agnostic ReplySink seam + the Gateway trait and its per-channel adapters (Telegram webhook, Matrix /sync poller). A gateway is a delivery transport, never a second authority — deps ONLY daimon-core + daimon-broker (D21): a gateway structurally cannot resolve a credential, read the vault, or open a transport; secrets reach it by reference through the broker."
+
+# D21 boundary: this crate MUST NOT depend on daimon-vault, daimon-inventory,
+# or daimon-transport directly (a gateway is a worker-adjacent surface —
+# credentials reach it only through the broker). A CI grep gate on this
+# manifest enforces the invariant (mirrors daimon-driver).
+[dependencies]
+daimon-core = { path = "../daimon-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+
+# Adapters are feature-gated so a deployment compiles and exposes only the
+# channels it uses (FR-GW-05). `telegram` (webhook) and `matrix` (/sync poller)
+# ship first; slack/whatsapp/webhook are framework-ready placeholders.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2", optional = true }
+hex = { version = "0.4", optional = true }
+tokio = { version = "1", features = ["sync", "time", "rt"], optional = true }
+
+[features]
+default = []
+# The signature/secret verification toolkit (constant-time compare + HMAC). Any
+# real adapter turns this on.
+verify = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:hex"]
+telegram = ["verify", "dep:reqwest", "dep:tokio"]
+matrix = ["verify", "dep:reqwest", "dep:tokio"]
+# Framework-ready, unbuilt (SDS §9.3): declared so the tab + registry can name
+# them; no adapter code yet.
+slack = ["verify", "dep:reqwest"]
+whatsapp = ["verify", "dep:reqwest"]
+webhook = ["verify", "dep:reqwest"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"

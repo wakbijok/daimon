@@ -892,6 +892,7 @@ dependencies = [
  "daimon-db",
  "daimon-driver",
  "daimon-driver-firewall-routeros",
+ "daimon-gateway",
  "daimon-graph",
  "daimon-guard",
  "daimon-llm",
@@ -1061,6 +1062,26 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "daimon-gateway"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daimon-core",
+ "hex",
+ "hmac 0.12.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

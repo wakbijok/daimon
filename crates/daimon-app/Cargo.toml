@@ -75,6 +75,10 @@ daimon-graph = { path = "../daimon-graph", optional = true }
 daimon-guard = { path = "../daimon-guard", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 futures-util = { version = "0.3", optional = true }
+# P4: messaging gateways. The chat loop's ReplySink seam lives here (the browser
+# WsSink implements it); the Telegram (webhook) + Matrix (/sync poller) adapters
+# are behind this crate's own features. ssr-only — adapters pull tokio/reqwest.
+daimon-gateway = { path = "../daimon-gateway", features = ["telegram", "matrix"], optional = true }
 
 [features]
 hydrate = [
@@ -120,4 +124,5 @@ ssr = [
     "dep:daimon-guard",
     "dep:reqwest",
     "dep:futures-util",
+    "dep:daimon-gateway",
 ]
