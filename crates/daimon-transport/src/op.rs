@@ -76,6 +76,11 @@ pub enum HttpMethod {
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum SnmpValue {
     Int(i64),
+    /// Unsigned 64-bit — SNMP `Counter64` (e.g. `ifHCInOctets`). Kept distinct
+    /// from `Int` so high-speed interface counters above `i64::MAX` don't wrap
+    /// to negative and poison anomaly detection on exactly the metrics that use
+    /// 64-bit counters *because* 32-bit wraps too fast.
+    UInt(u64),
     String(String),
     Oid(String),
 }

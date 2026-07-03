@@ -156,9 +156,12 @@ fn map_value(v: &ObjectValue) -> SnmpValue {
     match v {
         ObjectValue::Integer(i) => SnmpValue::Int(*i as i64),
         ObjectValue::Counter32(u) | ObjectValue::Unsigned32(u) | ObjectValue::TimeTicks(u) => {
+            // u32 always fits in i64 — no wrap.
             SnmpValue::Int(*u as i64)
         }
-        ObjectValue::Counter64(u) => SnmpValue::Int(*u as i64),
+        // Counter64 is u64; carry the full range so a busy 64-bit interface
+        // counter above i64::MAX does not wrap negative.
+        ObjectValue::Counter64(u) => SnmpValue::UInt(*u),
         ObjectValue::String(bytes) => SnmpValue::String(String::from_utf8_lossy(bytes).into_owned()),
         ObjectValue::ObjectId(oid) => SnmpValue::Oid(oid.to_string()),
         ObjectValue::IpAddress(ip) => SnmpValue::String(ip.to_string()),
@@ -178,7 +181,15 @@ mod tests {
         assert!(matches!(map_value(&ObjectValue::Integer(-5)), SnmpValue::Int(-5)));
         assert!(matches!(map_value(&ObjectValue::Counter32(42)), SnmpValue::Int(42)));
         assert!(matches!(map_value(&ObjectValue::TimeTicks(100)), SnmpValue::Int(100)));
-        assert!(matches!(map_value(&ObjectValue::Counter64(9)), SnmpValue::Int(9)));
+        // Counter64 carries u64 fidelity — a value ABOVE i64::MAX must NOT wrap
+        // negative (regression for the P5 review LOW note: ifHCInOctets on a busy
+        // 64-bit interface counter).
+        let big = (i64::MAX as u64) + 1; // 9_223_372_036_854_775_808
+        match map_value(&ObjectValue::Counter64(big)) {
+            SnmpValue::UInt(u) => assert_eq!(u, big),
+            other => panic!("expected UInt(big), got {other:?}"),
+        }
+        assert!(matches!(map_value(&ObjectValue::Counter64(9)), SnmpValue::UInt(9)));
         match map_value(&ObjectValue::String(b"eth0".to_vec())) {
             SnmpValue::String(s) => assert_eq!(s, "eth0"),
             other => panic!("expected String, got {other:?}"),

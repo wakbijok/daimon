@@ -798,6 +798,7 @@ fn parse_result(
                 .map(|(oid, v)| {
                     let jv = match v {
                         SnmpValue::Int(i) => serde_json::json!(i),
+                        SnmpValue::UInt(u) => serde_json::json!(u),
                         SnmpValue::String(s) => serde_json::json!(s),
                         SnmpValue::Oid(o) => serde_json::json!(o),
                     };
