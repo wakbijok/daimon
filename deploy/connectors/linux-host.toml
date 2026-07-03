@@ -1,0 +1,49 @@
+# daimon connector profile — a generic Linux host over SSH.
+#
+# This is the DECLARATIVE SSH transport (P5-3): the ConnectorDriver renders an
+# `Op::ShellCommand` from each capability's `command` template and submits it via
+# Broker.execute — the SAME guard + vault + audit path as REST connectors, with
+# the SSH credential (key/password) resolved by target_ref. It covers the compute
+# that has no BMC/Redfish and no hypervisor API: mini-PCs, generic baremetal,
+# cloud VMs, anything you SSH into.
+#
+# SAFETY: the command TEMPLATE is fixed here (author-trusted); only `{param}`
+# slots are filled, and every slot passes through param::validate FIRST — an
+# `identifier` param cannot carry a shell metacharacter, so a value like
+# `nginx; rm -rf /` is rejected before the command is ever built. This is the
+# injection chokepoint. Never widen a param to `safe_text` for a value that
+# lands in a shell command.
+#
+# Class `compute` -> aggregated with redfish + proxmox into the compute
+# class-driver (mixed transports coexist; each cap renders its own Op).
+
+name = "linux-host"
+class = "compute"
+transport = "ssh"
+
+# --- READ: host status ----------------------------------------------------
+# `.status` carries a read verb -> read-only (bypasses policy). No params, so no
+# substitution; the template is a fixed multi-command probe.
+[[capability]]
+name = "compute.host.status"
+version = "1.0.0"
+description = "Read a Linux host's health: system state, uptime, load, disk usage."
+read_only = true
+
+[capability.op]
+command = "systemctl is-system-running 2>/dev/null; uptime; df -h --output=source,pcent,target 2>/dev/null | tail -n +1"
+
+# --- WRITE: restart a systemd service -------------------------------------
+# A WRITE -> approval-gated by the compute.* policy rule. `{service}` is an
+# identifier (validated) substituted into the fixed template.
+[[capability]]
+name = "compute.host.service.restart"
+version = "1.0.0"
+description = "Restart a systemd service on a Linux host and report its new state."
+irreversible = false
+
+[capability.params]
+service = "identifier"
+
+[capability.op]
+command = "systemctl restart {service} && systemctl is-active {service}"

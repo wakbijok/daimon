@@ -46,6 +46,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const K8S_TOML: &str = include_str!("../../../deploy/connectors/k8s.toml");
 const PROXMOX_TOML: &str = include_str!("../../../deploy/connectors/proxmox.toml");
+const LINUX_HOST_TOML: &str = include_str!("../../../deploy/connectors/linux-host.toml");
 
 /// Build a broker with a REST transport pointing at nothing in particular; the
 /// caller seeds the inventory target host/port. `guard_policy` (if Some) attaches
@@ -306,6 +307,62 @@ async fn injection_in_templated_param_rejected_before_broker() {
     assert!(
         stub_rest.records().await.is_empty(),
         "a rejected param must never reach the transport"
+    );
+}
+
+// AC-P5-03: an SSH command capability's {param} is validated FIRST — a shell
+// metacharacter in `service` is rejected at param::validate, before any Op is
+// rendered or the transport is touched (the injection chokepoint for the
+// highest-risk transport).
+#[tokio::test]
+async fn ssh_command_injection_param_rejected_before_transport() {
+    let inv = Arc::new(InMemoryRegistry::new());
+    let vault = Arc::new(StubVaultClient::new());
+    let stub_ssh = Arc::new(StubTransport::new("ssh"));
+    let mut transports: HashMap<TransportKind, Arc<dyn Transport>> = HashMap::new();
+    transports.insert(TransportKind::Ssh, stub_ssh.clone());
+    let broker = Arc::new(Broker::new(inv.clone(), vault.clone(), transports));
+
+    // Seed an SSH target so the target resolves (validation still fires first).
+    let cred_ref = CredentialRef::parse("vault://host-key").unwrap();
+    vault
+        .insert(
+            cred_ref.clone(),
+            Credential::ApiToken {
+                token: "unused".into(),
+            },
+        )
+        .await;
+    inv.upsert(ManagedTarget {
+        r#ref: InvTargetRef::parse("target://host-1").unwrap(),
+        kind: TargetKind::Platform,
+        transport: TransportKind::Ssh,
+        host: "10.0.0.9".into(),
+        port: 22,
+        credential_ref: cred_ref.to_string(),
+        labels: BTreeMap::new(),
+        capabilities: vec!["compute.host.service.restart".into()],
+    })
+    .await
+    .unwrap();
+
+    let d = connector(broker, vec![toml::from_str(LINUX_HOST_TOML).unwrap()]);
+
+    let err = d
+        .remediate(
+            "target://host-1",
+            "compute.host.service.restart",
+            json!({ "service": "nginx; rm -rf /" }),
+        )
+        .await
+        .expect_err("must reject the shell-metachar service name");
+    assert!(
+        format!("{err}").contains("disallowed char"),
+        "expected disallowed-char rejection, got: {err}"
+    );
+    assert!(
+        stub_ssh.records().await.is_empty(),
+        "a rejected SSH param must never reach the transport"
     );
 }
 

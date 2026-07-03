@@ -141,6 +141,8 @@ impl From<ProfileClass> for TargetClass {
 #[serde(rename_all = "snake_case")]
 pub enum ProfileTransport {
     Rest,
+    /// SSH — the driver renders `Op::ShellCommand` from a `command` template.
+    Ssh,
 }
 
 /// One `[[capability]]` block.
@@ -216,24 +218,35 @@ impl<'de> Deserialize<'de> for ProfileParamClass {
     }
 }
 
-/// The `op` sub-table. For REST: method + path template (+ optional body
-/// template). `{param}` slots in `path` / body strings are substituted from
-/// validated params.
+/// The `op` sub-table. For REST: `method` + `path` template (+ optional `body`
+/// template). For SSH: a `command` template. `{param}` slots are substituted from
+/// validated params (the injection chokepoint — never raw operator/LLM text).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileOp {
+    /// REST method. Defaults to GET; ignored for SSH ops.
+    #[serde(default)]
     pub method: ProfileHttpMethod,
-    /// Path template with `{param}` slots, e.g.
-    /// `/api2/json/nodes/{node}/qemu/{vmid}/status/current`.
+    /// REST path template with `{param}` slots, e.g.
+    /// `/api2/json/nodes/{node}/qemu/{vmid}/status/current`. Empty for SSH ops.
+    #[serde(default)]
     pub path: String,
-    /// Optional JSON body template. Any string leaf containing `{param}` is
-    /// substituted; other leaves are passed through verbatim.
+    /// Optional JSON body template (REST). Any string leaf containing `{param}`
+    /// is substituted; other leaves pass through verbatim.
     #[serde(default)]
     pub body: Option<serde_json::Value>,
+    /// SSH command template with `{param}` slots, e.g.
+    /// `systemctl restart {service}`. Present for `transport = "ssh"` ops.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Optional SSH command timeout (seconds); defaults to 30.
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ProfileHttpMethod {
+    #[default]
     Get,
     Post,
     Put,
@@ -296,6 +309,8 @@ pub enum ConnectorError {
     Broker(String),
     #[error("unexpected OpResult variant: {0}")]
     WrongOpResult(String),
+    #[error("malformed connector profile: {0}")]
+    BadProfile(String),
 }
 
 impl From<ConnectorError> for DriverError {
@@ -328,11 +343,20 @@ pub struct ConnectorDriver {
     class: TargetClass,
     /// Projected capabilities (registered via `Agent::capabilities`).
     capabilities: Vec<Capability>,
-    /// The declared capabilities, indexed by name, for dispatch.
-    declared: BTreeMap<String, (ProfileCapability, AuthScheme)>,
+    /// The declared capabilities, indexed by name, for dispatch (each carries
+    /// its source profile's auth scheme + transport).
+    declared: BTreeMap<String, DeclaredCap>,
     /// Fallback audit identity for the synchronous entrypoints. The bus adapter
     /// always overrides this with `env.from` (FR-HAR-17).
     actor_id: String,
+}
+
+/// A declared capability plus the dispatch context from its source profile: how
+/// to authenticate (REST) and which transport op to render.
+struct DeclaredCap {
+    cap: ProfileCapability,
+    auth: AuthScheme,
+    transport: ProfileTransport,
 }
 
 impl ConnectorDriver {
@@ -435,9 +459,17 @@ impl ConnectorDriver {
                 .as_ref()
                 .map(|a| a.to_scheme())
                 .unwrap_or_default();
+            let transport = profile.transport;
             for cap in profile.capabilities {
                 capabilities.push(project_capability(&cap));
-                declared.insert(cap.name.clone(), (cap, auth.clone()));
+                declared.insert(
+                    cap.name.clone(),
+                    DeclaredCap {
+                        cap,
+                        auth: auth.clone(),
+                        transport,
+                    },
+                );
             }
         }
 
@@ -469,15 +501,17 @@ impl ConnectorDriver {
         params: &serde_json::Value,
         timeout_secs: u32,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        let (decl, auth) = self
+        let d = self
             .declared
             .get(capability)
             .ok_or_else(|| ConnectorError::UnknownCapability(capability.to_string()))?;
+        let decl = &d.cap;
 
         // Validate + collect every param BEFORE rendering the Op. This is the
         // injection chokepoint: a slot cannot be filled by a value that does not
         // satisfy its declared ParamClass, and a slot without a declared class
-        // is rejected outright.
+        // is rejected outright. (Load-bearing for SSH — a command template's
+        // `{param}` can never be raw operator/LLM text.)
         let mut validated: BTreeMap<String, String> = BTreeMap::new();
         for (pname, pclass) in &decl.params {
             let raw = extract_param(params, pname).ok_or_else(|| ConnectorError::MissingParam {
@@ -491,14 +525,16 @@ impl ConnectorDriver {
             validated.insert(pname.clone(), raw);
         }
 
-        // Render the Op::Http from the template using ONLY validated params.
-        let op = render_http_op(&decl.op, capability, &validated, auth)?;
+        // Render the transport Op from the template using ONLY validated params.
+        let op = match d.transport {
+            ProfileTransport::Rest => render_http_op(&decl.op, capability, &validated, &d.auth)?,
+            ProfileTransport::Ssh => render_ssh_op(&decl.op, capability, &validated, timeout_secs)?,
+        };
 
         // Build + submit the ExecRequest through the broker (guard/vault/audit).
         let target =
             InvTargetRef::parse(target_ref).map_err(|e| ConnectorError::BadTarget(format!("{e}")))?;
         let cap_meta = project_capability(decl);
-        let _ = timeout_secs; // REST timeout is owned by the transport; kept for symmetry with SSH.
         let exec_req =
             ExecRequest::new(actor_id.to_string(), target, op).with_capability_meta(cap_meta);
 
@@ -606,6 +642,28 @@ fn render_http_op(
     })
 }
 
+/// Render an `Op::ShellCommand` from an SSH capability's `command` template.
+/// Every `{param}` was validated at the injection chokepoint before this — the
+/// template itself is fixed in the profile, never operator/LLM text — so no
+/// shell metacharacter can be injected through a substituted value.
+fn render_ssh_op(
+    op: &ProfileOp,
+    capability: &str,
+    validated: &BTreeMap<String, String>,
+    timeout_secs: u32,
+) -> Result<Op, ConnectorError> {
+    let template = op.command.as_ref().ok_or_else(|| {
+        ConnectorError::BadProfile(format!(
+            "ssh capability `{capability}` has no `command` template"
+        ))
+    })?;
+    let command = substitute(template, capability, validated)?;
+    Ok(Op::ShellCommand {
+        command,
+        timeout_secs: op.timeout_secs.unwrap_or(timeout_secs),
+    })
+}
+
 impl ProfileOp {
     fn op_method(&self) -> HttpMethod {
         self.method.into()
@@ -682,6 +740,18 @@ fn parse_result(
     match result {
         OpResult::Http { status, body, .. } => Ok((status as i32, body)),
         OpResult::Structured { doc } => Ok((0, doc)),
+        OpResult::ShellCommand {
+            stdout,
+            stderr,
+            exit_status,
+        } => Ok((
+            exit_status,
+            serde_json::json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_status": exit_status,
+            }),
+        )),
         other => Err(ConnectorError::WrongOpResult(format!("{other:?}"))),
     }
 }
@@ -987,6 +1057,44 @@ mod tests {
         // can never emit an un-substituted `{slot}` into a URL.
         let err = substitute("/x/{ghost}", "c", &v).unwrap_err();
         assert!(matches!(err, ConnectorError::MissingParam { .. }));
+    }
+
+    #[test]
+    fn render_ssh_op_substitutes_command() {
+        // AC-P5-03: an SSH capability renders a validated Op::ShellCommand from
+        // its command template.
+        let op = ProfileOp {
+            method: ProfileHttpMethod::Get,
+            path: String::new(),
+            body: None,
+            command: Some("systemctl restart {service} && systemctl is-active {service}".into()),
+            timeout_secs: None,
+        };
+        let mut v = BTreeMap::new();
+        v.insert("service".to_string(), "nginx".to_string());
+        match render_ssh_op(&op, "compute.host.service.restart", &v, 30).unwrap() {
+            Op::ShellCommand {
+                command,
+                timeout_secs,
+            } => {
+                assert_eq!(command, "systemctl restart nginx && systemctl is-active nginx");
+                assert_eq!(timeout_secs, 30);
+            }
+            other => panic!("expected ShellCommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_ssh_op_missing_command_errs() {
+        let op = ProfileOp {
+            method: ProfileHttpMethod::Get,
+            path: String::new(),
+            body: None,
+            command: None,
+            timeout_secs: None,
+        };
+        let err = render_ssh_op(&op, "c", &BTreeMap::new(), 30).unwrap_err();
+        assert!(matches!(err, ConnectorError::BadProfile(_)));
     }
 
     #[test]
