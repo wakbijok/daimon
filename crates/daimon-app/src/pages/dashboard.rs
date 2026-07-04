@@ -148,9 +148,25 @@ fn severity_dist(open: &[&crate::admin_observer::AnomalyRow]) -> Vec<DistSeg> {
 }
 
 /// Plan-outcome distribution across the real orchestrator status vocabulary.
+/// An "Other" catch-all (shown only when non-zero) keeps the bar total equal to
+/// the plan count even if a new `PlanStatus` variant is added upstream and not
+/// mapped here — no plan silently vanishes from the chart.
 fn plan_dist(plans: &[crate::admin_plans::PlanRow]) -> Vec<DistSeg> {
     let count = |f: &dyn Fn(&str) -> bool| plans.iter().filter(|p| f(&p.status)).count();
-    vec![
+    let known = |s: &str| {
+        matches!(
+            s,
+            "succeeded"
+                | "planning"
+                | "awaiting_approval"
+                | "executing"
+                | "failed"
+                | "rolled_back"
+                | "cancelled"
+        )
+    };
+    let other = plans.iter().filter(|p| !known(&p.status)).count();
+    let mut segs = vec![
         DistSeg {
             label: "Succeeded".into(),
             count: count(&|s| s == "succeeded"),
@@ -171,7 +187,15 @@ fn plan_dist(plans: &[crate::admin_plans::PlanRow]) -> Vec<DistSeg> {
             count: count(&|s| matches!(s, "rolled_back" | "cancelled")),
             color: color::PURPLE.into(),
         },
-    ]
+    ];
+    if other > 0 {
+        segs.push(DistSeg {
+            label: "Other".into(),
+            count: other,
+            color: color::MUTED.into(),
+        });
+    }
+    segs
 }
 
 #[component]

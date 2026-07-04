@@ -273,10 +273,15 @@ fn ProviderCard(
                                     "Configured"
                                 </span>
                             }.into_any(),
+                            // Precise wording: we only inspect app_config here.
+                            // The runtime also falls back to the provider env var
+                            // (ANTHROPIC_API_KEY/OPENAI_API_KEY), which the wasm
+                            // client can't see — so "no stored key" is honest where
+                            // "not configured" would be a false negative.
                             Some(false) => view! {
                                 <span class="inline-flex items-center gap-1 text-[10.5px] text-text-muted">
                                     <span class="w-1.5 h-1.5 rounded-full bg-text-muted"></span>
-                                    "Not configured"
+                                    "No stored key"
                                 </span>
                             }.into_any(),
                             None => view! {
@@ -307,13 +312,21 @@ fn ProviderConfig(
     // (blank = unchanged); a stored key shows a "key set" chip instead.
     let key_set =
         matches!(spec.auth, Auth::ApiKey { key_setting, .. } if row(&rows, key_setting).is_some());
-    let seed_model = {
+    // `llm.default_model.chat` is a SINGLE global key, so it only describes the
+    // *active* provider's model. Seeding a non-active provider's field from it
+    // would carry e.g. "gpt-4o" into the Anthropic form; saving would then write
+    // an invalid model for the newly-activated provider and break the next turn.
+    // So: seed from the stored key only when configuring the already-active
+    // provider; otherwise seed this provider's own compiled default.
+    let seed_model = if is_active {
         let m = row_string(&rows, "llm.default_model.chat");
         if m.is_empty() {
             spec.default_model.to_string()
         } else {
             m
         }
+    } else {
+        spec.default_model.to_string()
     };
     let seed_url = match spec.auth {
         Auth::LocalUrl {
@@ -334,23 +347,25 @@ fn ProviderConfig(
     let model = RwSignal::new(seed_model);
     let base_url = RwSignal::new(seed_url);
 
-    // Save writes the provider's own keys, sets it active, and (unless already
-    // active) flips llm.provider. Each set_setting is independent server-side.
+    // Save writes the provider's credential/endpoint + model FIRST, and only
+    // flips `llm.provider` if every one of those succeeds — so a failed key
+    // write can never leave the active provider pointing at a broken config
+    // (activation is the last, gated step, not one write among equals).
     let save = Action::new(move |_: &()| async move {
-        let mut writes: Vec<(String, Json, bool)> = Vec::new();
+        let mut config_writes: Vec<(String, Json, bool)> = Vec::new();
 
         // Provider-specific credential / endpoint.
         match spec.auth {
             Auth::ApiKey { key_setting, .. } => {
                 let k = api_key.get_untracked();
                 if !k.trim().is_empty() {
-                    writes.push((key_setting.to_string(), Json::String(k), true));
+                    config_writes.push((key_setting.to_string(), Json::String(k), true));
                 }
             }
             Auth::LocalUrl { url_setting, .. } => {
                 let u = base_url.get_untracked();
                 if !u.trim().is_empty() {
-                    writes.push((url_setting.to_string(), Json::String(u), false));
+                    config_writes.push((url_setting.to_string(), Json::String(u), false));
                 }
             }
             Auth::OAuthSession { .. } => {}
@@ -359,25 +374,26 @@ fn ProviderConfig(
         // Default chat model (skip for OAuth, which manages its own default).
         let m = model.get_untracked();
         if !matches!(spec.auth, Auth::OAuthSession { .. }) && !m.trim().is_empty() {
-            writes.push(("llm.default_model.chat".to_string(), Json::String(m), false));
+            config_writes.push(("llm.default_model.chat".to_string(), Json::String(m), false));
         }
 
-        // Make this provider active.
-        writes.push((
+        // 1. Credentials/model — abort BEFORE activating if any fails.
+        for (k, v, sec) in config_writes {
+            if let Err(e) = set_setting(k, v, sec).await {
+                return format!("error: {e} — provider NOT switched");
+            }
+        }
+
+        // 2. Activation — the config is known-good, so flip the active provider.
+        match set_setting(
             "llm.provider".to_string(),
             Json::String(spec.id.to_string()),
             false,
-        ));
-
-        let mut err: Option<String> = None;
-        for (k, v, sec) in writes {
-            if let Err(e) = set_setting(k, v, sec).await {
-                err = Some(format!("{e}"));
-            }
-        }
-        match err {
-            Some(e) => format!("error: {e}"),
-            None => format!("{} is now the active provider ✓", spec.name),
+        )
+        .await
+        {
+            Ok(_) => format!("{} is now the active provider ✓", spec.name),
+            Err(e) => format!("config saved, but activation failed: {e}"),
         }
     });
 

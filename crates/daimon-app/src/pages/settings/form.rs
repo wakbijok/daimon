@@ -90,23 +90,12 @@ pub fn schema_for(prefix: &str) -> Vec<Field> {
                 unit: "seconds",
             },
         }],
-        "chat." => vec![Field {
-            key: "chat.history_retention_days",
-            label: "Chat history retention",
-            help: "Days to keep chat transcripts. 0 = keep forever. Independent of the login-session lifetime.",
-            control: Control::Number {
-                min: 0,
-                max: 3650,
-                unit: "days",
-            },
-        }],
+        // NOTE: `chat.history_retention_days` is a real runtime-consumed key
+        // (P7-6 prune) but has no settings tab yet, so no schema is wired for it
+        // here — a dead `chat.` branch would be unreachable. Giving chat history
+        // its own settings home is a follow-up.
         _ => Vec::new(),
     }
-}
-
-/// True if a schema-driven form exists for this prefix.
-pub fn has_form(prefix: &str) -> bool {
-    !schema_for(prefix).is_empty()
 }
 
 fn row_value(rows: &[SettingRow], key: &str) -> String {
