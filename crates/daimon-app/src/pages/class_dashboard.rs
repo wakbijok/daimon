@@ -6,6 +6,7 @@
 use leptos::prelude::*;
 
 use crate::admin_targets::{list_targets, TargetKindDto};
+use crate::components::viz::StatTile;
 
 #[component]
 pub fn Infrastructure() -> impl IntoView {
@@ -55,7 +56,21 @@ fn ClassDashboard(
                                 </div>
                             }.into_any()
                         } else {
+                            let n = mine.len();
+                            let caps: usize = mine.iter().map(|t| t.capability_count).sum();
+                            let lbls: usize = mine.iter().map(|t| t.label_count).sum();
+                            let transports = {
+                                let mut set = std::collections::BTreeSet::new();
+                                for t in &mine { set.insert(format!("{:?}", t.transport).to_lowercase()); }
+                                set.len()
+                            };
                             view! {
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                                    <StatTile label="Targets" value=n.to_string() />
+                                    <StatTile label="Capabilities" value=caps.to_string() />
+                                    <StatTile label="Labels" value=lbls.to_string() />
+                                    <StatTile label="Transports" value=transports.to_string() />
+                                </div>
                                 <div class="grid gap-3" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
                                     {mine.into_iter().map(|t| {
                                         let transport = format!("{:?}", t.transport).to_lowercase();

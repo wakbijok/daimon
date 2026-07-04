@@ -8,6 +8,7 @@ pub mod sidebar;
 pub mod sortable_table;
 pub mod sparkline;
 pub mod summary_bar;
+pub mod viz;
 pub mod tabs;
 pub mod table;
 pub mod theme;
