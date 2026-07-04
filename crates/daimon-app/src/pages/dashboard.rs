@@ -15,49 +15,42 @@ pub fn Dashboard() -> impl IntoView {
     let anomalies = Resource::new(|| (), |_| list_anomalies(50));
     let plans = Resource::new(|| (), |_| list_plans());
 
-    let anomaly_count = Signal::derive(move || {
-        anomalies
-            .get()
-            .map(|r| r.map(|v| v.len()).unwrap_or(0).to_string())
-            .unwrap_or_else(|| "…".into())
-    });
-    let plan_count = Signal::derive(move || {
-        plans
-            .get()
-            .map(|r| r.map(|v| v.len()).unwrap_or(0).to_string())
-            .unwrap_or_else(|| "…".into())
-    });
-    let running_count = Signal::derive(move || {
-        plans
-            .get()
-            .map(|r| {
-                r.map(|v| v.iter().filter(|p| p.status == "running").count())
-                    .unwrap_or(0)
-                    .to_string()
-            })
-            .unwrap_or_else(|| "…".into())
-    });
-    let failed_count = Signal::derive(move || {
-        plans
-            .get()
-            .map(|r| {
-                r.map(|v| v.iter().filter(|p| p.status == "failed").count())
-                    .unwrap_or(0)
-                    .to_string()
-            })
-            .unwrap_or_else(|| "…".into())
-    });
-
     view! {
         <div class="space-y-6">
             <h1 class="text-xl font-semibold text-text-primary">"Overview"</h1>
 
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <StatCard label="Open anomalies".into() value=anomaly_count />
-                <StatCard label="Plans".into() value=plan_count />
-                <StatCard label="Running plans".into() value=running_count />
-                <StatCard label="Failed plans".into() value=failed_count />
-            </div>
+            // The stat reads MUST happen under a Suspense: a Resource read
+            // outside one is neither streamed on SSR nor re-run on hydrate, so
+            // the cards would sit at the loading state forever (found live on
+            // the v0.9.0 boot — the anomalies LIST below resolved, these did not).
+            <Suspense fallback=|| view! { <div class="text-text-muted text-sm">"loading…"</div> }>
+                {move || {
+                    let a = anomalies.get();
+                    let p = plans.get();
+                    match (a, p) {
+                        (Some(a), Some(p)) => {
+                            let anomaly_count = a.map(|v| v.len()).unwrap_or(0).to_string();
+                            let (total, running, failed) = match p {
+                                Ok(v) => (
+                                    v.len().to_string(),
+                                    v.iter().filter(|x| x.status == "running").count().to_string(),
+                                    v.iter().filter(|x| x.status == "failed").count().to_string(),
+                                ),
+                                Err(_) => ("?".into(), "?".into(), "?".into()),
+                            };
+                            view! {
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <StatCard label="Open anomalies".into() value=anomaly_count />
+                                    <StatCard label="Plans".into() value=total />
+                                    <StatCard label="Running plans".into() value=running />
+                                    <StatCard label="Failed plans".into() value=failed />
+                                </div>
+                            }.into_any()
+                        }
+                        _ => view! { <div class="text-text-muted text-sm">"loading…"</div> }.into_any(),
+                    }
+                }}
+            </Suspense>
 
             <div>
                 <h2 class="text-sm uppercase tracking-wider text-text-secondary mb-2">"Recent anomalies"</h2>
@@ -93,10 +86,10 @@ pub fn Dashboard() -> impl IntoView {
 }
 
 #[component]
-fn StatCard(label: String, value: Signal<String>) -> impl IntoView {
+fn StatCard(label: String, value: String) -> impl IntoView {
     view! {
         <div class="rounded-lg border border-border-primary bg-surface-secondary p-4">
-            <div class="text-2xl font-semibold text-text-primary">{move || value.get()}</div>
+            <div class="text-2xl font-semibold text-text-primary">{value}</div>
             <div class="text-xs text-text-secondary mt-1">{label}</div>
         </div>
     }
