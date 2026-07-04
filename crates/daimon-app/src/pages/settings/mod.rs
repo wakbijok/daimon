@@ -16,6 +16,8 @@
 
 use leptos::prelude::*;
 
+pub mod form;
+
 use crate::admin_gateways::{
     add_gateway_binding, delete_gateway_binding, list_gateway_bindings, GatewayBindingDto,
 };
@@ -158,6 +160,11 @@ pub fn Settings() -> impl IntoView {
                     Tab::Iam => view! { <crate::pages::admin::iam::AdminIam /> }.into_any(),
                     // UI-1: Credentials config absorbed from /admin/credentials.
                     Tab::Credentials => view! { <crate::pages::admin::credentials::AdminCredentials /> }.into_any(),
+                    // UI-2: schema-driven typed forms where a schema exists.
+                    Tab::Identity => view! { <form::FormTab prefix="identity." title="Identity" /> }.into_any(),
+                    Tab::Guard => view! { <form::FormTab prefix="guard." title="Guard & Policy" /> }.into_any(),
+                    Tab::Observer => view! { <form::FormTab prefix="observer." title="Observer" /> }.into_any(),
+                    // Read-only / not-yet-schema'd domains keep the honest KvTab.
                     other => view! { <KvTab tab=other /> }.into_any(),
                 }}
             </div>
