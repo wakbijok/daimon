@@ -11,12 +11,12 @@
 use leptos::prelude::*;
 
 use crate::admin_approvals::{
-    decide_approval, list_pending_approvals_with_blast_radius, ApprovalRow,
+    ApprovalRow, decide_approval, list_pending_approvals_with_blast_radius,
 };
 use crate::admin_observer::list_anomalies;
 use crate::admin_plans::list_plans;
 use crate::admin_targets::list_targets;
-use crate::components::viz::{bucket_by_day, color, short_ts, DistBar, DistSeg, StatTile};
+use crate::components::viz::{DistBar, DistSeg, StatTile, bucket_by_day, color, short_ts};
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
@@ -129,9 +129,21 @@ fn severity_dist(open: &[&crate::admin_observer::AnomalyRow]) -> Vec<DistSeg> {
     let warn = open.iter().filter(|x| x.severity == "warning").count();
     let info = open.len().saturating_sub(crit + warn);
     vec![
-        DistSeg { label: "Critical".into(), count: crit, color: color::DANGER.into() },
-        DistSeg { label: "Warning".into(), count: warn, color: color::AMBER.into() },
-        DistSeg { label: "Info".into(), count: info, color: color::MUTED.into() },
+        DistSeg {
+            label: "Critical".into(),
+            count: crit,
+            color: color::DANGER.into(),
+        },
+        DistSeg {
+            label: "Warning".into(),
+            count: warn,
+            color: color::AMBER.into(),
+        },
+        DistSeg {
+            label: "Info".into(),
+            count: info,
+            color: color::MUTED.into(),
+        },
     ]
 }
 
@@ -139,10 +151,26 @@ fn severity_dist(open: &[&crate::admin_observer::AnomalyRow]) -> Vec<DistSeg> {
 fn plan_dist(plans: &[crate::admin_plans::PlanRow]) -> Vec<DistSeg> {
     let count = |f: &dyn Fn(&str) -> bool| plans.iter().filter(|p| f(&p.status)).count();
     vec![
-        DistSeg { label: "Succeeded".into(), count: count(&|s| s == "succeeded"), color: color::GREEN.into() },
-        DistSeg { label: "Active".into(), count: count(&|s| matches!(s, "planning" | "awaiting_approval" | "executing")), color: color::AMBER.into() },
-        DistSeg { label: "Failed".into(), count: count(&|s| s == "failed"), color: color::DANGER.into() },
-        DistSeg { label: "Rolled back".into(), count: count(&|s| matches!(s, "rolled_back" | "cancelled")), color: color::PURPLE.into() },
+        DistSeg {
+            label: "Succeeded".into(),
+            count: count(&|s| s == "succeeded"),
+            color: color::GREEN.into(),
+        },
+        DistSeg {
+            label: "Active".into(),
+            count: count(&|s| matches!(s, "planning" | "awaiting_approval" | "executing")),
+            color: color::AMBER.into(),
+        },
+        DistSeg {
+            label: "Failed".into(),
+            count: count(&|s| s == "failed"),
+            color: color::DANGER.into(),
+        },
+        DistSeg {
+            label: "Rolled back".into(),
+            count: count(&|s| matches!(s, "rolled_back" | "cancelled")),
+            color: color::PURPLE.into(),
+        },
     ]
 }
 
@@ -164,7 +192,10 @@ fn TilesSkeleton() -> impl IntoView {
 
 #[component]
 fn NeedsAttention() -> impl IntoView {
-    let pending = Resource::new(|| (), |_| list_pending_approvals_with_blast_radius(Some(20)));
+    let pending = Resource::new(
+        || (),
+        |_| list_pending_approvals_with_blast_radius(Some(20)),
+    );
     let (status, set_status) = signal::<Option<String>>(None);
 
     let decide = Action::new(move |args: &(String, bool)| {
@@ -322,10 +353,7 @@ fn RecentActivity(
     }
     evs.sort_by(|a, b| b.ts.cmp(&a.ts));
 
-    let activity_spark = bucket_by_day(
-        &evs.iter().map(|e| e.ts.clone()).collect::<Vec<_>>(),
-        21,
-    );
+    let activity_spark = bucket_by_day(&evs.iter().map(|e| e.ts.clone()).collect::<Vec<_>>(), 21);
 
     view! {
         <div class="rounded-xl border border-border-primary bg-surface-secondary p-4">

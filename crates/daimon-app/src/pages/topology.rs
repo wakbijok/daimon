@@ -10,7 +10,7 @@
 
 use leptos::prelude::*;
 
-use crate::admin_targets::{list_targets, TargetKindDto, TargetRow};
+use crate::admin_targets::{TargetKindDto, TargetRow, list_targets};
 
 // --- layout constants (SVG user units; the viewBox scales to the container) --
 const VIEW_W: f64 = 920.0;
@@ -245,7 +245,9 @@ mod tests {
 
     #[test]
     fn height_grows_with_largest_lane() {
-        let rows: Vec<_> = (0..5).map(|i| t(TargetKindDto::App, &format!("app-{i}"))).collect();
+        let rows: Vec<_> = (0..5)
+            .map(|i| t(TargetKindDto::App, &format!("app-{i}")))
+            .collect();
         let (_, _, h) = layout(&rows);
         assert!(h > MIN_H);
     }

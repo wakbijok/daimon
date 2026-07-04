@@ -13,14 +13,20 @@ use leptos::prelude::*;
 use serde_json::Value as Json;
 use std::collections::HashMap;
 
-use crate::admin_settings::{list_settings, set_setting, SettingRow};
+use crate::admin_settings::{SettingRow, list_settings, set_setting};
 
 /// The control a field renders as.
 #[derive(Clone)]
 pub enum Control {
     Toggle,
-    Text { placeholder: &'static str },
-    Number { min: i64, max: i64, unit: &'static str },
+    Text {
+        placeholder: &'static str,
+    },
+    Number {
+        min: i64,
+        max: i64,
+        unit: &'static str,
+    },
     Select(&'static [&'static str]),
     Segmented(&'static [&'static str]),
     Secret,
@@ -48,33 +54,51 @@ pub fn schema_for(prefix: &str) -> Vec<Field> {
             key: "identity.org_name",
             label: "Organisation name",
             help: "Shown in the console header.",
-            control: Control::Text { placeholder: "daimon" },
+            control: Control::Text {
+                placeholder: "daimon",
+            },
         }],
         "guard." => vec![
             Field {
                 key: "guard.approval_timeout_secs",
                 label: "Approval timeout",
                 help: "How long a gated write waits for a decision before it is denied. Applies to the next gated request.",
-                control: Control::Number { min: 10, max: 86400, unit: "seconds" },
+                control: Control::Number {
+                    min: 10,
+                    max: 86400,
+                    unit: "seconds",
+                },
             },
             Field {
                 key: "guard.blast_radius_depth",
                 label: "Blast-radius depth",
                 help: "Graph traversal depth shown with an approval so the operator sees what a write touches.",
-                control: Control::Number { min: 1, max: 12, unit: "hops" },
+                control: Control::Number {
+                    min: 1,
+                    max: 12,
+                    unit: "hops",
+                },
             },
         ],
         "observer." => vec![Field {
             key: "observer.prom_poll_interval_secs",
             label: "Prometheus poll interval",
             help: "How often the observer queries Prometheus. Applies on the next tick.",
-            control: Control::Number { min: 5, max: 3600, unit: "seconds" },
+            control: Control::Number {
+                min: 5,
+                max: 3600,
+                unit: "seconds",
+            },
         }],
         "chat." => vec![Field {
             key: "chat.history_retention_days",
             label: "Chat history retention",
             help: "Days to keep chat transcripts. 0 = keep forever. Independent of the login-session lifetime.",
-            control: Control::Number { min: 0, max: 3650, unit: "days" },
+            control: Control::Number {
+                min: 0,
+                max: 3650,
+                unit: "days",
+            },
         }],
         _ => Vec::new(),
     }
@@ -117,7 +141,10 @@ pub fn FormTab(prefix: &'static str, title: &'static str) -> impl IntoView {
                     // Do not overwrite a secret's stored ref into the input — leave
                     // secret inputs blank (a blank secret on save = unchanged).
                     let is_secret = fields.with_value(|fs| {
-                        fs.iter().find(|f| f.key == *key).map(Field::is_secret).unwrap_or(false)
+                        fs.iter()
+                            .find(|f| f.key == *key)
+                            .map(Field::is_secret)
+                            .unwrap_or(false)
                     });
                     if !is_secret {
                         sig.set(row_value(&rows, key));
@@ -223,7 +250,12 @@ fn FieldRow(field: Field, value: RwSignal<String>) -> impl IntoView {
     }
 }
 
-fn render_control(control: Control, value: RwSignal<String>, is_secret: bool, key: &'static str) -> AnyView {
+fn render_control(
+    control: Control,
+    value: RwSignal<String>,
+    is_secret: bool,
+    key: &'static str,
+) -> AnyView {
     match control {
         Control::Toggle => view! {
             <label class="inline-flex items-center gap-3 cursor-pointer">

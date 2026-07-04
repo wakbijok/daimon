@@ -5,7 +5,7 @@
 
 use leptos::prelude::*;
 
-use crate::admin_targets::{list_targets, TargetKindDto};
+use crate::admin_targets::{TargetKindDto, list_targets};
 use crate::components::viz::StatTile;
 
 #[component]

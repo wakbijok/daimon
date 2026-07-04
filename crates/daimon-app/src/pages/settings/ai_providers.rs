@@ -16,7 +16,7 @@
 use leptos::prelude::*;
 use serde_json::Value as Json;
 
-use crate::admin_settings::{list_settings, set_setting, SettingRow};
+use crate::admin_settings::{SettingRow, list_settings, set_setting};
 
 /// How a provider authenticates — drives which controls its config form renders.
 #[derive(Clone, Copy)]
@@ -305,15 +305,27 @@ fn ProviderConfig(
 
     // Seed per-provider inputs from the loaded rows. Secret inputs stay blank
     // (blank = unchanged); a stored key shows a "key set" chip instead.
-    let key_set = matches!(spec.auth, Auth::ApiKey { key_setting, .. } if row(&rows, key_setting).is_some());
+    let key_set =
+        matches!(spec.auth, Auth::ApiKey { key_setting, .. } if row(&rows, key_setting).is_some());
     let seed_model = {
         let m = row_string(&rows, "llm.default_model.chat");
-        if m.is_empty() { spec.default_model.to_string() } else { m }
+        if m.is_empty() {
+            spec.default_model.to_string()
+        } else {
+            m
+        }
     };
     let seed_url = match spec.auth {
-        Auth::LocalUrl { url_setting, default_url } => {
+        Auth::LocalUrl {
+            url_setting,
+            default_url,
+        } => {
             let u = row_string(&rows, url_setting);
-            if u.is_empty() { default_url.to_string() } else { u }
+            if u.is_empty() {
+                default_url.to_string()
+            } else {
+                u
+            }
         }
         _ => String::new(),
     };
@@ -347,11 +359,7 @@ fn ProviderConfig(
         // Default chat model (skip for OAuth, which manages its own default).
         let m = model.get_untracked();
         if !matches!(spec.auth, Auth::OAuthSession { .. }) && !m.trim().is_empty() {
-            writes.push((
-                "llm.default_model.chat".to_string(),
-                Json::String(m),
-                false,
-            ));
+            writes.push(("llm.default_model.chat".to_string(), Json::String(m), false));
         }
 
         // Make this provider active.
