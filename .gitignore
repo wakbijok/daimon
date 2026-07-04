@@ -13,3 +13,6 @@ daimon-data/
 .nornicdb-data/
 .nats-data/
 .fastembed_cache/
+
+# Local dev preview config (machine-specific paths)
+.claude/launch.json
