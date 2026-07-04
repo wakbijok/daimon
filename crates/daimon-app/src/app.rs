@@ -57,7 +57,11 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("infrastructure") view=Infrastructure />
                     <Route path=StaticSegment("network") view=NetworkDash />
                     <Route path=StaticSegment("kubernetes") view=KubernetesDash />
-                    <Route path=StaticSegment("metrics") view=AdminObserver />
+                    // NOTE: NOT "/metrics" — that path is the unauthenticated
+                    // Prometheus scrape endpoint registered in main.rs (self-
+                    // observability). A Leptos route on it panics the router at
+                    // boot ("Overlapping method route"). Operate surface = /monitoring.
+                    <Route path=StaticSegment("monitoring") view=AdminObserver />
                     <Route path=StaticSegment("topology") view=Topology />
                     <Route path=StaticSegment("plans") view=AdminPlans />
                     <Route path=StaticSegment("approvals") view=AdminApprovals />
@@ -82,7 +86,7 @@ pub fn App() -> impl IntoView {
                     <Route path=(StaticSegment("admin"), StaticSegment("memory"))
                         view=|| view! { <Redirect path="/memory"/> } />
                     <Route path=(StaticSegment("admin"), StaticSegment("observer"))
-                        view=|| view! { <Redirect path="/metrics"/> } />
+                        view=|| view! { <Redirect path="/monitoring"/> } />
                     <Route path=(StaticSegment("admin"), StaticSegment("credentials"))
                         view=|| view! { <Redirect path="/settings"/> } />
                     <Route path=(StaticSegment("admin"), StaticSegment("targets"))

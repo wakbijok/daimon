@@ -43,7 +43,7 @@ const OPERATE_NAV: &[NavItem] = &[
         icon: "M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9",
     },
     NavItem {
-        path: "/metrics",
+        path: "/monitoring",
         label: "Metrics",
         icon: "M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941",
     },

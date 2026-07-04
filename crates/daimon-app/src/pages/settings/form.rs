@@ -161,8 +161,13 @@ pub fn FormTab(prefix: &'static str, title: &'static str) -> impl IntoView {
                 for f in fs {
                     if let Some(sig) = m.get(f.key) {
                         let raw = sig.get_untracked();
-                        // A blank secret means "unchanged" — skip it.
-                        if f.is_secret() && raw.trim().is_empty() {
+                        // Blank = "leave unset / unchanged" for EVERY control, not
+                        // just secrets. A key with no stored value seeds its input
+                        // blank (the runtime uses the compiled/env default); saving
+                        // must not then persist an empty string that shadows that
+                        // default and pollutes app_config. To clear a key, use the
+                        // Advanced raw editor.
+                        if raw.trim().is_empty() {
                             continue;
                         }
                         let val = to_json(&f.control, &raw);
