@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "daimon",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "DAIMON_MASTER_KEY_FILE=/tmp/daimon-dev.key DAIMON_DATA_DIR=/tmp/daimon-run-data DAIMON_PG_URL=postgres://wakbijak@localhost:5432/daimon_p4test DAIMON_LLM_PROVIDER=chatgpt LEPTOS_BIN_TARGET_TRIPLE=aarch64-apple-darwin LEPTOS_SITE_ADDR=127.0.0.1:3030 RUST_LOG=info cargo leptos serve"
+      ],
+      "port": 3030,
+      "autoPort": false
+    }
+  ]
+}

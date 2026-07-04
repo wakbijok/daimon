@@ -1,21 +1,21 @@
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
-    components::{ParentRoute, Route, Router, Routes},
+    components::{ParentRoute, Redirect, Route, Router, Routes},
     ParamSegment, StaticSegment,
 };
 
 use crate::components::layout::Layout;
 use crate::pages::{
-    login::Login,
+    admin::{AdminApprovals, AdminAudit, AdminMemory, AdminObserver, AdminPlans},
+    class_dashboard::{Infrastructure, KubernetesDash, NetworkDash},
     dashboard::Dashboard,
-    incidents::Incidents,
     incident_detail::IncidentDetail,
+    incidents::Incidents,
+    login::Login,
+    profile::Profile,
     settings::Settings,
-    admin::{
-        AdminApprovals, AdminAudit, AdminCredentials, AdminIam, AdminMemory, AdminObserver,
-        AdminPlans, AdminTargets,
-    },
+    topology::Topology,
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -50,53 +50,45 @@ pub fn App() -> impl IntoView {
 
                 // All other routes wrapped in Layout (sidebar + top bar + main)
                 <ParentRoute path=StaticSegment("") view=Layout>
+                    // ---- Operate: the feature dashboards (UI-1, console v2) ----
                     <Route path=StaticSegment("") view=Dashboard />
                     <Route path=StaticSegment("incidents") view=Incidents />
                     <Route path=(StaticSegment("incidents"), ParamSegment("id")) view=IncidentDetail />
+                    <Route path=StaticSegment("infrastructure") view=Infrastructure />
+                    <Route path=StaticSegment("network") view=NetworkDash />
+                    <Route path=StaticSegment("kubernetes") view=KubernetesDash />
+                    <Route path=StaticSegment("metrics") view=AdminObserver />
+                    <Route path=StaticSegment("topology") view=Topology />
+                    <Route path=StaticSegment("plans") view=AdminPlans />
+                    <Route path=StaticSegment("approvals") view=AdminApprovals />
+                    <Route path=StaticSegment("audit") view=AdminAudit />
+                    <Route path=StaticSegment("memory") view=AdminMemory />
 
+                    // ---- Personal ----
+                    <Route path=StaticSegment("profile") view=Profile />
+
+                    // ---- System configuration (one home) ----
                     <Route path=StaticSegment("settings") view=Settings />
 
-                    // Admin routes (Phase 2b #12/#13/#14)
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("credentials"))
-                        view=AdminCredentials
-                    />
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("targets"))
-                        view=AdminTargets
-                    />
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("audit"))
-                        view=AdminAudit
-                    />
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("memory"))
-                        view=AdminMemory
-                    />
-
-                    // Phase 6 D1 — plans + DAG inspector
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("plans"))
-                        view=AdminPlans
-                    />
-
-                    // Phase 7 — observer (anomalies + metric streams)
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("observer"))
-                        view=AdminObserver
-                    />
-
-                    // Phase 8 — operator approval inbox + blast-radius
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("approvals"))
-                        view=AdminApprovals
-                    />
-
-                    // P1 — admin-gated user + role management
-                    <Route
-                        path=(StaticSegment("admin"), StaticSegment("iam"))
-                        view=AdminIam
-                    />
+                    // ---- Legacy /admin/* redirects (UI-1) ------------------
+                    // Operational pages became top-level dashboards; config
+                    // pages live in Settings. Bookmarks keep working.
+                    <Route path=(StaticSegment("admin"), StaticSegment("plans"))
+                        view=|| view! { <Redirect path="/plans"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("approvals"))
+                        view=|| view! { <Redirect path="/approvals"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("audit"))
+                        view=|| view! { <Redirect path="/audit"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("memory"))
+                        view=|| view! { <Redirect path="/memory"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("observer"))
+                        view=|| view! { <Redirect path="/metrics"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("credentials"))
+                        view=|| view! { <Redirect path="/settings"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("targets"))
+                        view=|| view! { <Redirect path="/settings"/> } />
+                    <Route path=(StaticSegment("admin"), StaticSegment("iam"))
+                        view=|| view! { <Redirect path="/settings"/> } />
                 </ParentRoute>
             </Routes>
         </Router>

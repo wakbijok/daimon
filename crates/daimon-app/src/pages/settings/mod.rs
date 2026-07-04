@@ -29,6 +29,7 @@ enum Tab {
     Identity,
     Iam,
     Targets,
+    Credentials,
     Connections,
     Llm,
     Guard,
@@ -46,6 +47,7 @@ impl Tab {
             Tab::Identity => "Identity",
             Tab::Iam => "IAM",
             Tab::Targets => "Targets",
+            Tab::Credentials => "Credentials",
             Tab::Connections => "Connections",
             Tab::Llm => "LLM Providers",
             Tab::Guard => "Guard",
@@ -62,6 +64,7 @@ impl Tab {
             Tab::Identity => "identity.",
             Tab::Iam => "iam.",
             Tab::Targets => "targets.",
+            Tab::Credentials => "credentials.",
             Tab::Connections => "connections.",
             Tab::Llm => "llm.",
             Tab::Guard => "guard.",
@@ -96,10 +99,11 @@ impl Tab {
     }
 }
 
-const TAB_ORDER: [Tab; 12] = [
+const TAB_ORDER: [Tab; 13] = [
     Tab::Identity,
     Tab::Iam,
     Tab::Targets,
+    Tab::Credentials,
     Tab::Connections,
     Tab::Llm,
     Tab::Guard,
@@ -152,6 +156,8 @@ pub fn Settings() -> impl IntoView {
                     // already runtime-consumed) — no new consumption path.
                     Tab::Targets => view! { <crate::pages::admin::targets::AdminTargets /> }.into_any(),
                     Tab::Iam => view! { <crate::pages::admin::iam::AdminIam /> }.into_any(),
+                    // UI-1: Credentials config absorbed from /admin/credentials.
+                    Tab::Credentials => view! { <crate::pages::admin::credentials::AdminCredentials /> }.into_any(),
                     other => view! { <KvTab tab=other /> }.into_any(),
                 }}
             </div>

@@ -83,6 +83,115 @@ pub async fn create_user(
     Ok(user_id)
 }
 
+/// UI-1 (profile page): change the CALLER's own password. Requires the current
+/// password (re-authentication — a hijacked session cannot silently rotate the
+/// credential), never touches another user, and is audited.
+#[server]
+pub async fn change_my_password(
+    current_password: String,
+    new_password: String,
+) -> Result<(), ServerFnError> {
+    use crate::auth_guard::require_authenticated;
+    use crate::state::AppState;
+
+    let claims = require_authenticated().await?;
+    let state = expect_context::<AppState>();
+
+    if new_password.len() < 8 {
+        return Err(ServerFnError::new("new password must be at least 8 characters"));
+    }
+
+    // Re-authenticate with the current password against the caller's own row.
+    let user = crate::db::find_user(&state.db, &claims.sub)
+        .await
+        .map_err(|e| ServerFnError::new(format!("find_user: {e}")))?
+        .ok_or_else(|| ServerFnError::new("account not found"))?;
+    if !crate::auth::verify_password(&current_password, &user.password_hash) {
+        return Err(ServerFnError::new("current password is incorrect"));
+    }
+
+    let hash = crate::auth::hash_password(&new_password);
+    let client = state
+        .db
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
+    client
+        .execute(
+            "UPDATE public.users SET password_hash = $1 WHERE id = $2",
+            &[&hash, &claims.user_id],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("update password: {e}")))?;
+
+    audit_iam(
+        &state,
+        &claims.sub,
+        "user.password_change",
+        claims.user_id,
+        format!("user.password_change {} (self)", claims.sub),
+    )
+    .await;
+    Ok(())
+}
+
+/// UI-1 (profile page): the caller's identity summary — username, all roles, and
+/// their own enrolled gateway identities. Self-scoped: reads only rows bound to
+/// the authenticated subject (no admin gate needed).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct MyIdentity {
+    pub channel: String,
+    pub platform_handle: String,
+    pub enrolled_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ProfileInfo {
+    pub username: String,
+    pub roles: Vec<String>,
+    pub identities: Vec<MyIdentity>,
+}
+
+#[server]
+pub async fn my_profile() -> Result<ProfileInfo, ServerFnError> {
+    use crate::auth_guard::require_authenticated;
+    use crate::state::AppState;
+
+    let claims = require_authenticated().await?;
+    let state = expect_context::<AppState>();
+    let client = state
+        .db
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("pool: {e}")))?;
+    let rows = client
+        .query(
+            "SELECT channel, platform_handle, enrolled_at
+               FROM public.gateway_identities
+              WHERE user_id = $1
+              ORDER BY channel, platform_handle",
+            &[&claims.user_id],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("identities: {e}")))?;
+    let identities = rows
+        .into_iter()
+        .map(|r| {
+            let enrolled: chrono::DateTime<chrono::Utc> = r.get(2);
+            MyIdentity {
+                channel: r.get(0),
+                platform_handle: r.get(1),
+                enrolled_at: enrolled.to_rfc3339(),
+            }
+        })
+        .collect();
+    Ok(ProfileInfo {
+        username: claims.sub,
+        roles: claims.roles,
+        identities,
+    })
+}
+
 #[server]
 pub async fn set_user_status(user_id: Uuid, status: String) -> Result<(), ServerFnError> {
     use crate::auth_guard::require_admin;
