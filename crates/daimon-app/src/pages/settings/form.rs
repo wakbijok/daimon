@@ -237,14 +237,14 @@ fn render_control(control: Control, value: RwSignal<String>, is_secret: bool, ke
         Control::Number { min, max, unit } => view! {
             <div class="flex items-center gap-2">
                 <input type="number" min=min.to_string() max=max.to_string()
-                    class="w-32 px-3 py-1.5 bg-bg border border-border-primary rounded-md text-sm text-text-primary font-mono focus:outline-none focus:border-accent-amber"
+                    class="w-32 px-3 py-1.5 bg-surface-tertiary border border-border-primary rounded-md text-sm text-text-primary font-mono focus:outline-none focus:border-accent-amber"
                     prop:value=move || value.get()
                     on:input=move |ev| value.set(event_target_value(&ev)) />
                 <span class="text-xs text-text-muted">{unit}</span>
             </div>
         }.into_any(),
         Control::Select(opts) => view! {
-            <select class="w-full px-3 py-1.5 bg-bg border border-border-primary rounded-md text-sm text-text-primary focus:outline-none focus:border-accent-amber"
+            <select class="w-full px-3 py-1.5 bg-surface-tertiary border border-border-primary rounded-md text-sm text-text-primary focus:outline-none focus:border-accent-amber"
                 on:change=move |ev| value.set(event_target_value(&ev))
                 prop:value=move || value.get()>
                 {opts.iter().map(|o| { let o=*o; view! { <option value=o>{o}</option> } }).collect_view()}
@@ -268,14 +268,14 @@ fn render_control(control: Control, value: RwSignal<String>, is_secret: bool, ke
         }.into_any(),
         Control::Text { placeholder } => view! {
             <input type="text" placeholder=placeholder
-                class="w-full px-3 py-1.5 bg-bg border border-border-primary rounded-md text-sm text-text-primary focus:outline-none focus:border-accent-amber"
+                class="w-full px-3 py-1.5 bg-surface-tertiary border border-border-primary rounded-md text-sm text-text-primary focus:outline-none focus:border-accent-amber"
                 prop:value=move || value.get()
                 on:input=move |ev| value.set(event_target_value(&ev)) />
         }.into_any(),
         Control::Secret => view! {
             <div class="space-y-1.5">
                 <input type="password" placeholder="•••••••• (leave blank to keep current)"
-                    class="w-full px-3 py-1.5 bg-bg border border-border-primary rounded-md text-sm text-text-primary font-mono focus:outline-none focus:border-accent-amber"
+                    class="w-full px-3 py-1.5 bg-surface-tertiary border border-border-primary rounded-md text-sm text-text-primary font-mono focus:outline-none focus:border-accent-amber"
                     prop:value=move || value.get()
                     on:input=move |ev| value.set(event_target_value(&ev)) />
                 <span class="inline-flex items-center gap-1.5 text-[10.5px] font-mono text-emerald-400">

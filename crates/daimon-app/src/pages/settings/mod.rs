@@ -16,6 +16,7 @@
 
 use leptos::prelude::*;
 
+pub mod ai_providers;
 pub mod form;
 
 use crate::admin_gateways::{
@@ -51,7 +52,7 @@ impl Tab {
             Tab::Targets => "Targets",
             Tab::Credentials => "Credentials",
             Tab::Connections => "Connections",
-            Tab::Llm => "LLM Providers",
+            Tab::Llm => "AI Providers",
             Tab::Guard => "Guard",
             Tab::Observer => "Observer",
             Tab::Rag => "RAG & Memory",
@@ -160,6 +161,8 @@ pub fn Settings() -> impl IntoView {
                     Tab::Iam => view! { <crate::pages::admin::iam::AdminIam /> }.into_any(),
                     // UI-1: Credentials config absorbed from /admin/credentials.
                     Tab::Credentials => view! { <crate::pages::admin::credentials::AdminCredentials /> }.into_any(),
+                    // UI-3: AI Providers — Hermes-style catalog + auth-aware forms.
+                    Tab::Llm => view! { <ai_providers::AiProviders /> }.into_any(),
                     // UI-2: schema-driven typed forms where a schema exists.
                     Tab::Identity => view! { <form::FormTab prefix="identity." title="Identity" /> }.into_any(),
                     Tab::Guard => view! { <form::FormTab prefix="guard." title="Guard & Policy" /> }.into_any(),
