@@ -104,9 +104,13 @@ impl TableRow for TargetRow {
                 <span class="text-text-primary font-mono text-[12px]">"target://"{self.ref_name.clone()}</span>
             }
             .into_any(),
+            // Kind chip carries its console destination (UI-9): "Platform ·
+            // Kubernetes" reads as class + which dashboard the target lands on.
             "kind" => view! {
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-tertiary text-text-secondary border border-border-primary">
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-tertiary text-text-secondary border border-border-primary whitespace-nowrap">
                     {self.kind.label()}
+                    <span class="text-text-muted">"·"</span>
+                    <span class="text-accent-amber/90">{self.kind.console_home()}</span>
                 </span>
             }
             .into_any(),
@@ -649,7 +653,10 @@ fn TargetEditor(
                 </div>
             </div>
 
-            // Kind dropdown
+            // Kind dropdown — each option is annotated with the console
+            // dashboard it maps to (UI-9), and a live hint below spells out the
+            // destination + what the class means, so Kind is never a mystery
+            // field that "tak map kat mana-mana".
             <div>
                 <label class="block text-sm text-text-secondary mb-1">"Kind"</label>
                 <select
@@ -678,11 +685,22 @@ fn TargetEditor(
                                 }
                                 selected=move || draft.get().kind == kind
                             >
-                                {kind.label()}
+                                {format!("{} — {} dashboard", kind.label(), kind.console_home())}
                             </option>
                         }
                     }).collect_view()}
                 </select>
+                {move || {
+                    let k = draft.get().kind;
+                    view! {
+                        <p class="text-[11px] text-text-muted mt-1.5 leading-snug">
+                            <span class="text-accent-amber font-medium">
+                                {format!("→ appears on the {} dashboard. ", k.console_home())}
+                            </span>
+                            {k.console_hint()}
+                        </p>
+                    }
+                }}
             </div>
 
             // Transport + port (side by side)

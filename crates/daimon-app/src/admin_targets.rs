@@ -29,6 +29,31 @@ impl TargetKindDto {
         }
     }
 
+    /// UI-9 — which console dashboard a target of this kind appears on. This is
+    /// the SAME mapping `pages/class_dashboard.rs` filters by (Infrastructure =
+    /// [Host, App], Network = [Network], Kubernetes = [Platform]) — surfaced at
+    /// registration time so the operator knows where the endpoint will land.
+    pub fn console_home(&self) -> &'static str {
+        match self {
+            Self::Platform => "Kubernetes",
+            Self::Network => "Network",
+            Self::Host | Self::App => "Infrastructure",
+        }
+    }
+
+    /// One-line registration hint per kind — what this class means and how the
+    /// console reaches it.
+    pub fn console_hint(&self) -> &'static str {
+        match self {
+            Self::Platform => {
+                "Kubernetes / orchestrator endpoints (kubectl via kubeconfig, cluster API)."
+            }
+            Self::Network => "Network + firewall devices (RouterOS, switches — SSH/SNMP/REST).",
+            Self::Host => "Baremetal / VM / mini-PC hosts (SSH).",
+            Self::App => "Application-level endpoints running on hosts (REST/gRPC).",
+        }
+    }
+
     pub fn all() -> [Self; 4] {
         [Self::Platform, Self::Network, Self::Host, Self::App]
     }
