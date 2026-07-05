@@ -19,6 +19,7 @@ Resolution precedence for every key: **DB `app_config` (operator edit) → envir
 | `channels.telegram.enabled` | Enable the Telegram gateway |
 | `channels.telegram.mode` | Telegram ingress mode: poll | webhook |
 | `channels.telegram.bot_token_cred` | Telegram bot token (secret → vault ref) |
+| `channels.telegram.webhook_secret_cred` | Telegram webhook signing secret credential (webhook mode only) |
 | `channels.telegram.offset` | Telegram getUpdates offset (runtime cursor) |
 | `channels.matrix.` | Matrix gateway configuration (enabled, homeserver, token cred, …) |
 | `channels.alerts.` | Outbound alert routing rules (by class + severity → recipient) |

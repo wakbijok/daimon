@@ -15,30 +15,76 @@
 /// `(key_or_prefix, description)`. Prefix entries end in `.`.
 pub const CONSUMED_KEYS: &[(&str, &str)] = &[
     // Identity
-    ("identity.org_name", "Organisation name shown in the console header"),
+    (
+        "identity.org_name",
+        "Organisation name shown in the console header",
+    ),
     // LLM (P6-4)
-    ("llm.provider", "Active LLM provider: anthropic | openai | chatgpt | local"),
+    (
+        "llm.provider",
+        "Active LLM provider: anthropic | openai | chatgpt | local",
+    ),
     ("llm.default_model.chat", "Model for the chat/worker role"),
-    ("llm.available_models", "Comma-separated models an operator may pick in chat (unset = default only)"),
-    ("llm.anthropic_key", "Anthropic API key (secret → vault ref)"),
+    (
+        "llm.available_models",
+        "Comma-separated models an operator may pick in chat (unset = default only)",
+    ),
+    (
+        "llm.anthropic_key",
+        "Anthropic API key (secret → vault ref)",
+    ),
     ("llm.openai_key", "OpenAI API key (secret → vault ref)"),
     ("llm.ollama_url", "Base URL for the local/Ollama provider"),
     // Guard (P6-5)
-    ("guard.approval_timeout_secs", "Seconds to await an approval before denying"),
-    ("guard.blast_radius_depth", "Graph traversal depth for the approval blast radius"),
+    (
+        "guard.approval_timeout_secs",
+        "Seconds to await an approval before denying",
+    ),
+    (
+        "guard.blast_radius_depth",
+        "Graph traversal depth for the approval blast radius",
+    ),
     // Observer (P6-5)
-    ("observer.prom_poll_interval_secs", "Prometheus poll interval (seconds)"),
+    (
+        "observer.prom_poll_interval_secs",
+        "Prometheus poll interval (seconds)",
+    ),
     // Channels (P4 + P6-10)
     ("channels.telegram.enabled", "Enable the Telegram gateway"),
-    ("channels.telegram.mode", "Telegram ingress mode: poll | webhook"),
-    ("channels.telegram.bot_token_cred", "Telegram bot token (secret → vault ref)"),
-    ("channels.telegram.offset", "Telegram getUpdates offset (runtime cursor)"),
-    ("channels.matrix.", "Matrix gateway configuration (enabled, homeserver, token cred, …)"),
-    ("channels.alerts.", "Outbound alert routing rules (by class + severity → recipient)"),
+    (
+        "channels.telegram.mode",
+        "Telegram ingress mode: poll | webhook",
+    ),
+    (
+        "channels.telegram.bot_token_cred",
+        "Telegram bot token (secret → vault ref)",
+    ),
+    (
+        "channels.telegram.webhook_secret_cred",
+        "Telegram webhook signing secret credential (webhook mode only)",
+    ),
+    (
+        "channels.telegram.offset",
+        "Telegram getUpdates offset (runtime cursor)",
+    ),
+    (
+        "channels.matrix.",
+        "Matrix gateway configuration (enabled, homeserver, token cred, …)",
+    ),
+    (
+        "channels.alerts.",
+        "Outbound alert routing rules (by class + severity → recipient)",
+    ),
     // Targets/Connectors (P6-7)
-    ("targets.", "Registered managed targets (target://<name>) + driver/connector binding"),
+    (
+        "targets.",
+        "Registered managed targets (target://<name>) + driver/connector binding",
+    ),
     // Chat history retention (P7-6)
-    ("chat.history_retention_days", "Days to retain chat transcripts (0 = forever); independent of the auth-session TTL"),
+    (
+        "chat.history_retention_days",
+        "Days to retain chat transcripts (0 = forever); independent of the auth-session TTL",
+    ),
 ];
 
 /// Config-tab prefixes whose keys are NOT consumed by the runtime in this build
@@ -147,7 +193,10 @@ mod tests {
     ///   DAIMON_UPDATE_DOCS=1 cargo test -p daimon-app config_reference_doc_is_current
     #[test]
     fn config_reference_doc_is_current() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/config-reference.md");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/config-reference.md"
+        );
         let expected = super::render_reference();
         if std::env::var("DAIMON_UPDATE_DOCS").is_ok() {
             std::fs::write(path, &expected).expect("write config-reference.md");

@@ -16,10 +16,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::collections::BTreeMap;
 
-use crate::admin_credentials::{list_credentials, CredentialRow};
+use crate::admin_credentials::{CredentialRow, list_credentials};
 use crate::admin_targets::{
-    delete_target, get_target, list_targets, upsert_target, TargetDto, TargetKindDto, TargetRow,
-    TransportKindDto,
+    TargetDto, TargetKindDto, TargetRow, TransportKindDto, delete_target, get_target, list_targets,
+    upsert_target,
 };
 use crate::components::modal::Modal;
 use crate::components::sortable_table::{ColumnDef, SortType, SortableTable, TableRow};
@@ -542,7 +542,9 @@ fn DeleteModal(
     });
 
     let confirm = move |_| {
-        let Some(t) = target.get_untracked() else { return };
+        let Some(t) = target.get_untracked() else {
+            return;
+        };
         deleting.set(true);
         let ref_name = t.ref_name.clone();
         spawn_local(async move {

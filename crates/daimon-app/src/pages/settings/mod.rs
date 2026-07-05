@@ -1,30 +1,27 @@
-//! Phase 8 — `/settings` 9-tab operator surface.
-//! Reachable via the sidebar bottom-left button and the user-menu
-//! dropdown. The admin sidebar deliberately does NOT list a separate
-//! Settings entry — one entry point only.
+//! `/settings` — the single system-configuration home (console v2 rule: the
+//! sidebar OPERATES the platform; every feature configures here, exactly once).
+//! Reachable via the sidebar System section and the user-menu dropdown
+//! (admin-only).
 //!
-//! Tabs:
-//! 1. Identity      — tenant + user + JWT
-//! 2. Connections   — backend URLs (read-only display today)
-//! 3. LLM Providers — Anthropic / OpenAI / Ollama + per-role defaults
-//! 4. Guard         — approval timeout, KILL path, blast-radius depth
-//! 5. Observer      — poll intervals, named-query library (placeholder)
-//! 6. RAG & Memory  — embedding model, chunk size, reranker, budget
-//! 7. Vault & KMS   — KMS backend, envelope path, DEK rotation
-//! 8. System        — read-only dashboard
-//! 9. Update        — channel, check, apply
+//! Tabs (dispatch below):
+//! - Identity / Guard / Observer — schema-driven typed forms (UI-2, form.rs)
+//! - IAM / Targets / Credentials — admin surfaces re-homed here (UI-1)
+//! - AI Providers  — Hermes-style provider catalog (UI-3, ai_providers.rs)
+//! - Memory        — external-memory catalog, dm-lite staged (UI-7, memory.rs)
+//! - Channels      — per-channel gateway cards + enrolment (UI-8, channels.rs)
+//! - Connections / Vault & KMS — read-only (FR-CFG-03/10)
+//! - System / Update — dashboard + release channel
 
 use leptos::prelude::*;
 
 pub mod ai_providers;
+pub mod channels;
 pub mod form;
+pub mod memory;
 
-use crate::admin_gateways::{
-    add_gateway_binding, delete_gateway_binding, list_gateway_bindings, GatewayBindingDto,
-};
 use crate::admin_settings::{
-    apply_update, cancel_update, check_for_update, get_config_reference, get_system_info,
-    get_update_state, list_settings, set_setting, SettingRow, SystemInfo, UpdateState,
+    SettingRow, SystemInfo, UpdateState, apply_update, cancel_update, check_for_update,
+    get_config_reference, get_system_info, get_update_state, list_settings, set_setting,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,7 +52,7 @@ impl Tab {
             Tab::Llm => "AI Providers",
             Tab::Guard => "Guard",
             Tab::Observer => "Observer",
-            Tab::Rag => "RAG & Memory",
+            Tab::Rag => "Memory",
             Tab::Vault => "Vault & KMS",
             Tab::Channels => "Channels",
             Tab::System => "System",
@@ -72,7 +69,7 @@ impl Tab {
             Tab::Llm => "llm.",
             Tab::Guard => "guard.",
             Tab::Observer => "observer.",
-            Tab::Rag => "rag.",
+            Tab::Rag => "memory.",
             Tab::Vault => "vault.",
             Tab::Channels => "channels.",
             Tab::System => "",
@@ -92,11 +89,15 @@ impl Tab {
     /// Why a read-only tab is read-only (shown in the banner).
     fn read_only_reason(self) -> &'static str {
         match self {
-            Tab::Connections => "Backend connection settings are sourced from the environment / \
+            Tab::Connections => {
+                "Backend connection settings are sourced from the environment / \
                 systemd unit at boot (DAIMON_PG_URL, master key, DAIMON_DATA_DIR) and cannot be \
-                edited here (FR-CFG-03).",
-            Tab::Vault => "KMS / DEK-rotation wiring is out of revival scope; these values are \
-                shown for reference only (FR-CFG-10).",
+                edited here (FR-CFG-03)."
+            }
+            Tab::Vault => {
+                "KMS / DEK-rotation wiring is out of revival scope; these values are \
+                shown for reference only (FR-CFG-10)."
+            }
             _ => "",
         }
     }
@@ -153,7 +154,7 @@ pub fn Settings() -> impl IntoView {
                 {move || match tab.get() {
                     Tab::System => view! { <SystemTab /> }.into_any(),
                     Tab::Update => view! { <UpdateTab /> }.into_any(),
-                    Tab::Channels => view! { <ChannelsTab /> }.into_any(),
+                    Tab::Channels => view! { <channels::ChannelsTab /> }.into_any(),
                     // P6-7/P6-8: the Targets/Connectors + IAM domains reuse the
                     // existing admin surfaces (inventory targets + IAM users are
                     // already runtime-consumed) — no new consumption path.
@@ -163,6 +164,8 @@ pub fn Settings() -> impl IntoView {
                     Tab::Credentials => view! { <crate::pages::admin::credentials::AdminCredentials /> }.into_any(),
                     // UI-3: AI Providers — Hermes-style catalog + auth-aware forms.
                     Tab::Llm => view! { <ai_providers::AiProviders /> }.into_any(),
+                    // UI-7: Memory — Hermes-style provider catalog (staged config).
+                    Tab::Rag => view! { <memory::MemoryTab /> }.into_any(),
                     // UI-2: schema-driven typed forms where a schema exists.
                     Tab::Identity => view! { <form::FormTab prefix="identity." title="Identity" /> }.into_any(),
                     Tab::Guard => view! { <form::FormTab prefix="guard." title="Guard & Policy" /> }.into_any(),
@@ -469,220 +472,6 @@ fn Field(label: &'static str, value: String) -> impl IntoView {
             <div class="font-mono text-text-primary">{value}</div>
         </>
     }
-}
-
-// ---- Channels tab (P4, FR-GW-16/17) ----------------------------------------
-
-/// The messaging-gateway configuration surface. Channel config (enable toggles,
-/// homeserver URLs, credential-name references) lives in `app_config` under
-/// `channels.*` via the generic KV editor; bot tokens + signing secrets are held
-/// in the Vault (created under **Vault & KMS** → referenced here by credential
-/// name), never inline (FR-GW-17). Below the config is the identity-enrolment
-/// table: which chat-platform handle maps to which IAM user (FR-GW-08).
-#[component]
-fn ChannelsTab() -> impl IntoView {
-    view! {
-        <div class="space-y-6">
-            <div class="rounded border border-border-primary p-3 bg-surface-secondary text-xs text-text-secondary max-w-3xl">
-                <p class="mb-1 font-semibold text-text-primary">"Messaging gateways"</p>
-                <p>
-                    "Reach daimon from Telegram or Matrix. A channel message runs the SAME chat + tool path a browser turn takes — bound to a real IAM identity, gated by the same policy + approval. A channel is a front door, never a bypass."
-                </p>
-                <ul class="list-disc list-inside mt-2 space-y-0.5">
-                    <li>
-                        <span class="font-mono">"channels.telegram.enabled"</span>
-                        " = true, "
-                        <span class="font-mono">"channels.telegram.mode"</span>
-                        " = poll (default — getUpdates, no ingress) or webhook, "
-                        <span class="font-mono">"channels.telegram.bot_token_cred"</span>
-                        " = <vault credential name>. Webhook mode also needs "
-                        <span class="font-mono">"channels.telegram.webhook_secret_cred"</span>
-                        "."
-                    </li>
-                    <li>
-                        <span class="font-mono">"channels.matrix.enabled"</span>
-                        " = true, "
-                        <span class="font-mono">"channels.matrix.homeserver"</span>
-                        " = https://matrix.example.org, "
-                        <span class="font-mono">"channels.matrix.access_token_cred"</span>
-                        " = <vault credential name>"
-                    </li>
-                </ul>
-                <p class="mt-2">
-                    "Bot tokens + secrets are stored as ApiToken credentials under "
-                    <span class="font-mono">"Vault & KMS"</span>
-                    " and referenced here by name — the token itself never lives in app_config or a log (FR-GW-17). Changes take effect on the next daimon restart."
-                </p>
-            </div>
-
-            <KvTab tab=Tab::Channels />
-
-            <GatewayEnrolment />
-        </div>
-    }
-}
-
-/// The `gateway_identities` enrolment table — admin add/revoke of
-/// chat-handle -> IAM-user bindings (FR-GW-08). A handle with no row here is
-/// refused fail-closed at inbound time; enrolment is the authorization.
-#[component]
-fn GatewayEnrolment() -> impl IntoView {
-    let bindings = Resource::new(|| (), |_| list_gateway_bindings());
-    let (status, set_status) = signal::<Option<String>>(None);
-    let (new_channel, set_new_channel) = signal("telegram".to_string());
-    let (new_handle, set_new_handle) = signal(String::new());
-    let (new_user, set_new_user) = signal(String::new());
-
-    let add_action = Action::new(move |args: &(String, String, String)| {
-        let (c, h, u) = args.clone();
-        async move {
-            match add_gateway_binding(c, h, u).await {
-                Ok(_) => Some("binding added".to_string()),
-                Err(e) => Some(format!("error: {e}")),
-            }
-        }
-    });
-    let del_action = Action::new(move |id: &uuid::Uuid| {
-        let id = *id;
-        async move {
-            match delete_gateway_binding(id).await {
-                Ok(_) => Some("binding revoked".to_string()),
-                Err(e) => Some(format!("error: {e}")),
-            }
-        }
-    });
-
-    Effect::new(move |_| {
-        if let Some(m) = add_action.value().get().flatten() {
-            set_status.set(Some(m));
-            bindings.refetch();
-        }
-    });
-    Effect::new(move |_| {
-        if let Some(m) = del_action.value().get().flatten() {
-            set_status.set(Some(m));
-            bindings.refetch();
-        }
-    });
-
-    let on_add = move |_| {
-        let (c, h, u) = (
-            new_channel.get().trim().to_lowercase(),
-            new_handle.get().trim().to_string(),
-            new_user.get().trim().to_string(),
-        );
-        if h.is_empty() || u.is_empty() {
-            set_status.set(Some("platform handle and username are required".into()));
-            return;
-        }
-        add_action.dispatch((c, h, u));
-        set_new_handle.set(String::new());
-        set_new_user.set(String::new());
-    };
-
-    view! {
-        <div class="space-y-3 max-w-3xl">
-            <div class="flex items-center justify-between">
-                <h2 class="text-lg font-semibold text-text-primary">"Identity enrolment"</h2>
-                {move || status.get().map(|s| view! {
-                    <span class="text-xs font-mono text-text-secondary">{s}</span>
-                })}
-            </div>
-
-            <Suspense fallback=|| view! { <div class="text-text-secondary text-sm">"loading…"</div> }>
-                {move || bindings.get().map(|res| match res {
-                    Ok(rows) => view! { <BindingsList rows=rows on_delete=Callback::new(move |id| { del_action.dispatch(id); }) /> }.into_any(),
-                    Err(e) => view! {
-                        <div class="text-accent-danger text-sm">{format!("error: {e}")}</div>
-                    }.into_any(),
-                })}
-            </Suspense>
-
-            <div class="rounded border border-border-primary p-3 bg-surface-secondary">
-                <h3 class="text-xs uppercase tracking-wider text-text-secondary mb-2">
-                    "Enrol a handle -> IAM user"
-                </h3>
-                <div class="grid grid-cols-12 gap-2 items-center">
-                    <select
-                        class="col-span-3 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm"
-                        on:change=move |ev| set_new_channel.set(event_target_value(&ev))
-                    >
-                        <option value="telegram">"telegram"</option>
-                        <option value="matrix">"matrix"</option>
-                    </select>
-                    <input
-                        class="col-span-4 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
-                        placeholder="platform handle (tg user id / @mxid)"
-                        prop:value=move || new_handle.get()
-                        on:input=move |ev| set_new_handle.set(event_target_value(&ev))
-                    />
-                    <input
-                        class="col-span-3 px-2 py-1 bg-surface-tertiary border border-border-primary rounded text-text-primary text-sm font-mono"
-                        placeholder="daimon username"
-                        prop:value=move || new_user.get()
-                        on:input=move |ev| set_new_user.set(event_target_value(&ev))
-                    />
-                    <button
-                        on:click=on_add
-                        class="col-span-2 px-2 py-1 bg-accent-amber text-surface-primary font-medium rounded text-sm"
-                    >
-                        "Enrol"
-                    </button>
-                </div>
-                <p class="text-[10px] text-text-muted mt-2">
-                    "The handle is the sender's stable platform id — a Telegram numeric user id or a Matrix MXID (@user:server). An unmapped handle is refused fail-closed; no capability runs for it."
-                </p>
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn BindingsList(
-    rows: Vec<GatewayBindingDto>,
-    #[prop(into)] on_delete: Callback<uuid::Uuid>,
-) -> impl IntoView {
-    if rows.is_empty() {
-        return view! {
-            <div class="text-text-secondary text-sm py-4 text-center border border-border-primary rounded">
-                "No handles enrolled yet. Add one below to let a chat-platform user reach daimon."
-            </div>
-        }.into_any();
-    }
-    view! {
-        <table class="w-full text-sm">
-            <thead>
-                <tr class="text-text-secondary text-left">
-                    <th class="py-1">"Channel"</th>
-                    <th class="py-1">"Platform handle"</th>
-                    <th class="py-1">"IAM user"</th>
-                    <th class="py-1">"Enrolled"</th>
-                    <th class="py-1"></th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows.into_iter().map(|r| {
-                    let id = r.id;
-                    view! {
-                        <tr class="border-t border-border-primary">
-                            <td class="py-2 font-mono text-xs text-text-primary">{r.channel}</td>
-                            <td class="py-2 font-mono text-xs text-text-secondary">{r.platform_handle}</td>
-                            <td class="py-2 font-mono text-xs text-text-primary">{r.username}</td>
-                            <td class="py-2 font-mono text-[10px] text-text-muted">{r.enrolled_at}</td>
-                            <td class="py-2 text-right">
-                                <button
-                                    on:click=move |_| on_delete.run(id)
-                                    class="px-2 py-0.5 bg-accent-danger/80 text-text-primary rounded text-xs"
-                                >
-                                    "Revoke"
-                                </button>
-                            </td>
-                        </tr>
-                    }
-                }).collect_view()}
-            </tbody>
-        </table>
-    }.into_any()
 }
 
 // ---- Update tab -------------------------------------------------------------

@@ -141,7 +141,7 @@ fn is_configured(spec: &ProviderSpec, rows: &[SettingRow]) -> Option<bool> {
 
 #[component]
 pub fn AiProviders() -> impl IntoView {
-    let settings = Resource::new(|| (), |_| list_settings("llm.".to_string()));
+    let settings = LocalResource::new(move || list_settings("llm.".to_string()));
     let (status, set_status) = signal::<Option<String>>(None);
     // Which provider's config panel is open. Seeded to the active provider once
     // settings load; the operator can click any card to switch focus.
@@ -303,7 +303,7 @@ fn ProviderConfig(
     spec: ProviderSpec,
     active_id: &'static str,
     rows: Vec<SettingRow>,
-    settings: Resource<Result<Vec<SettingRow>, ServerFnError>>,
+    settings: LocalResource<Result<Vec<SettingRow>, ServerFnError>>,
     set_status: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let is_active = active_id == spec.id;
@@ -506,7 +506,7 @@ fn ModelField(model: RwSignal<String>, default_model: &'static str) -> impl Into
 #[component]
 fn ModelAccess(
     rows: Vec<SettingRow>,
-    settings: Resource<Result<Vec<SettingRow>, ServerFnError>>,
+    settings: LocalResource<Result<Vec<SettingRow>, ServerFnError>>,
     set_status: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let csv = RwSignal::new(row_string(&rows, "llm.available_models"));
